@@ -58,6 +58,11 @@ http.createServer(async (req, res) => {
     const headers = { ...req.headers };
     delete headers.host;
     if (!headers.authorization || headers.authorization === `Bearer ${process.env.ANON_KEY_PLACEHOLDER}`) headers.authorization = `Bearer ${ANON}`;
+    // Like Supabase's gateway: an apikey in the query string authenticates the request and is not passed on.
+    if (url.searchParams.has('apikey')) {
+      if (!headers.authorization) headers.authorization = `Bearer ${url.searchParams.get('apikey')}`;
+      url.searchParams.delete('apikey');
+    }
     const upstream = await fetch(PGRST + url.pathname.slice(8) + url.search, {
       method: req.method, headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : await body(req),
     });

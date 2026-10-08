@@ -466,7 +466,20 @@
             <option value="admin" ${s.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>
           <td><input type="checkbox" data-k="active" ${s.active ? 'checked' : ''} ${self ? 'disabled' : ''} class="check"></td>
           <td>${esc(fmtDate(s.created_at))}</td></tr>`;
-      }).join('')}</tbody></table></div>`;
+      }).join('')}</tbody></table></div>
+      <section class="panel calendar-feed" id="cal-feed">
+        <h2>Tour calendar</h2>
+        <p class="muted small">Every scheduled tour, as a calendar you can subscribe to in Google Calendar or on a phone.
+        In Google Calendar: <b>Other calendars → + → From URL</b>, paste the link, then <b>Add calendar</b>.
+        Google refreshes subscribed calendars on its own schedule, usually within a few hours, so a tour booked
+        just now may take a while to appear there. The CRM itself is always up to date.</p>
+        <p class="muted small">Anyone with this link can see tour names and phone numbers. Share it only with staff,
+        and reset it if it reaches the wrong person — the old link stops working immediately.</p>
+        <div class="feed-row"><input id="cal-url" readonly value="Loading…" aria-label="Calendar link">
+          <button class="btn small" id="cal-copy" type="button" disabled>Copy link</button>
+          <button class="btn small danger" id="cal-reset" type="button" disabled>Reset link</button></div>
+      </section>`;
+    loadCalendarFeed();
     $$('.staff-table [data-k]', el).forEach((input) => input.addEventListener('change', async () => {
       const id = input.closest('tr').dataset.id;
       const patch = { [input.dataset.k]: input.type === 'checkbox' ? input.checked : input.value };
@@ -475,6 +488,32 @@
       state.staff = state.staff.map((s) => (s.id === id ? data : s));
       toast('Saved');
     }));
+  }
+
+  const calendarUrl = (token) => `${cfg.supabaseUrl}/rest/v1/rpc/tours_ics?token=${encodeURIComponent(token)}`
+    + `&apikey=${encodeURIComponent(cfg.supabaseAnonKey)}`;
+
+  async function loadCalendarFeed() {
+    const input = $('#cal-url'), copy = $('#cal-copy'), reset = $('#cal-reset');
+    if (!input) return;
+    const { data, error } = await sb.from('calendar_feed').select('token').maybeSingle();
+    if (error || !data) {
+      input.value = error ? 'Calendar not set up yet (run 002_calendar_feed.sql in Supabase)' : 'Calendar not set up yet';
+      return;
+    }
+    input.value = calendarUrl(data.token);
+    copy.disabled = reset.disabled = false;
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(input.value); toast('Calendar link copied'); }
+      catch { input.select(); toast('Press Ctrl+C (or ⌘C) to copy'); }
+    };
+    reset.onclick = async () => {
+      if (!confirm('Reset the calendar link? Anyone subscribed with the old link (including Google Calendar) stops getting tours until they add the new one.')) return;
+      const { data: token, error: e } = await sb.rpc('rotate_calendar_token');
+      if (e) return fail(e, 'Could not reset the link');
+      input.value = calendarUrl(token);
+      toast('New calendar link ready — re-add it in Google Calendar');
+    };
   }
 
   // ───────────── Inquiry drawer ─────────────

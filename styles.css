@@ -167,3 +167,7 @@ details.raw dd { margin: 0; word-break: break-word; }
 }
 .staff-help { margin-bottom: 16px; }
 input.check { width: auto; }
+.calendar-feed { margin-top: 16px; }
+.calendar-feed p { margin: 0 0 10px; }
+.feed-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.feed-row input { flex: 1 1 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }

@@ -8,7 +8,8 @@ contact form from creativaacademy.com lands here, and staff move each family fro
 - **Pipeline** — drag families between stages
 - **All inquiries** — search (names, email, any phone format), filter, download CSV
 - **Inquiry drawer** — call/text/email buttons, every form field, notes & call log, full original submission
-- **Staff** (admins) — turn staff access on and off
+- **Staff** (admins) — turn staff access on and off, and get the tour calendar link
+- **Tour calendar** — every scheduled tour as a private calendar feed for Google Calendar or phones
 
 Plain HTML/CSS/JS, no build step. Data and logins live in Supabase; hosted on Netlify.
 
@@ -33,7 +34,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 ## One-time setup
 
 1. **Supabase project** — create one at supabase.com (US East). Then:
-   - SQL Editor → paste and run `supabase/migrations/001_init.sql`.
+   - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -51,10 +52,23 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 5. **Staff** — invite each person from Supabase (Authentication → Users → Invite user),
    then switch them **Active** on the CRM's Staff page.
 
+## Tour calendar (Google Calendar)
+
+`supabase/migrations/002_calendar_feed.sql` adds a private iCalendar feed of scheduled tours
+(45-minute events, from 60 days back onward, families marked Lost left out). Admins copy the
+link from the Staff page and add it in Google Calendar under **Other calendars → + → From URL**.
+
+- The link carries a secret token; only admins can read it, and **Reset link** replaces it
+  (the old link stops working at once). Anyone with the link can see tour names and phones.
+- Google refreshes subscribed calendars on its own schedule (typically every few hours),
+  so new tours show up there with a delay. The CRM is always current.
+- The feed is `rpc/tours_ics`, which returns the `"*/*"` domain so PostgREST serves raw
+  `text/calendar` whatever Accept header the calendar app sends.
+
 ## Tests
 
 ```bash
-# Database rules (intake mapping, spam handling, who can see/change what)
+# Database rules (intake mapping, spam handling, who can see/change what, calendar feed)
 PGHOST=... PGPORT=... PGUSER=postgres tests/run-db-tests.sh
 
 # Full browser walkthrough: Postgres + PostgREST + headless Chromium

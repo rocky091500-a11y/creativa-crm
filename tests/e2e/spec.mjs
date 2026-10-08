@@ -161,6 +161,19 @@ try {
   await page.waitForSelector('#toast:has-text("Saved")');
   assert.ok(await page.locator('tr', { hasText: 'owner@creativaacademy.com' }).locator('select').isDisabled());
   ok('admin activates a new staff member; cannot change own role');
+
+  // ── tour calendar feed ──
+  await page.waitForFunction(() => /tours_ics\?token=/.test(document.querySelector('#cal-url')?.value || ''));
+  const feedUrl = await page.inputValue('#cal-url');
+  const feed = await (await fetch(feedUrl)).text();
+  assert.match(feed, /^BEGIN:VCALENDAR\r\n/);
+  assert.match(feed, /SUMMARY:Tour: Maria Lopez/);
+  assert.equal((feed.match(/BEGIN:VEVENT/g) || []).length, 1);   // Maria is the only family with a tour
+  await page.click('#cal-reset');   // confirm() accepted by the dialog handler
+  await page.waitForFunction((old) => document.querySelector('#cal-url').value !== old, feedUrl);
+  assert.equal((await fetch(feedUrl)).status, 401);
+  assert.match(await (await fetch(await page.inputValue('#cal-url'))).text(), /SUMMARY:Tour: Maria Lopez/);
+  ok('Staff page gives a calendar link listing booked tours; Reset link kills the old one');
   await shot(page, '06-staff');
 
   // ── activated staff, as a non-admin ──

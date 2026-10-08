@@ -14,7 +14,7 @@ create domain "*/*" as bytea;
 
 create table public.calendar_feed (
   id          int primary key default 1 check (id = 1),
-  token       text not null default encode(gen_random_bytes(24), 'hex'),
+  token       text not null default encode(extensions.gen_random_bytes(24), 'hex'),
   rotated_at  timestamptz not null default now()
 );
 insert into public.calendar_feed default values;
@@ -33,7 +33,7 @@ begin
     raise exception ''Only an admin can reset the calendar link'';
   end if;
   update public.calendar_feed
-     set token = encode(gen_random_bytes(24), ''hex''), rotated_at = now()
+     set token = encode(extensions.gen_random_bytes(24), ''hex''), rotated_at = now()
    where id = 1
   returning token into v;
   return v;

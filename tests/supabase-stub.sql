@@ -4,6 +4,14 @@ do $$ begin
   if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon nologin; end if;
   if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if;
 end $$;
+-- Supabase installs extensions (pgcrypto among them) in the "extensions" schema, not "public".
+create schema extensions;
+create extension pgcrypto schema extensions;
+-- Like Supabase, sessions (the SQL editor, PostgREST) search extensions too; functions with
+-- "set search_path = public" do not, which is what this mirrors.
+do $$ begin
+  execute format('alter database %I set search_path = "$user", public, extensions', current_database());
+end $$;
 create schema auth;
 grant usage on schema auth to anon, authenticated;
 create table auth.users (

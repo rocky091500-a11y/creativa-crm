@@ -231,7 +231,7 @@
         <img src="/assets/logo.png" alt="Creativa Academy">
         <nav>${Object.entries(views).map(([k, v]) =>
           `<button data-view="${k}" ${state.view === k ? 'aria-current="page"' : ''}>${v}</button>`).join('')}</nav>
-        <button class="btn primary" id="add">+ Add inquiry</button>
+        <button class="btn primary" id="add">+ Add<span class="hide-sm"> inquiry</span></button>
         <div class="me"><span>${esc(state.me.full_name || state.me.email)}</span>
           <button class="btn ghost small" id="signout">Sign out</button></div>
       </header>
@@ -353,10 +353,29 @@
     tags.push(`<span class="tag">${esc(SOURCE_LABEL[i.source] || i.source)}</span>`);
     if (i.assigned_to) tags.push(`<span class="tag">${esc(staffName(i.assigned_to))}</span>`);
     return `<div class="card" draggable="true" data-id="${i.id}">
+      <select class="move" aria-label="Move ${esc(i.parent_name || 'this family')} to another stage">
+        <option value="" selected disabled>Move to…</option>
+        ${STAGES.filter((s) => s !== i.stage).map((s) => `<option value="${s}">${STAGE_LABEL[s]}</option>`).join('')}
+      </select>
       <div class="name">${esc(i.parent_name || '(no name)')}</div>
       <div class="meta">${esc([i.child_name, ageOf(i.child_dob)].filter(Boolean).join(', '))}${i.program ? ' · ' + esc(i.program) : ''}</div>
       <div class="meta">${esc(relDays(i.created_at))}</div>
       <div class="tags">${tags.join('')}</div></div>`;
+  }
+
+  // Used by drag-and-drop on computers and the "Move to…" picker on phones.
+  function moveTo(inq, stage) {
+    if (inq.stage === stage) return;
+    if (stage === 'lost') {
+      const reason = prompt(`Why was ${inq.parent_name || 'this family'} lost? (e.g. chose another school, moved, price)`);
+      if (!reason || !reason.trim()) return;
+      setStage(inq, stage, reason.trim());
+    } else if (stage === 'tour_scheduled' && !inq.tour_at) {
+      openDrawer(inq.id, { stage });
+      toast('Pick the tour date and time, then Save');
+    } else {
+      setStage(inq, stage);
+    }
   }
 
   function renderBoard(el) {
@@ -375,8 +394,15 @@
           ${items.length > shown.length ? `<div class="more">+ ${items.length - shown.length} older in “All inquiries”</div>` : ''}</section>`;
       }).join('');
       $$('#board .card').forEach((c) => {
-        c.addEventListener('click', () => openDrawer(c.dataset.id));
+        c.addEventListener('click', (e) => { if (!e.target.closest('.move')) openDrawer(c.dataset.id); });
         c.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', c.dataset.id); e.dataTransfer.effectAllowed = 'move'; });
+        const pick = c.querySelector('.move');
+        pick.addEventListener('change', () => {
+          const inq = state.inquiries.find((x) => x.id === c.dataset.id);
+          const stage = pick.value;
+          pick.value = '';
+          if (inq && stage) moveTo(inq, stage);
+        });
       });
       $$('#board .col').forEach((col) => {
         col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drop'); });
@@ -385,18 +411,7 @@
           e.preventDefault();
           col.classList.remove('drop');
           const inq = state.inquiries.find((x) => x.id === e.dataTransfer.getData('text/plain'));
-          const stage = col.dataset.stage;
-          if (!inq || inq.stage === stage) return;
-          if (stage === 'lost') {
-            const reason = prompt(`Why was ${inq.parent_name || 'this family'} lost? (e.g. chose another school, moved, price)`);
-            if (!reason || !reason.trim()) return;
-            setStage(inq, stage, reason.trim());
-          } else if (stage === 'tour_scheduled' && !inq.tour_at) {
-            openDrawer(inq.id, { stage });
-            toast('Pick the tour date and time, then Save');
-          } else {
-            setStage(inq, stage);
-          }
+          if (inq) moveTo(inq, col.dataset.stage);
         });
       });
     }

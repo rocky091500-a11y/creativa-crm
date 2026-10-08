@@ -156,10 +156,26 @@ details.raw dd { margin: 0; word-break: break-word; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
 #toast.err { background: var(--danger); }
 
+/* "Move to…" picker on pipeline cards: touch screens can't drag, so they get this instead. */
+.card .move { display: none; float: right; width: auto; margin: -2px -4px 4px 8px; padding: 3px 6px;
+  font-size: 12px; border-radius: 999px; background: var(--cream); color: var(--ink-soft); }
+@media (hover: none), (max-width: 720px) {
+  .card .move { display: block; }
+}
+
 @media (max-width: 720px) {
-  header.top { padding: 10px 16px; gap: 8px; }
-  header.top img { height: 28px; }
+  /* Phone header: logo, Add and Sign out on one line; tabs in one sideways-scrolling row below.
+     Not pinned, so it scrolls away and leaves the screen to the content. */
+  header.top { position: static; padding: 10px 16px 0; gap: 8px 10px; }
+  header.top img { height: 28px; order: 1; }
+  header.top #add { order: 2; margin-left: auto; padding: 6px 14px; }
+  header.top .me { order: 3; }
   header.top .me span { display: none; }
+  header.top nav { order: 4; flex: 1 0 100%; flex-wrap: nowrap; overflow-x: auto; margin: 0 -16px; padding: 0 12px 8px;
+    scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  header.top nav::-webkit-scrollbar { display: none; }
+  header.top nav button { flex: none; }
+  .hide-sm { display: none; }
   main { padding: 16px; }
   .grid2 { grid-template-columns: 1fr; }
   .toolbar input[type="search"] { max-width: none; flex: 1 1 100%; }

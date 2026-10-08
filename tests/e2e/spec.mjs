@@ -14,8 +14,8 @@ const errors = [];
 let step = 0;
 const ok = (label) => console.log(`ok ${++step} - ${label}`);
 
-async function newPage(viewport = { width: 1360, height: 900 }) {
-  const ctx = await browser.newContext({ viewport, acceptDownloads: true });
+async function newPage(viewport = { width: 1360, height: 900 }, phone = false) {
+  const ctx = await browser.newContext({ viewport, acceptDownloads: true, ...(phone ? { isMobile: true, hasTouch: true } : {}) });
   const page = await ctx.newPage();
   // Serve the pinned supabase-js from disk so the test runs offline.
   await page.route('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js',
@@ -121,6 +121,8 @@ try {
   assert.equal(await page.locator('.board .card').count(), 1);
   await page.selectOption('#f-program', '');
   ok('board filters by program');
+  assert.equal(await page.locator('.board .card .move').first().isVisible(), false);
+  ok('Move-to picker is hidden on a computer (drag instead)');
   await shot(page, '04-pipeline');
 
   // ── manual inquiry ──
@@ -186,16 +188,34 @@ try {
   assert.equal(await p2.locator('.drawer #del').count(), 0);
   ok('activated staff gets in; no Staff tab and no Delete for non-admins');
 
-  // ── mobile ──
-  const m = await newPage({ width: 390, height: 844 });
+  // ── phone ──
+  const m = await newPage({ width: 390, height: 844 }, true);
   await login(m, 'owner@creativaacademy.com', 'owner-pass-1');
   await m.waitForSelector('header.top');
   const overflow = await m.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   assert.ok(overflow <= 0, `page scrolls sideways by ${overflow}px on a phone`);
+  const headerH = await m.evaluate(() => document.querySelector('header.top').getBoundingClientRect().height);
+  assert.ok(headerH <= 110, `phone header is ${headerH}px tall`);
+  assert.equal(await m.evaluate(() => getComputedStyle(document.querySelector('header.top')).position), 'static');
+  const tabsInOneRow = await m.evaluate(() => new Set([...document.querySelectorAll('header nav button')].map((b) => Math.round(b.getBoundingClientRect().top))).size);
+  assert.equal(tabsInOneRow, 1);
   await shot(m, '07-mobile-today');
-  await m.locator('.row', { hasText: 'Walk-in Dad' }).click();
+  ok(`phone: compact header (${Math.round(headerH)}px, tabs in one row, scrolls away), no sideways scroll`);
+
+  await m.click('header nav button[data-view=board]');
+  const mcol = (st) => m.locator(`.col[data-stage=${st}]`);
+  const walkIn = mcol('new').locator('.card', { hasText: 'Walk-in Dad' });
+  await walkIn.locator('.move').waitFor({ state: 'visible' });
+  await shot(m, '09-mobile-pipeline');
+  await walkIn.locator('.move').selectOption('contacted');
+  await mcol('contacted').locator('.card', { hasText: 'Walk-in Dad' }).waitFor();
+  assert.equal(await m.locator('.drawer').count(), 0, 'picking a stage must not open the family');
+  ok('phone: "Move to…" on a card changes its stage without opening the family');
+
+  await mcol('contacted').locator('.card', { hasText: 'Walk-in Dad' }).locator('.name').click();
+  await m.locator('.drawer').waitFor();
   await shot(m, '08-mobile-drawer');
-  ok('phone width: no sideways scroll, drawer usable');
+  ok('phone: tapping a card still opens the family');
 
   assert.deepEqual(errors, [], 'page errors: ' + errors.join('; '));
   ok('no JavaScript errors or Content-Security-Policy violations');

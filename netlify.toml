@@ -3,6 +3,10 @@
   publish = "."
   command = ""
 
+# Hourly tour reminder / follow-up emails (see README → Tour emails).
+[functions]
+  directory = "netlify/functions"
+
 [[headers]]
   for = "/*"
   [headers.values]
@@ -21,6 +25,16 @@
   force = true
 [[redirects]]
   from = "/supabase/*"
+  to = "/404"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/netlify/*"
+  to = "/404"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/imports/*"
   to = "/404"
   status = 404
   force = true

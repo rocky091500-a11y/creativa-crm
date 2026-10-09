@@ -187,3 +187,123 @@ input.check { width: auto; }
 .calendar-feed p { margin: 0 0 10px; }
 .feed-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .feed-row input { flex: 1 1 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+
+/* ───────── enrollment, tuition, reports ───────── */
+.nowrap { white-space: nowrap; }
+.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+th.num { text-align: right; }
+.panel .sub-h { font-family: var(--body); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); margin: 12px 0 2px; }
+.row .email-status { display: flex; gap: 6px; align-items: center; }
+.row .email-status .btn { padding: 2px 10px; font-size: 12px; }
+
+.class-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.class-card { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; background: var(--white);
+  border: 1px solid transparent; border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow); cursor: pointer; }
+.class-card:hover { border-color: var(--sage); }
+.class-card.on { border-color: var(--sage-deep); background: #EEF1E6; }
+.class-card.total { cursor: default; background: var(--cream-deep); box-shadow: none; }
+.class-card .c-name { font-weight: 600; font-size: 14px; }
+.class-card .c-count { font-family: var(--display); font-size: 26px; font-weight: 600; line-height: 1.1; }
+.class-card .c-count small { font-size: 15px; color: var(--ink-soft); }
+.class-card .c-count.full { color: var(--sage-deep); }
+.class-card .c-teachers { font-size: 12px; color: var(--ink-soft); min-height: 1em; }
+.class-card .tag { margin-top: 4px; }
+
+table.roster td.doc, table.roster th.doc { text-align: center; }
+table.roster td.doc { cursor: default; }
+table.roster input.check { width: 18px; height: 18px; accent-color: var(--sage-deep); cursor: pointer; }
+table.roster tr.st-withdrawn td { color: var(--ink-soft); }
+.stage-pill.st-waitlist { background: #F6E7C8; }
+.stage-pill.st-withdrawn { background: #EDE5E1; color: var(--ink-soft); }
+.tag.f-sr, .tag.f-sr_bpiece { background: #E3E8D6; color: var(--sage-deep); }
+.tag.f-fes_ua, .tag.f-fes_eo { background: #E6E0F0; color: #5B4A7A; }
+.tag.f-vpk { background: #DDE9EE; color: #3E6373; }
+
+.docs-grid { display: grid; gap: 8px; }
+.doc-line { display: grid; grid-template-columns: auto 1fr 160px; gap: 10px; align-items: center; font-size: 14px; color: var(--ink); }
+.doc-line input[type="date"] { margin: 0; }
+input.check { accent-color: var(--sage-deep); }
+.pill-check { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink); font-weight: 400; }
+.pill-check input { width: auto; margin: 0; }
+.funding-boxes { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 12px; }
+.funding-boxes .pill-check { background: var(--white); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; }
+.enroll-link { margin: 12px 0 0; }
+
+.pay-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.pay-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.pay-list li:first-child { border-top: 0; }
+.pay-list .p-date { width: 64px; color: var(--ink-soft); }
+.pay-list .p-what { flex: 1; min-width: 140px; }
+.pay-list .btn { padding: 2px 8px; font-size: 12px; }
+
+.month-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+.month-bar input { width: auto; }
+.month-bar b { font-family: var(--display); font-size: 20px; margin-left: 6px; }
+.pay-pill { font-size: 12px; font-weight: 500; border-radius: 999px; padding: 2px 10px; white-space: nowrap; background: var(--cream-deep); }
+.pay-pill.ps-paid { background: #DCE6C9; color: var(--sage-deep); }
+.pay-pill.ps-partial { background: #F6E7C8; color: var(--warn); }
+.pay-pill.ps-unpaid { background: #F3D9D4; color: var(--danger); }
+.pay-pill.ps-unset, .pay-pill.ps-none { color: var(--ink-soft); }
+table.tuition td .btn { padding: 3px 10px; font-size: 13px; }
+.table-wrap.flat { box-shadow: none; border-radius: 0; }
+.panel + .panel, .table-wrap + .panel, .today-grid + .panel, .panel + .toolbar { margin-top: 20px; }
+table.mini td { padding: 6px 4px; }
+table.mini tbody tr { cursor: default; }
+.report-year tbody tr.cur { background: #EEF1E6; font-weight: 500; }
+.fund-group { border-top: 1px solid var(--line); padding: 8px 0; }
+.fund-group summary { cursor: pointer; }
+.fund-group ul { margin: 6px 0 4px; padding-left: 20px; font-size: 14px; columns: 2 240px; }
+
+.settings-panel { margin-top: 16px; }
+.settings-panel form { margin-top: 8px; }
+.class-table input { padding: 5px 8px; }
+.class-table td { vertical-align: middle; }
+.class-table tbody tr { cursor: default; }
+.class-table input[type="number"] { width: 80px; }
+.settings-panel + .settings-panel { margin-top: 16px; }
+#cls-add { margin-top: 10px; }
+code { font-size: 12px; background: var(--cream); padding: 1px 5px; border-radius: 4px; }
+
+/* receipts: shown over the app, and the only thing printed */
+.print-sheet { position: fixed; inset: 0; z-index: 30; overflow-y: auto; background: #E9E5DA; padding: 0 16px 40px; }
+.print-bar { position: sticky; top: 0; display: flex; gap: 8px; align-items: center; padding: 12px 0; background: #E9E5DA; max-width: 760px; margin: 0 auto; }
+.print-bar .spacer { flex: 1; }
+.receipt { background: var(--white); color: #222; max-width: 760px; margin: 0 auto 20px; padding: 40px 44px; border-radius: 6px; box-shadow: var(--shadow); font-size: 15px; }
+.receipt header { display: flex; gap: 18px; align-items: flex-start; border-bottom: 2px solid var(--sage-deep); padding-bottom: 16px; margin-bottom: 20px; }
+.receipt header img { width: 90px; height: auto; }
+.receipt .r-school { flex: 1; }
+.receipt .r-school h1 { font-size: 24px; color: var(--ink); }
+.receipt .pre { white-space: pre-line; font-size: 13px; color: #555; margin-top: 4px; }
+.receipt .r-no { text-align: right; display: flex; flex-direction: column; }
+.receipt .r-no b { font-family: var(--display); font-size: 22px; text-transform: uppercase; letter-spacing: .08em; color: var(--sage-deep); }
+.receipt dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0 0 22px; }
+.receipt dt { color: #666; }
+.receipt dd { margin: 0; font-weight: 500; }
+.receipt table { border: 1px solid #ccc; }
+.receipt th, .receipt td { border-bottom: 1px solid #ddd; color: #222; }
+.receipt tbody tr { cursor: default; }
+.receipt tbody tr:hover { background: none; }
+.receipt tfoot th { font-size: 14px; text-transform: none; letter-spacing: 0; color: #222; border-bottom: 0; }
+.receipt .r-note { font-size: 13px; color: #666; margin-top: 2px; }
+.receipt .r-method { margin: 14px 0 40px; }
+.receipt .r-sign { display: flex; flex-direction: column; width: 260px; font-size: 13px; color: #555; }
+.receipt .r-line { border-bottom: 1px solid #333; height: 36px; margin-bottom: 4px; }
+
+@media print {
+  body.printing > *:not(.print-sheet) { display: none !important; }
+  body.printing { background: #fff; }
+  .print-sheet { position: static; overflow: visible; background: none; padding: 0; }
+  .no-print { display: none !important; }
+  .receipt { box-shadow: none; margin: 0; max-width: none; padding: 0; break-after: page; }
+  .receipt:last-child { break-after: auto; }
+}
+
+@media (max-width: 720px) {
+  .class-grid { grid-template-columns: repeat(2, 1fr); }
+  .doc-line { grid-template-columns: auto 1fr; }
+  .doc-line input[type="date"] { grid-column: 2; }
+  .receipt { padding: 24px 18px; }
+  .receipt header { flex-wrap: wrap; }
+  .receipt dl { grid-template-columns: 1fr; gap: 0 0; }
+  .receipt dd { margin-bottom: 6px; }
+}

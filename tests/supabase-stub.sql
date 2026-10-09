@@ -40,3 +40,12 @@ do $$ begin
   end if;
 end $$;
 grant anon, authenticated to authenticator;
+
+-- Supabase's server-side role (the email job uses its key)
+do $$ begin
+  if not exists (select 1 from pg_roles where rolname = 'service_role') then create role service_role nologin bypassrls; end if;
+end $$;
+grant usage on schema public to service_role;
+alter default privileges in schema public grant all on tables to service_role;
+alter default privileges in schema public grant all on sequences to service_role;
+grant service_role to authenticator;

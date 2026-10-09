@@ -178,6 +178,126 @@ try {
   ok('Staff page gives a calendar link listing booked tours; Reset link kills the old one');
   await shot(page, '06-staff');
 
+  // ── enrollment roster ──
+  await page.click('header nav button[data-view=roster]');
+  await page.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' }).waitFor();
+  assert.equal(await page.locator('#roster-rows tr[data-id]').count(), 2, 'enrolled students only by default');
+  assert.equal((await page.locator('.class-card', { hasText: 'Early 3s' }).locator('.c-count').textContent()).trim(), '1');
+  assert.ok(await page.locator('.class-card', { hasText: '18–23 months' }).locator('.tag', { hasText: '1 waiting' }).count());
+  const alphaRow = page.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' });
+  assert.ok(await alphaRow.locator('input[data-doc=doc_registration]').isChecked());
+  await alphaRow.locator('input[data-doc=doc_blue_form]').check();
+  await page.waitForSelector('#toast:has-text("Blue form received")');
+  assert.equal(await page.locator('.drawer').count(), 0, 'ticking a document must not open the student');
+  ok('Enrollment: class counts, waiting list, tick a document from the list');
+
+  await page.click('#r-add');
+  await drawer.waitFor();
+  await drawer.locator('input[name=name]').fill('Walk-in Kid');
+  await drawer.locator('select[name=classroom_id]').selectOption({ label: 'Late 2s' });
+  await drawer.locator('[data-doc=doc_birth_cert]').check();
+  assert.match(await drawer.locator('input[name=doc_birth_cert]').inputValue(), /^\d{4}-\d{2}-\d{2}$/);
+  await drawer.locator('#st-save').click();
+  await page.waitForSelector('#toast:has-text("Walk-in Kid added")');
+  await drawer.locator('[data-close]').first().click();
+  await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).waitFor();
+  await page.selectOption('#r-docs', 'missing');
+  assert.equal(await page.locator('#roster-rows tr[data-id]').count(), 3);
+  await page.selectOption('#r-docs', '');
+  await page.selectOption('#r-funding', 'fes_ua');
+  assert.equal(await page.locator('#roster-rows tr[data-id]').count(), 1);
+  await page.selectOption('#r-funding', '');
+  ok('add a student with documents; filter by missing documents and by funding');
+  await shot(page, '10-enrollment');
+
+  // ── student finance, payment, receipt ──
+  await alphaRow.locator('td').first().click();
+  await drawer.waitFor();
+  assert.ok(await drawer.locator('input[name=fund_fes_ua]').isChecked());
+  assert.equal(await drawer.locator('input[name=award_id]').inputValue(), 'TEST-123');
+  assert.equal(await drawer.locator('input[data-doc=doc_blue_form]').isChecked(), true);
+  await drawer.locator('#pay-add').click();
+  await drawer.locator('input[name=amount]').waitFor();
+  assert.equal(await drawer.locator('input[name=amount]').inputValue(), '560', 'amount suggests what is still due');
+  await drawer.locator('input[name=amount]').fill('300');
+  await drawer.locator('select[name=method]').selectOption('zelle');
+  await drawer.locator('#pay-save-print').click();
+  const sheet = page.locator('.print-sheet');
+  await sheet.waitFor();
+  assert.ok(await sheet.locator('.receipt', { hasText: 'TEST-123' }).count());
+  assert.ok(await sheet.locator('.receipt', { hasText: '$300.00' }).count());
+  assert.ok(await sheet.locator('.receipt', { hasText: '123 Test Street' }).count());
+  assert.ok(await sheet.locator('.receipt', { hasText: 'Alpha Parent' }).count());
+  await shot(page, '11-receipt');
+  await sheet.locator('#rc-close').click();
+  await drawer.locator('.pay-list li', { hasText: '$300.00' }).waitFor();
+  await drawer.locator('[data-close]').first().click();
+  ok('record a payment from the student page; receipt shows award ID, school header, amount');
+
+  // ── tuition ──
+  await page.click('header nav button[data-view=tuition]');
+  const tRow = (name) => page.locator('#t-rows tr', { hasText: name });
+  await tRow('Test Kid Alpha').locator('.pay-pill', { hasText: 'Partly paid' }).waitFor();
+  await tRow('Test Kid Beta').locator('.pay-pill', { hasText: 'Not paid' }).waitFor();
+  assert.ok(await tRow('Test Kid Beta').locator('td', { hasText: '$160.00' }).count(), 'biweekly tuition counts twice a month');
+  assert.equal(await page.locator('.stat', { hasText: 'Still owed' }).locator('b').textContent(), '$420.00');
+  assert.equal(await tRow('Walk-in Kid').locator('.pay-pill').textContent(), 'No tuition set');
+  await tRow('Test Kid Beta').locator('[data-pay-for]').click();
+  await drawer.locator('input[name=amount]').waitFor();
+  await drawer.locator('select[name=payer]').selectOption('sr');
+  await drawer.locator('#pay-save').click();
+  await page.waitForSelector('#toast:has-text("Saved · receipt")');
+  await tRow('Test Kid Beta').locator('.pay-pill', { hasText: /^Paid$/ }).waitFor();
+  assert.equal(await page.locator('.stat', { hasText: 'Still owed' }).locator('b').textContent(), '$260.00');
+  await page.click('#t-fes');
+  await sheet.waitFor();
+  assert.equal(await sheet.locator('.receipt').count(), 1, 'only FES-UA receipts');
+  await sheet.locator('#rc-close').click();
+  await shot(page, '12-tuition');
+  ok('Tuition: who has paid, partial and unpaid, balances; record payment from the list; FES-UA receipts batch');
+
+  // ── reports ──
+  await page.click('header nav button[data-view=reports]');
+  assert.equal(await page.locator('.stat', { hasText: 'Received in' }).locator('b').textContent(), '$460.00');
+  assert.ok(await page.locator('.panel', { hasText: 'By who paid' }).locator('tr', { hasText: 'School Readiness' }).locator('td', { hasText: '$160.00' }).count());
+  await page.locator('.fund-group summary', { hasText: 'FES-UA' }).click();
+  assert.ok(await page.locator('.fund-group', { hasText: 'FES-UA' }).locator('li', { hasText: 'ID TEST-123' }).count());
+  const [rdl] = await Promise.all([page.waitForEvent('download'), page.click('#rp-csv')]);
+  assert.equal(fs.readFileSync(await rdl.path(), 'utf8').trim().split(/\r\n/).length, 3);
+  await shot(page, '13-reports');
+  ok('Reports: month total, by payer, funding lists with award IDs, payments CSV');
+
+  // ── enrolled inquiry → enrollment list ──
+  await page.click('header nav button[data-view=list]');
+  await page.locator('#rows tr', { hasText: 'Maria Lopez' }).click();
+  assert.ok(await drawer.locator('input[name=auto_emails]').isChecked());
+  await drawer.locator('select[name=stage]').selectOption('enrolled');
+  await drawer.locator('#save').click();
+  await drawer.locator('#to-roster').click();
+  await drawer.locator('#st-save').waitFor();
+  assert.equal(await drawer.locator('input[name=name]').inputValue(), 'Sofia Lopez');
+  assert.equal(await drawer.locator('select[name=classroom_id] option:checked').textContent(), 'Early 2s');
+  await drawer.locator('#st-save').click();
+  await page.waitForSelector('#toast:has-text("Sofia Lopez added")');
+  await drawer.locator('#open-inq').click();
+  await drawer.locator('#open-student', { hasText: 'Sofia Lopez' }).waitFor();
+  await drawer.locator('[data-close]').first().click();
+  ok('an Enrolled inquiry becomes a student in one tap, linked both ways');
+
+  // ── settings ──
+  await page.click('header nav button[data-view=staff]');
+  await page.locator('.class-table tr', { has: page.locator('input[value="Early 3s"]') }).locator('input[data-k=capacity]').fill('12');
+  await page.locator('.class-table tr', { has: page.locator('input[value="Early 3s"]') }).locator('input[data-k=capacity]').press('Tab');
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await page.locator('#set-emails input[name=tour_reminder_subject]').fill('See you tomorrow!');
+  await page.locator('#set-emails button[type=submit]').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await page.locator('tr', { hasText: 'teacher@creativaacademy.com' }).locator('select[data-k=finance]').selectOption('view');
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await page.click('header nav button[data-view=roster]');
+  assert.equal((await page.locator('.class-card', { hasText: 'Early 3s' }).locator('.c-count').textContent()).trim(), '1 / 12');
+  ok('Settings: class capacity, email wording and finance access save');
+
   // ── activated staff, as a non-admin ──
   const p2 = await newPage();
   await login(p2, 'newhire@creativaacademy.com', 'newhire-pass-1');
@@ -187,6 +307,23 @@ try {
   await p2.locator('#rows tr', { hasText: 'Maria Lopez' }).click();
   assert.equal(await p2.locator('.drawer #del').count(), 0);
   ok('activated staff gets in; no Staff tab and no Delete for non-admins');
+  await p2.locator('.drawer [data-close]').first().click();
+  assert.equal(await p2.locator('header nav button[data-view=tuition]').count(), 0);
+  assert.equal(await p2.locator('header nav button[data-view=reports]').count(), 0);
+  await p2.click('header nav button[data-view=roster]');
+  await p2.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' }).locator('td').first().click();
+  await p2.locator('.drawer input[name=name]').waitFor();
+  assert.equal(await p2.locator('.drawer input[name=award_id]').count(), 0);
+  assert.equal(await p2.locator('#roster-rows').locator('.tag', { hasText: 'FES-UA' }).count(), 0);
+  ok('staff without finance access: roster and documents yes, no tuition, payments or award IDs');
+
+  const p3 = await newPage();
+  await login(p3, 'teacher@creativaacademy.com', 'teacher-pass-1');
+  await p3.click('header nav button[data-view=tuition]');
+  await p3.locator('#t-rows tr', { hasText: 'Test Kid Alpha' }).waitFor();
+  assert.equal(await p3.locator('#t-add').count(), 0);
+  assert.equal(await p3.locator('[data-pay-for]').count(), 0);
+  ok('view-only finance: sees Tuition, cannot record payments');
 
   // ── phone ──
   const m = await newPage({ width: 390, height: 844 }, true);
@@ -200,6 +337,12 @@ try {
   const tabsInOneRow = await m.evaluate(() => new Set([...document.querySelectorAll('header nav button')].map((b) => Math.round(b.getBoundingClientRect().top))).size);
   assert.equal(tabsInOneRow, 1);
   await shot(m, '07-mobile-today');
+  await m.click('header nav button[data-view=roster]');
+  await m.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' }).waitFor();
+  const rosterOverflow = await m.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  assert.ok(rosterOverflow <= 0, `Enrollment scrolls sideways by ${rosterOverflow}px on a phone`);
+  await shot(m, '14-mobile-enrollment');
+  await m.click('header nav button[data-view=today]');
   ok(`phone: compact header (${Math.round(headerH)}px, tabs in one row, scrolls away), no sideways scroll`);
 
   await m.click('header nav button[data-view=board]');

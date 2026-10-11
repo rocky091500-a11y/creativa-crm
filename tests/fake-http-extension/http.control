@@ -1,0 +1,4 @@
+# Test stand-in for the pgsql-http extension Supabase provides (only http_post + http_response).
+comment = 'fake http extension for tests: answers like Cloudflare Turnstile siteverify'
+default_version = '1.0'
+relocatable = false

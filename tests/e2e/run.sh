@@ -14,6 +14,7 @@ export E2E_USERS='[
   {"id":"00000000-0000-0000-0000-00000000000b","email":"teacher@creativaacademy.com","password":"teacher-pass-1"},
   {"id":"00000000-0000-0000-0000-00000000000c","email":"newhire@creativaacademy.com","password":"newhire-pass-1"}]'
 
+tests/fake-http-extension/install.sh
 psql -q -d postgres -c "drop database if exists $DB" -c "create database $DB"
 psql -q -v ON_ERROR_STOP=1 -d $DB -f tests/supabase-stub.sql
 for f in supabase/migrations/*.sql; do psql -q -v ON_ERROR_STOP=1 -d $DB -f "$f"; done

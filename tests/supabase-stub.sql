@@ -49,3 +49,13 @@ grant usage on schema public to service_role;
 alter default privileges in schema public grant all on tables to service_role;
 alter default privileges in schema public grant all on sequences to service_role;
 grant service_role to authenticator;
+
+-- Supabase Vault, reduced to what the migrations use.
+create schema if not exists vault;
+create table vault.secrets (id uuid primary key default gen_random_uuid(), name text unique, secret text not null);
+create view vault.decrypted_secrets as select id, name, secret as decrypted_secret from vault.secrets;
+create function vault.create_secret(new_secret text, new_name text default null,
+                                    new_description text default '', new_key_id uuid default null)
+returns uuid language sql as $$
+  insert into vault.secrets (name, secret) values (new_name, new_secret) returning id
+$$;

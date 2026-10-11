@@ -113,6 +113,21 @@ One-time setup:
 3. Redeploy. Netlify → Logs → Functions → `tour-emails` shows each run. Without `RESEND_API_KEY` it only logs what it
    would send.
 
+## "Are you human" check (Cloudflare Turnstile)
+
+`supabase/migrations/004_turnstile.sql` puts Cloudflare Turnstile in front of website intake:
+`submit_inquiry()` asks Cloudflare whether each submission's token is genuine before saving it,
+so bots are refused whether they use the forms or call the CRM directly. Refusals are counted in
+`intake_blocked` (form + reason only, no personal data).
+
+- The website (`js/crm-capture.js` in the website repo) shows the check on the five enrollment
+  forms (usually invisible) and holds a submit for a moment if the check hasn't finished.
+- The **secret key** lives only in Supabase Vault: `select vault.create_secret('…', 'turnstile_secret_key');`
+  Until it is stored nothing is checked. To change it: `update vault.secrets set secret = '…' where name = 'turnstile_secret_key';`
+- If Cloudflare can't be reached, submissions are let through (an outage never loses a family).
+- Spam blocked in the last 30 days:
+  `select form, reason, count(*) from intake_blocked where created_at > now() - interval '30 days' group by 1, 2;`
+
 ## Tests
 
 ```bash

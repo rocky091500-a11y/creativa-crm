@@ -4,8 +4,9 @@
 --   1. A "Reschedule" stage for tours that have to be moved. Those families leave the tour
 --      calendar and get no reminder email until they are back at "Tour scheduled".
 --   2. Telegram: each new website request is sent to a Telegram chat as soon as it is saved,
---      only after the "are you human" check has passed. The bot token lives in Supabase Vault;
---      admins connect it from the CRM's Settings page.
+--      only after the "are you human" check has passed. The alert is queued with pg_net and sent
+--      after the request is saved, so a slow or broken Telegram can never hold up or lose a
+--      family's request. The bot token lives in Supabase Vault; admins connect it on Settings.
 --   3. Spam: admins can mark an inquiry as spam, which deletes it and blocks that email, phone
 --      and device. One device can send at most 5 website requests an hour.
 --
@@ -82,6 +83,18 @@ begin
 end';
 
 -- ───────────────────────── 2. Telegram alerts ─────────────────────────
+-- pg_net sends HTTP requests in the background, after the transaction commits.
+do '
+begin
+  if not exists (select 1 from pg_extension where extname = ''pg_net'') then
+    begin
+      create extension pg_net with schema extensions;
+    exception when others then
+      create extension pg_net;
+    end;
+  end if;
+end';
+
 alter table public.settings
   add column if not exists telegram_chat_id text
     check (telegram_chat_id ~ '^-?[0-9]{1,20}$' or telegram_chat_id ~ '^@[A-Za-z0-9_]{4,64}$'),
@@ -89,7 +102,8 @@ alter table public.settings
     default array['schedule-tour','waitlist','contact','bloom-interest','family-support'],
   add column if not exists telegram_token_set boolean not null default false,
   add column if not exists telegram_last_at timestamptz,
-  add column if not exists telegram_last_result text;
+  add column if not exists telegram_last_result text,
+  add column if not exists telegram_last_request bigint;
 
 -- Receipts: the school's address line, as on the Programs & Hours sheet.
 update public.settings
@@ -145,26 +159,32 @@ returns text language sql stable security definer set search_path = public as '
     ''Open the CRM: https://crm.creativaacademy.com/''), 4000)
 ';
 
--- After a website inquiry is saved (never for staff-added ones, resubmits or old imports).
--- Any failure is recorded on the settings row and never stops the family's request.
+-- After a website inquiry is saved (never for staff-added ones, resubmits or old imports), queue the
+-- alert with pg_net: it goes out after the request is committed, never holds up the website form,
+-- and is never sent for a request that ends up rolled back. Any failure here is swallowed: a
+-- problem with Telegram must never stop a family's request.
 create or replace function public.inquiries_telegram()
 returns trigger language plpgsql security definer set search_path = public as '
 declare
-  s     public.settings;
-  v_ok  boolean;
-  v_res jsonb;
+  s       public.settings;
+  v_token text;
+  v_id    bigint;
 begin
   select * into s from public.settings where id = 1;
   if s.telegram_chat_id is null or not s.telegram_token_set
      or not (new.source = any (s.telegram_forms)) or new.created_at < now() - interval ''10 minutes'' then
     return null;
   end if;
-  select c.ok, c.result into v_ok, v_res
-    from public._telegram_call(''sendMessage'', jsonb_build_object(
-      ''chat_id'', s.telegram_chat_id, ''text'', public._telegram_text(new), ''disable_web_page_preview'', true)) c;
+  v_token := public._telegram_token();
+  if v_token is null then return null; end if;
+  v_id := net.http_post(
+    url := ''https://api.telegram.org/bot'' || v_token || ''/sendMessage'',
+    body := jsonb_build_object(''chat_id'', s.telegram_chat_id, ''text'', public._telegram_text(new),
+                               ''disable_web_page_preview'', true),
+    headers := ''{"Content-Type": "application/json"}''::jsonb,
+    timeout_milliseconds := 10000);
   update public.settings
-     set telegram_last_at = now(),
-         telegram_last_result = case when v_ok then ''ok'' else left(coalesce(v_res ->> ''description'', ''failed''), 200) end
+     set telegram_last_at = now(), telegram_last_request = v_id, telegram_last_result = ''queued''
    where id = 1;
   return null;
 exception when others then
@@ -230,8 +250,40 @@ begin
   select c.ok, c.result into v_ok, v_res from public._telegram_call(''sendMessage'', jsonb_build_object(
     ''chat_id'', v_chat, ''text'', ''✅ Creativa CRM is connected. New website requests will show up here.'')) c;
   v_out := case when v_ok then ''ok'' else left(coalesce(v_res ->> ''description'', ''failed''), 200) end;
-  update public.settings set telegram_last_at = now(), telegram_last_result = v_out where id = 1;
+  update public.settings set telegram_last_at = now(), telegram_last_result = v_out, telegram_last_request = null where id = 1;
   return v_out;
+end';
+
+-- Admin: how the last alert went. Alerts are sent in the background, so the answer is read from
+-- pg_net's response log (kept for a few hours) when there is one.
+create or replace function public.telegram_status(out last_at timestamptz, out result text)
+language plpgsql security definer set search_path = public as '
+declare
+  s public.settings;
+  r jsonb;
+begin
+  if not public.is_admin() then raise exception ''Only an admin can see Telegram settings''; end if;
+  select * into s from public.settings where id = 1;
+  last_at := s.telegram_last_at;
+  result := s.telegram_last_result;
+  if s.telegram_last_request is null then return; end if;
+  begin
+    select to_jsonb(x) into r from net._http_response x where x.id = s.telegram_last_request;
+  exception when others then
+    return;
+  end;
+  if r is null then
+    result := case when s.telegram_last_at > now() - interval ''2 minutes'' then ''sending'' else ''sent'' end;
+  elsif (r ->> ''status_code'') = ''200'' then
+    result := ''ok'';
+  else
+    begin
+      result := (r ->> ''content'')::jsonb ->> ''description'';
+    exception when others then
+      result := null;
+    end;
+    result := left(coalesce(result, r ->> ''error_msg'', ''HTTP '' || (r ->> ''status_code''), ''failed''), 200);
+  end if;
 end';
 
 -- ───────────────────────── 3. Spam: blocked senders, per-device limit ─────────────────────────
@@ -254,6 +306,9 @@ begin
     new.value := lower(new.value);
   elsif new.kind = ''phone'' then
     new.value := right(regexp_replace(new.value, ''[^0-9]'', '''', ''g''), 10);
+    if length(new.value) < 10 then
+      raise exception ''Enter the full phone number with area code'' using errcode = ''23514'';
+    end if;
   end if;
   return new;
 end';
@@ -292,6 +347,37 @@ end';
 drop trigger if exists inquiries_client_ip on public.inquiries;
 create trigger inquiries_client_ip before insert on public.inquiries
   for each row execute function public.inquiries_client_ip();
+
+-- The Turnstile check from 004, unchanged except for a shorter wait: website requests run under
+-- Supabase's 3-second limit for anonymous calls, so a slow Cloudflare must give up well before it.
+create or replace function public._turnstile_check(p_token text, out ok boolean, out reason text)
+language plpgsql security definer set search_path = public as '
+declare
+  v_secret text;
+  v_resp   extensions.http_response;
+  v_body   jsonb;
+begin
+  select s.decrypted_secret into v_secret
+    from vault.decrypted_secrets s where s.name = ''turnstile_secret_key'' limit 1;
+  if v_secret is null or v_secret = '''' then
+    ok := true; reason := ''not configured''; return;
+  end if;
+  if coalesce(p_token, '''') = '''' then
+    ok := false; reason := ''missing-input-response''; return;
+  end if;
+  begin
+    perform set_config(''http.timeout_msec'', ''1500'', true);
+    v_resp := extensions.http_post(
+      ''https://challenges.cloudflare.com/turnstile/v0/siteverify'',
+      jsonb_build_object(''secret'', v_secret, ''response'', left(p_token, 2048))::text,
+      ''application/json'');
+    v_body := v_resp.content::jsonb;
+  exception when others then
+    ok := true; reason := ''verify unavailable''; return;
+  end;
+  ok := coalesce((v_body ->> ''success'')::boolean, false);
+  reason := case when ok then ''ok'' else coalesce(v_body -> ''error-codes'' ->> 0, ''failed'') end;
+end';
 
 -- Website intake: the Turnstile check from 004, then blocked senders and the per-device limit.
 create or replace function public.submit_inquiry(p_form text, p_data jsonb)
@@ -343,7 +429,7 @@ begin
   insert into public.intake_blocklist (kind, value, note, created_by)
   select x.k, x.v, left(''Marked as spam: '' || coalesce(i.parent_name, i.email, i.phone, ''unknown''), 200), auth.uid()
     from (values (''email'', lower(i.email)), (''phone'', right(i.phone_digits, 10)), (''ip'', i.client_ip)) as x(k, v)
-   where x.v is not null and length(x.v) >= 3
+   where x.v is not null and length(x.v) between 3 and 200 and (x.k <> ''phone'' or length(x.v) = 10)
   on conflict (kind, value) do nothing;
   get diagnostics n = row_count;
   delete from public.inquiries where id = p_id;
@@ -372,5 +458,8 @@ revoke execute on function public.telegram_recent_chats() from public, anon;
 revoke execute on function public.telegram_send_test() from public, anon;
 revoke execute on function public.mark_inquiry_spam(uuid) from public, anon;
 revoke execute on function public.turnstile_configured() from public, anon;
+revoke execute on function public.telegram_status() from public, anon;
+revoke execute on function public._turnstile_check(text) from public, anon, authenticated;
 grant  execute on function public.set_telegram_token(text), public.telegram_recent_chats(), public.telegram_send_test(),
+                           public.telegram_status(),
                            public.mark_inquiry_spam(uuid), public.turnstile_configured() to authenticated;

@@ -162,13 +162,27 @@ try {
   await drawer.waitFor();
   assert.equal(await drawer.locator('input[name=tour_at]').inputValue(), '', 'moving back asks for a new time');
   await drawer.locator('#save').click();
-  await page.waitForSelector('#toast.err:has-text("Pick the tour date and time")');
+  await page.waitForSelector('#toast.err:has-text("Pick the new tour date and time")');
   await drawer.locator('input[name=tour_at]').fill(tourLocal.replace('T10:30', 'T09:00'));
   await drawer.locator('#save').click();
   await drawer.locator('.timeline li.k-stage', { hasText: 'Reschedule → Tour scheduled' }).waitFor();
   await drawer.locator('[data-close]').first().click();
   await col('tour_scheduled').locator('.card', { hasText: 'Resched Mom' }).waitFor();
-  ok('Reschedule: tours to move get their own column and Today list; moving back needs a new time');
+  // From the Today list: typing the new time while still at Reschedule books the tour again.
+  await col('tour_scheduled').locator('.card', { hasText: 'Resched Mom' }).dragTo(col('reschedule'));
+  await col('reschedule').locator('.card', { hasText: 'Resched Mom' }).waitFor();
+  await page.click('header nav button[data-view=today]');
+  await page.locator('#resched-panel .row', { hasText: 'Resched Mom' }).locator('.who').click();
+  await drawer.waitFor();
+  await drawer.locator('input[name=tour_at]').fill(tourLocal.replace('T10:30', 'T09:30'));
+  await drawer.locator('#save').click();
+  await drawer.locator('.timeline li.k-stage', { hasText: 'Reschedule → Tour scheduled' }).nth(1).waitFor();
+  assert.equal(await drawer.locator('select[name=stage]').inputValue(), 'tour_scheduled');
+  await drawer.locator('[data-close]').first().click();
+  await page.locator('.panel', { hasText: 'Upcoming tours' }).locator('.row', { hasText: 'Resched Mom' }).waitFor();
+  assert.equal(await page.locator('#resched-panel .row', { hasText: 'Resched Mom' }).count(), 0);
+  await page.click('header nav button[data-view=board]');
+  ok('Reschedule: tours to move get their own column and Today list; a new time (board or drawer) books them again');
 
   // ── list, search, CSV ──
   await page.click('header nav button[data-view=list]');
@@ -275,6 +289,7 @@ try {
   assert.match(await sheet.locator('.receipt .r-box').textContent(), /FES-UA \(Unique Abilities\)[\s\S]*TEST-123/);
   assert.match(await sheet.locator('.receipt .r-foot').textContent(), /123 Test Street/);
   await shot(page, '11-receipt');
+  await page.pdf({ path: path.join(SHOTS, '11-receipt-print.pdf'), format: 'Letter', printBackground: true });   // what Print / Save as PDF gives
   await sheet.locator('#rc-close').click();
   await drawer.locator('.pay-list li', { hasText: '$300.00' }).waitFor();
   await drawer.locator('[data-close]').first().click();

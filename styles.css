@@ -337,3 +337,7 @@ code { font-size: 12px; background: var(--cream); padding: 1px 5px; border-radiu
 .block-add { margin-top: 10px; }
 .block-add select { flex: 0 0 auto; width: auto; }
 .block-add input { flex: 1 1 180px; font-family: inherit; font-size: 14px; }
+@media (max-width: 720px) {
+  #resched-panel .row { flex-wrap: wrap; }
+  #resched-panel .row .when { flex: 1 0 100%; white-space: normal; }
+}

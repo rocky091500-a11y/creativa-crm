@@ -149,6 +149,7 @@
   // A student's funding programs, or ['private'] when they are on none.
   function fundingOf(sid) {
     const programs = (state.finance[sid]?.funding || []).filter((k) => PROGRAMS_FUNDING[k]);
+    if (programs.includes('sr_bpiece') && !programs.includes('sr')) programs.unshift('sr');   // BPIECE is School Readiness
     return programs.length ? programs : ['private'];
   }
   const hasFunding = (sid, k) => fundingOf(sid).includes(k);
@@ -1131,7 +1132,7 @@
       ${programs.length || f.award_id ? `<div class="r-box"><h3>${esc(programLabel || 'Scholarship')}</h3>
         ${f.award_id ? `<p>Scholarship / award ID <b>${esc(f.award_id)}</b></p>` : ''}</div>` : ''}
       <div class="r-sign"><span class="r-line"></span><span>${esc(set.receipt_signer || 'Authorized signature')}</span></div>
-      <footer class="r-foot">${esc(set.receipt_header || '')}</footer>
+      <footer class="r-foot"><b>${esc(set.school_name || 'Creativa Academy')}</b>${set.receipt_header ? `\n${esc(set.receipt_header)}` : ''}</footer>
     </article>`;
   }
 
@@ -1217,9 +1218,14 @@
     [['t-q', 'q', 'input'], ['t-status', 'status', 'change'], ['t-funding', 'funding', 'change']].forEach(([id, k, ev]) =>
       $('#' + id, el).addEventListener(ev, (e) => { f[k] = e.target.value; draw(); }));
     $('#t-add', el)?.addEventListener('click', () => openPayment({ month: m }));
-    $('#t-fes', el).addEventListener('click', () => showReceipts(monthPays
-      .filter((p) => hasFunding(p.student_id, 'fes_ua'))
-      .sort((a, b) => (state.students.find((s) => s.id === a.student_id)?.name || '').localeCompare(state.students.find((s) => s.id === b.student_id)?.name || '') || a.receipt_no - b.receipt_no)));
+    // Receipts for FES-UA reimbursement: only money the family paid, not payments from Step Up or other programs.
+    $('#t-fes', el).addEventListener('click', () => {
+      const fes = monthPays.filter((p) => hasFunding(p.student_id, 'fes_ua'));
+      const family = fes.filter((p) => p.payer === 'parent');
+      const nameOf = (p) => state.students.find((s) => s.id === p.student_id)?.name || '';
+      showReceipts(family.sort((a, b) => nameOf(a).localeCompare(nameOf(b)) || a.receipt_no - b.receipt_no));
+      if (family.length && fes.length > family.length) toast(`${fes.length - family.length} payment(s) from programs left out (only family payments are reimbursed)`);
+    });
     $('#t-csv', el).addEventListener('click', () => csvDownload(`creativa-tuition-${m}.csv`,
       ['Student', 'Class', 'Funding', 'Award ID', 'Tuition', 'Frequency', 'Due', 'Paid', 'Balance', 'Status'],
       all.map((r) => {
@@ -1382,11 +1388,11 @@
   function telegramPanelHtml() {
     const set = state.settings || {};
     const connected = set.telegram_token_set && set.telegram_chat_id;
-    const last = set.telegram_last_at ? ` Last message ${fmtDateTime(set.telegram_last_at)}: ${set.telegram_last_result === 'ok' ? 'delivered' : set.telegram_last_result || '—'}.` : '';
+    const last = set.telegram_last_at ? ` Last message ${fmtDateTime(set.telegram_last_at)}.` : '';
     return `<section class="panel settings-panel" id="tg-panel"><h2>Telegram alerts</h2>
       <p class="muted small">Each new website request is sent to Telegram the moment it is saved in the CRM: only after the
         robot check, and never from blocked senders. Staff-added inquiries are not sent.</p>
-      <p class="small tg-status ${connected ? 'on' : ''}">${connected ? `<b>Connected</b> to chat ${esc(set.telegram_chat_id)}.` : '<b>Not connected yet.</b>'}${esc(last)}</p>
+      <p class="small tg-status ${connected ? 'on' : ''}">${connected ? `<b>Connected</b> to chat ${esc(set.telegram_chat_id)}.` : '<b>Not connected yet.</b>'}<span class="tg-last">${esc(last)}</span></p>
       <ol class="muted small steps">
         <li>In Telegram, open <b>@BotFather</b>, send <code>/newbot</code> and follow the steps (or use your existing Creativa bot). Copy the token it gives you.</li>
         <li>Paste the token below and press <b>Save token</b>.</li>
@@ -1427,6 +1433,9 @@
       <p class="muted small">Website requests pass three checks before they reach the CRM: Cloudflare’s robot check, the
         list of blocked senders below, and a limit of 5 requests an hour from one device. To block someone, open their
         inquiry and press <b>Spam</b>: it is deleted and their email, phone and device are blocked.</p>
+      <p class="muted small">These checks cover the CRM and Telegram alerts. Netlify still keeps its own copy of every form and
+        emails it to you unfiltered; once Telegram alerts are on, turn those emails off in Netlify
+        (<b>Site configuration → Forms → Form notifications</b>) so only checked requests reach you.</p>
       <h3 class="sub-h">Stopped in the last 30 days</h3>
       <div id="spam-stats" class="muted small">Loading…</div>
       <h3 class="sub-h">Blocked senders</h3>
@@ -1444,11 +1453,19 @@
   async function bindTelegramPanel(el) {
     const panel = $('#tg-panel', el);
     if (!panel) return;
+    // Redraw only this panel, keeping a chat ID or form choices that haven't been saved yet.
     const refresh = async () => {
       const { data } = await sb.from('settings').select('*').eq('id', 1).maybeSingle();
       if (data) state.settings = data;
-      renderStaff(el);
+      const f = $('#tg-chat', panel);
+      const keep = { chat: f.telegram_chat_id.value, forms: WEB_FORMS.map((k) => f['tgf_' + k].checked) };
+      panel.outerHTML = telegramPanelHtml();
+      const g = $('#tg-chat', el);
+      g.telegram_chat_id.value = keep.chat;
+      WEB_FORMS.forEach((k, i) => { g['tgf_' + k].checked = keep.forms[i]; });
+      bindTelegramPanel(el);
     };
+    showTelegramStatus(panel);
     $('#tg-token', panel).addEventListener('submit', async (e) => {
       e.preventDefault();
       const token = e.target.token.value.trim();
@@ -1488,14 +1505,27 @@
       if (error) return fail(error, 'Could not save');
       state.settings = data;
       toast('Saved');
-      renderStaff(el);
+      refresh();
     });
     $('#tg-test', panel).addEventListener('click', async () => {
       const { data, error } = await sb.rpc('telegram_send_test');
       if (error) return fail(error, 'Could not send');
       if (data === 'ok') toast('Test message sent. Check Telegram'); else toast(`Telegram said: ${data}`, true);
-      refresh();
+      showTelegramStatus(panel);
     });
+  }
+
+  // "Last message …": alerts go out in the background, so ask the database how the last one went.
+  async function showTelegramStatus(panel) {
+    const set = state.settings || {};
+    const line = $('.tg-last', panel);
+    if (!line || !set.telegram_last_at) return;
+    const { data } = await sb.rpc('telegram_status');
+    const r = (Array.isArray(data) ? data[0] : data) || {};
+    if (!r.last_at || !document.body.contains(line)) return;
+    const what = { ok: 'delivered', sent: 'sent', sending: 'sending…', queued: 'sending…' }[r.result] || `Telegram said: ${r.result || 'no answer'}`;
+    line.textContent = ` Last message ${fmtDateTime(r.last_at)}: ${what}.`;
+    line.classList.toggle('warn-text', !['ok', 'sent', 'sending', 'queued'].includes(r.result));
   }
 
   async function bindSpamPanel(el) {
@@ -1538,7 +1568,7 @@
       e.preventDefault();
       const kind = add.kind.value, value = add.value.value.trim();
       if (kind === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) return toast('Enter the email address to block', true);
-      if (kind === 'phone' && digits(value).length < 7) return toast('Enter the phone number to block', true);
+      if (kind === 'phone' && digits(value).length < 10) return toast('Enter the full phone number with area code', true);
       const { error } = await sb.from('intake_blocklist').insert({ kind, value, note: add.note.value.trim() || null, created_by: state.me.id });
       if (error) return fail(error, error.code === '23505' ? 'Already blocked' : 'Could not block');
       add.value.value = '';
@@ -1678,7 +1708,11 @@
     const form = $('#inq-form', drawer);
     let dirty = Object.keys(preset).length > 0;
     form.addEventListener('input', () => { dirty = true; });
-    form.stage.addEventListener('change', () => { $('#lost-wrap', drawer).hidden = form.stage.value !== 'lost'; });
+    form.stage.addEventListener('change', () => {
+      $('#lost-wrap', drawer).hidden = form.stage.value !== 'lost';
+      // Back from Reschedule needs a new time, same as moving the card on the Pipeline.
+      if (inq.stage === 'reschedule' && form.stage.value === 'tour_scheduled') { form.tour_at.value = ''; form.tour_at.focus(); }
+    });
     form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
     const tryClose = () => { if (!dirty || confirm('Discard your changes?')) closeDrawer(); };
     $$('[data-close]', drawer).forEach((b) => b.addEventListener('click', tryClose));
@@ -1716,6 +1750,15 @@
       if (!patch.parent_name && !patch.child_name) return toast('Add the parent’s or child’s name', true);
       if (!patch.phone && !patch.email) return toast('Add a phone number or email', true);
       if (patch.stage === 'lost' && !patch.lost_reason) { form.lost_reason.focus(); return toast('Add the reason this family was lost', true); }
+      if (inq.stage === 'reschedule') {
+        const changed = patch.tour_at && new Date(patch.tour_at).getTime() !== new Date(inq.tour_at || 0).getTime();
+        // A new, future time typed in while still at Reschedule means the tour has been rescheduled.
+        if (patch.stage === 'reschedule' && changed && new Date(patch.tour_at) > new Date()) patch.stage = 'tour_scheduled';
+        if (patch.stage === 'tour_scheduled' && !changed) {
+          form.tour_at.focus();
+          return toast('Pick the new tour date and time', true);
+        }
+      }
       if (patch.stage === 'tour_scheduled' && !patch.tour_at && inq.stage !== 'tour_scheduled') {
         form.tour_at.focus();
         return toast('Pick the tour date and time', true);

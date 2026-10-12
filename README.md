@@ -136,14 +136,24 @@ so bots are refused whether they use the forms or call the CRM directly. Refusal
   device (IP address) is on the blocked list, or if that device already sent 5 requests in the past hour. An admin
   presses **Spam** on an inquiry to delete it and block its email, phone and device; Settings → Spam protection
   lists who is blocked (unblock or add an email/phone by hand) and what was stopped in the last 30 days.
+  `005` also shortens the robot check's wait to 1.5 s so a slow Cloudflare can't push a request past Supabase's
+  3-second limit for website calls. Run migrations in order and don't re-run `004` after `005` (it would put back
+  004's intake without these checks).
+- The website's five forms declare their hidden `bot-field` to Netlify (`netlify-honeypot`), so Netlify's copy also
+  drops bots that fill it in.
 
 ## Telegram alerts
 
 `005_reschedule_telegram_spam.sql` sends each new website request to Telegram as soon as it is saved: tour
 requests, waitlist, contact, Bloom and family support (choose which on Settings). Only requests that passed the
 robot check and aren't from a blocked sender get this far, staff-added inquiries are never sent, and a resubmit
-within 2 minutes doesn't send twice. If Telegram is down or the chat is wrong, the request is still saved and the
-error shows on Settings.
+within 2 minutes doesn't send twice. The alert is queued with Supabase's `pg_net` and goes out in the background
+once the request is saved, so a slow or broken Telegram never holds up the form or loses a request; Telegram's
+answer (delivered, or its error) shows on Settings.
+
+Once alerts work, turn off Netlify's own form emails (Netlify → Site configuration → Forms → Form notifications).
+Netlify keeps an unfiltered copy of every submission and its emails skip the robot check and the blocked list;
+Telegram only gets requests that passed them. Netlify still keeps the copies as a backup.
 
 Setup (Settings → Telegram alerts, admins): create a bot with **@BotFather** (`/newbot`) or reuse an existing one,
 paste its token, send the bot a message (or add it to the staff group), press **Find chat**, pick the chat, **Save**,

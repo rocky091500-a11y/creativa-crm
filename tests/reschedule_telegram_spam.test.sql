@@ -12,8 +12,15 @@ create or replace function pg_temp.from_ip(ip text) returns void language plpgsq
   perform set_config(''request.headers'', case when ip is null then '''' else json_build_object(''x-forwarded-for'', ip || '', 10.0.0.1'')::text end, false); end';
 create or replace function pg_temp.n(p_email text) returns bigint language sql as
   'select count(*) from public.inquiries where email = p_email';
+-- Alerts are queued with pg_net (sent after commit); admin tools call Telegram directly (fake http).
 create or replace function pg_temp.tg_calls() returns bigint language sql as
-  'select count(*) from extensions.http_calls where uri like ''%/sendMessage''';
+  'select count(*) from net.http_request_queue where url like ''%/sendMessage''';
+create or replace function pg_temp.tg_last() returns jsonb language sql as
+  'select convert_from(body, ''UTF8'')::jsonb || jsonb_build_object(''_url'', url, ''_id'', id) from net.http_request_queue order by id desc limit 1';
+create or replace function pg_temp.status_as_admin() returns text language plpgsql as 'declare r text; begin
+  perform set_config(''request.jwt.claim.sub'', ''00000000-0000-0000-0000-00000000000a'', false);
+  set local role authenticated; select result into r from public.telegram_status(); reset role;
+  perform set_config(''request.jwt.claim.sub'', '''', false); return r; end';
 
 -- turnstile.test.sql re-ran 004, which puts its own submit_inquiry back: apply 005 again (also proves a rerun is safe).
 \ir ../supabase/migrations/005_reschedule_telegram_spam.sql
@@ -73,30 +80,49 @@ select pg_temp.ok((select secret = '123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 select pg_temp.ok(not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'settings'
                               and column_name like '%token' and data_type = 'text'), 'no token column in any CRM table');
 
-truncate extensions.http_calls;
+truncate net.http_request_queue;
 set role anon;
 select public.submit_inquiry('schedule-tour', '{"parent-first-name":"Tele","parent-last-name":"Gram","email":"tg-tour@example.com",
   "phone":"(305) 555-0123","contact-pref":"Text","child-first-name":"Kiko","child-last-name":"Gram","child-dob":"2024-03-15",
   "program":"Early Twos","start-time":"As soon as possible","days[]":["Monday","Friday"],"time-pref":"9:30 am",
   "referral":"Friend or family","referred-by":"Ana Ruiz","notes":"Loves music","cf-turnstile-response":"tok"}'::jsonb);
 reset role;
-select pg_temp.ok(pg_temp.tg_calls() = 1, 'a new tour request sends one Telegram alert');
-select pg_temp.ok((select content::jsonb ->> 'chat_id' = '555111222'
-                      and content::jsonb ->> 'text' = concat_ws(chr(10), '🗓 New tour request',
+select pg_temp.ok(pg_temp.tg_calls() = 1, 'a new tour request queues one Telegram alert');
+select pg_temp.ok((select b ->> 'chat_id' = '555111222'
+                      and b ->> 'text' = concat_ws(chr(10), '🗓 New tour request',
                         'Tele Gram · (305) 555-0123 · tg-tour@example.com', 'Prefers: Text', 'Child: Kiko Gram, born Mar 15, 2024',
                         'Program: Early 2s', 'Start: As soon as possible', 'Tour days: Monday, Friday', 'Tour time: 9:30 am',
                         'Heard about us: Friend or family', 'Referred by: Ana Ruiz', 'Message: Loves music',
                         'Open the CRM: https://crm.creativaacademy.com/')
-                   from extensions.http_calls), 'alert has every detail from the form');
-select pg_temp.ok((select uri = 'https://api.telegram.org/bot123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/sendMessage' from extensions.http_calls),
+                   from pg_temp.tg_last() b), 'alert has every detail from the form');
+select pg_temp.ok((select b ->> '_url' = 'https://api.telegram.org/bot123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/sendMessage' from pg_temp.tg_last() b),
                   'sent to the Bot API with the saved token');
+select pg_temp.ok(pg_temp.status_as_admin() = 'sending', 'Settings shows it as sending until Telegram answers');
+insert into net._http_response (id, status_code, content) select (pg_temp.tg_last() ->> '_id')::bigint, 200, '{"ok":true}';
+select pg_temp.ok(pg_temp.status_as_admin() = 'ok', 'Telegram''s answer shows on Settings');
+
+-- a request that is not saved (rolled back) sends no alert
+begin;
+set local role anon;
+select public.submit_inquiry('contact', '{"first-name":"Ghost","email":"tg-ghost@example.com","cf-turnstile-response":"tok"}'::jsonb);
+rollback;
+select pg_temp.ok(pg_temp.n('tg-ghost@example.com') = 0 and pg_temp.tg_calls() = 1, 'no alert for a request that was rolled back');
+
+-- intake stays well inside Supabase's 3-second limit for website calls: no HTTP wait for Telegram
+begin;
+set local statement_timeout = '3s';
+set local role anon;
+select public.submit_inquiry('contact', '{"first-name":"Quick","email":"tg-quick@example.com","cf-turnstile-response":"tok"}'::jsonb);
+commit;
+select pg_temp.ok(pg_temp.n('tg-quick@example.com') = 1 and pg_temp.tg_calls() = 2, 'alert queued without waiting on Telegram');
+select pg_temp.from_ip('198.51.100.3');   -- fresh device for the rest of this section
 
 -- resubmit within 2 minutes updates the same inquiry: no second alert
 set role anon;
 select public.submit_inquiry('schedule-tour', '{"parent-first-name":"Tele","parent-last-name":"Gram","email":"tg-tour@example.com",
   "phone":"(305) 555-0123","child-first-name":"Kiko","child-dob":"2024-03-15","cf-turnstile-response":"tok"}'::jsonb);
 reset role;
-select pg_temp.ok(pg_temp.n('tg-tour@example.com') = 1 and pg_temp.tg_calls() = 1, 'resubmit: no duplicate alert');
+select pg_temp.ok(pg_temp.n('tg-tour@example.com') = 1 and pg_temp.tg_calls() = 2, 'resubmit: no duplicate alert');
 
 -- only the chosen forms; never staff-added inquiries
 update public.settings set telegram_forms = '{schedule-tour}' where id = 1;
@@ -104,7 +130,7 @@ set role anon;
 select public.submit_inquiry('contact', '{"first-name":"Hi","email":"tg-contact@example.com","cf-turnstile-response":"tok"}'::jsonb);
 reset role;
 insert into public.inquiries (parent_name, phone, source) values ('Walk-in', '305 555 0001', 'manual');
-select pg_temp.ok(pg_temp.n('tg-contact@example.com') = 1 and pg_temp.tg_calls() = 1, 'forms not picked and staff-added inquiries: no alert');
+select pg_temp.ok(pg_temp.n('tg-contact@example.com') = 1 and pg_temp.tg_calls() = 2, 'forms not picked and staff-added inquiries: no alert');
 update public.settings set telegram_forms = array['schedule-tour','waitlist','contact','bloom-interest','family-support'] where id = 1;
 
 -- Telegram trouble never loses a family
@@ -112,16 +138,26 @@ update public.settings set telegram_chat_id = '999' where id = 1;
 set role anon;
 select public.submit_inquiry('waitlist', '{"parent_name":"Wrong Chat","email":"tg-badchat@example.com","cf-turnstile-response":"tok"}'::jsonb);
 reset role;
-select pg_temp.ok(pg_temp.n('tg-badchat@example.com') = 1 and (select telegram_last_result = 'Bad Request: chat not found' from public.settings),
-                  'wrong chat: request saved, error shown on Settings');
+insert into net._http_response (id, status_code, content)
+  select (pg_temp.tg_last() ->> '_id')::bigint, 400, '{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}';
+select pg_temp.ok(pg_temp.n('tg-badchat@example.com') = 1 and pg_temp.status_as_admin() = 'Bad Request: chat not found',
+                  'wrong chat: request saved, Telegram''s error shown on Settings');
 update public.settings set telegram_chat_id = '555111222' where id = 1;
-update vault.secrets set secret = '123456789:TIMEOUTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' where name = 'telegram_bot_token';
 set role anon;
 select public.submit_inquiry('waitlist', '{"parent_name":"Slow","email":"tg-timeout@example.com","cf-turnstile-response":"tok"}'::jsonb);
 reset role;
-select pg_temp.ok(pg_temp.n('tg-timeout@example.com') = 1, 'Telegram unreachable: request saved');
-select pg_temp.ok((select telegram_last_result like '%timed out%' and telegram_last_result not like '%TIMEOUTAAAA%' from public.settings),
-                  'error recorded without the token in it');
+insert into net._http_response (id, status_code, timed_out, error_msg)
+  select (pg_temp.tg_last() ->> '_id')::bigint, null, true, 'Timeout of 10000 ms reached';
+select pg_temp.ok(pg_temp.n('tg-timeout@example.com') = 1 and pg_temp.status_as_admin() = 'Timeout of 10000 ms reached',
+                  'Telegram unreachable: request saved, timeout shown on Settings');
+select pg_temp.ok(not exists (select 1 from public.settings where telegram_last_result like '%AAAAAAAAAA%'), 'token never copied into settings');
+-- a broken pg_net never stops a request
+alter function net.http_post(text, jsonb, jsonb, jsonb, integer) rename to http_post_off;
+set role anon;
+select public.submit_inquiry('waitlist', '{"parent_name":"No pg_net","email":"tg-nonet@example.com","cf-turnstile-response":"tok"}'::jsonb);
+reset role;
+alter function net.http_post_off(text, jsonb, jsonb, jsonb, integer) rename to http_post;
+select pg_temp.ok(pg_temp.n('tg-nonet@example.com') = 1, 'alert queue unavailable: request saved anyway');
 update vault.secrets set secret = '000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' where name = 'telegram_bot_token';
 set role authenticated;
 select pg_temp.as_user('00000000-0000-0000-0000-00000000000a');
@@ -132,8 +168,8 @@ select public.set_telegram_token('');
 reset role;
 select pg_temp.as_user(null);
 select pg_temp.ok((select not telegram_token_set from public.settings) and public._telegram_token() is null, 'admin can disconnect the bot');
-truncate extensions.http_calls;
-select pg_temp.from_ip('198.51.100.2');   -- the first device has used up its 5 requests this hour
+truncate net.http_request_queue;
+select pg_temp.from_ip('198.51.100.2');   -- the first devices have used up their 5 requests this hour
 set role anon;
 select public.submit_inquiry('contact', '{"first-name":"After","email":"tg-after@example.com","cf-turnstile-response":"tok"}'::jsonb);
 reset role;
@@ -181,6 +217,8 @@ set role authenticated;
 select pg_temp.as_user('00000000-0000-0000-0000-00000000000a');
 delete from public.intake_blocklist where kind = 'ip';
 insert into public.intake_blocklist (kind, value, note) values ('phone', '(786) 555-0000', 'Prank caller');
+do 'begin insert into public.intake_blocklist (kind, value) values (''phone'', ''555-0000''); raise exception ''FAIL: 7-digit phone blocked'';
+exception when check_violation then null; end';
 reset role;
 select pg_temp.as_user(null);
 select pg_temp.ok(exists (select 1 from public.intake_blocklist where kind = 'phone' and value = '7865550000'), 'hand-added phone normalised');
@@ -198,6 +236,18 @@ reset role;
 select pg_temp.ok((select count(*) = 5 from public.inquiries where email like 'flood%@example.com'), 'sixth request from one device in an hour refused');
 select pg_temp.ok((select count(*) = 2 from public.intake_blocked where reason = 'too-many-from-device'), 'logged as too many from device');
 select pg_temp.from_ip(null);
+
+-- spam with details too odd to block (very long email, short phone) is still deleted
+insert into public.inquiries (parent_name, email, phone, source)
+  values ('Odd', repeat('x', 240) || '@example.com', '123', 'contact');
+update public.inquiries set client_ip = '192.0.2.99' where parent_name = 'Odd';   -- the insert trigger only trusts intake
+set role authenticated;
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000a');
+select pg_temp.ok(public.mark_inquiry_spam((select id from public.inquiries where parent_name = 'Odd')) = 1,
+                  'odd spam: blocks what it can (the device), skips the rest');
+reset role;
+select pg_temp.as_user(null);
+select pg_temp.ok(not exists (select 1 from public.inquiries where parent_name = 'Odd'), 'odd spam deleted');
 
 -- anon never sees the list or the admin tools
 set role anon;

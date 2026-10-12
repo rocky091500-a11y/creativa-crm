@@ -3,15 +3,20 @@
 // Which emails are due is decided in the database (public.tour_emails_due); the wording comes
 // from the CRM's Settings page. Emails go out through Resend (resend.com).
 //
-// Netlify environment variables (Site configuration → Environment variables):
-//   SUPABASE_URL                https://<project>.supabase.co
-//   SUPABASE_SERVICE_ROLE_KEY   Supabase → Settings → API → service_role (server-side only, never in config.js)
+// Netlify environment variables (Site configuration → Environment variables). Only the two keys are needed:
+//   SUPABASE_SERVICE_ROLE_KEY   Supabase → Project Settings → API Keys → service_role (server-side only, never in config.js)
 //   RESEND_API_KEY              from resend.com, after verifying creativaacademy.com there
-//   REMINDER_FROM               e.g. Creativa Academy <hello@creativaacademy.com>
-//   REMINDER_REPLY_TO           optional: where parents' replies go, e.g. the office inbox
+// Optional, to override the defaults below:
+//   SUPABASE_URL                defaults to the CRM's project (the same public URL as config.js)
+//   REMINDER_FROM               defaults to Creativa Academy <info@creativaacademy.com>
+//   REMINDER_REPLY_TO           where parents' replies go; defaults to info@creativaacademy.com
 // Without RESEND_API_KEY the job only logs what it would send.
 
 export const config = { schedule: '@hourly' };
+
+const DEFAULT_SUPABASE_URL = 'https://drgwfjoirmgxwhclbaak.supabase.co';
+const DEFAULT_FROM = 'Creativa Academy <info@creativaacademy.com>';
+const DEFAULT_REPLY_TO = 'info@creativaacademy.com';
 
 const TZ = 'America/New_York';
 const MAX_PER_RUN = 50;
@@ -39,9 +44,9 @@ const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&l
 const toHtml = (text) => `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5;color:#3B4430">${escapeHtml(text).replace(/\r?\n/g, '<br>')}</div>`;
 
 export async function run(env, fetchImpl = fetch, log = console.log) {
-  const base = (env.SUPABASE_URL || '').replace(/\/$/, '');
+  const base = (env.SUPABASE_URL || DEFAULT_SUPABASE_URL).replace(/\/$/, '');
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!base || !key) { log('tour-emails: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set; nothing to do'); return { sent: 0, skipped: 'not configured' }; }
+  if (!key) { log('tour-emails: SUPABASE_SERVICE_ROLE_KEY not set; nothing to do'); return { sent: 0, skipped: 'not configured' }; }
   const db = async (pathname, init = {}) => {
     const res = await fetchImpl(`${base}/rest/v1/${pathname}`, {
       ...init,
@@ -72,9 +77,9 @@ export async function run(env, fetchImpl = fetch, log = console.log) {
           'idempotency-key': `${row.kind}-${row.inquiry_id}-${row.tour_at}`,
         },
         body: JSON.stringify({
-          from: env.REMINDER_FROM || 'Creativa Academy <hello@creativaacademy.com>',
+          from: env.REMINDER_FROM || DEFAULT_FROM,
           to: [row.email],
-          ...(env.REMINDER_REPLY_TO ? { reply_to: env.REMINDER_REPLY_TO } : {}),
+          reply_to: env.REMINDER_REPLY_TO || DEFAULT_REPLY_TO,
           subject, text, html: toHtml(text),
         }),
       });

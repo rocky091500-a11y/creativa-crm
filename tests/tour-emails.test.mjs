@@ -64,6 +64,15 @@ test('without a Resend key it only logs (dry run) and stamps nothing', async () 
   assert.ok(lines.some((l) => l.includes('would send reminder to a@example.com')));
 });
 
+test('defaults: info@creativaacademy.com sends and gets replies; the CRM project URL is built in', async () => {
+  const { calls, fetchImpl } = fakes();
+  await run({ SUPABASE_SERVICE_ROLE_KEY: 'svc', RESEND_API_KEY: 're' }, fetchImpl, () => {});
+  const email = calls.find((c) => c.url.startsWith('https://api.resend.com'));
+  assert.equal(email.body.from, 'Creativa Academy <info@creativaacademy.com>');
+  assert.equal(email.body.reply_to, 'info@creativaacademy.com');
+  assert.ok(calls[0].url.startsWith('https://drgwfjoirmgxwhclbaak.supabase.co/rest/v1/'));
+});
+
 test('not configured: does nothing', async () => {
   const r = await run({}, () => { throw new Error('should not fetch'); }, () => {});
   assert.equal(r.skipped, 'not configured');

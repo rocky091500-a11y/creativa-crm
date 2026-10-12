@@ -108,12 +108,13 @@ with no email address show on the Today page with a **Text** button that opens a
 One-time setup:
 1. **Resend** — sign up at resend.com, add the domain `creativaacademy.com` and add the DNS records it shows, then
    create an API key.
-2. **Netlify** → Site configuration → Environment variables:
-   - `SUPABASE_URL` — `https://drgwfjoirmgxwhclbaak.supabase.co`
-   - `SUPABASE_SERVICE_ROLE_KEY` — Supabase → Settings → API → `service_role` (server-side only; never in `config.js`)
-   - `RESEND_API_KEY`
-   - `REMINDER_FROM` — e.g. `Creativa Academy <hello@creativaacademy.com>`
-   - `REMINDER_REPLY_TO` (optional) — the inbox where parents' replies should go
+2. **Netlify** (the CRM site) → Site configuration → Environment variables — just two:
+   - `SUPABASE_SERVICE_ROLE_KEY` — Supabase → Project Settings → API Keys → Legacy API Keys → `service_role`
+     (server-side only; never in `config.js`)
+   - `RESEND_API_KEY` — the `re_…` key from Resend
+
+   Emails come from `Creativa Academy <info@creativaacademy.com>` and replies go to `info@creativaacademy.com`.
+   To change that, add `REMINDER_FROM` / `REMINDER_REPLY_TO`; `SUPABASE_URL` can override the built-in project URL.
 3. Redeploy. Netlify → Logs → Functions → `tour-emails` shows each run. Without `RESEND_API_KEY` it only logs what it
    would send.
 

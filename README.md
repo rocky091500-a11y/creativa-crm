@@ -2,9 +2,9 @@
 
 Enrollment pipeline for Creativa Academy staff — every tour request, waitlist sign-up and
 contact form from creativaacademy.com lands here, and staff move each family from
-**New → Contacted → Tour scheduled → Toured → Waitlisted / Enrolled / Lost**.
+**New → Contacted → Tour scheduled (→ Reschedule) → Toured → Waitlisted / Enrolled / Lost**.
 
-- **Today** — follow-ups due, upcoming tours, new inquiries not yet contacted
+- **Today** — follow-ups due, upcoming tours, tours to reschedule, new inquiries not yet contacted
 - **Pipeline** — drag families between stages
 - **All inquiries** — search (names, email, any phone format), filter, download CSV
 - **Inquiry drawer** — call/text/email buttons, every form field, notes & call log, full original submission
@@ -13,9 +13,10 @@ contact form from creativaacademy.com lands here, and staff move each family fro
 - **Tuition** (finance access) — each month: who has paid, partly paid or owes; record payments; print receipts
   (one at a time, or every FES-UA receipt for the month at once for reimbursement uploads)
 - **Reports** (finance access) — money received per month, by who paid / method / class, the school year at a
-  glance, and who is on School Readiness, SR – BPIECE, FES-UA (with award IDs), FES-EO or VPK
-- **Settings** (admins) — staff access and finance access, classes and teachers, receipt header, tour email wording,
-  and the tour calendar link
+  glance, and who is on School Readiness, SR – BPIECE, FES-UA (with award IDs), FES-EO, VPK or private pay
+- **Settings** (admins) — staff access and finance access, classes and teachers, receipt address line, tour email
+  wording, Telegram alerts, spam protection (blocked senders), and the tour calendar link
+- **Telegram alerts** — each new website request is sent to a Telegram chat the moment it arrives
 - **Tour calendar** — every scheduled tour as a private calendar feed for Google Calendar or phones
 - **Tour emails** — a reminder the day before each tour, and a “how was your visit?” email a week later if
   nobody has heard from the family (English + Spanish)
@@ -44,7 +45,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
-     then `003_enrollment_finance.sql`.
+     then `003_enrollment_finance.sql`, `004_turnstile.sql` and `005_reschedule_telegram_spam.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -85,6 +86,9 @@ receipts and sets tuition). Admins always have both. The database enforces this,
   (4 a month). Payments from the family, School Readiness, FES, VPK or others all count toward the month they are for.
 - Receipt numbers are assigned by the database in order and can't be edited. A student with payments can't be
   deleted; set them to Withdrawn instead.
+- A student on no funding program is **private pay**. SR – BPIECE students are School Readiness students too
+  (ticking BPIECE ticks School Readiness).
+- Receipts print in the style of the Programs & Hours sheet; the address line at the bottom is set on Settings.
 - The 2026-27 roster was loaded with a one-time SQL import kept outside this repository. This repository is public:
   never commit student names, birthdays or award IDs to it.
 
@@ -128,11 +132,35 @@ so bots are refused whether they use the forms or call the CRM directly. Refusal
 - Spam blocked in the last 30 days:
   `select form, reason, count(*) from intake_blocked where created_at > now() - interval '30 days' group by 1, 2;`
 
+- **Spam protection (005)**: on top of the robot check, every website request is refused if its email, phone or
+  device (IP address) is on the blocked list, or if that device already sent 5 requests in the past hour. An admin
+  presses **Spam** on an inquiry to delete it and block its email, phone and device; Settings → Spam protection
+  lists who is blocked (unblock or add an email/phone by hand) and what was stopped in the last 30 days.
+
+## Telegram alerts
+
+`005_reschedule_telegram_spam.sql` sends each new website request to Telegram as soon as it is saved: tour
+requests, waitlist, contact, Bloom and family support (choose which on Settings). Only requests that passed the
+robot check and aren't from a blocked sender get this far, staff-added inquiries are never sent, and a resubmit
+within 2 minutes doesn't send twice. If Telegram is down or the chat is wrong, the request is still saved and the
+error shows on Settings.
+
+Setup (Settings → Telegram alerts, admins): create a bot with **@BotFather** (`/newbot`) or reuse an existing one,
+paste its token, send the bot a message (or add it to the staff group), press **Find chat**, pick the chat, **Save**,
+then **Send test**. The token is stored in Supabase Vault (`telegram_bot_token`), never in a table or the browser.
+
+## Tours to reschedule
+
+Move a family to **Reschedule** (Pipeline, or the stage picker) when their tour has to move. They show on Today
+under *Tours to reschedule* with the old time and call/text buttons, leave the tour calendar, and get no reminder
+email. Moving them back to *Tour scheduled* asks for the new date and time.
+
 ## Tests
 
 ```bash
 # Database rules (intake mapping, spam handling, who can see/change what, calendar feed,
-# roster/finance access, receipts, which tour emails are due)
+# roster/finance access, receipts, which tour emails are due, Turnstile, reschedule,
+# Telegram alerts, blocked senders and the per-device limit)
 PGHOST=... PGPORT=... PGUSER=postgres tests/run-db-tests.sh
 
 # Tour email job (fake Supabase and Resend)
@@ -149,8 +177,8 @@ PGHOST=... PGPORT=... PGUSER=postgres tests/e2e/run.sh
 ## Changing things
 
 - **Stages** live in three places that must match: the `check` constraint and the
-  `labels` in `001_init.sql`, and `STAGES`/`STAGE_LABEL` in `app.js`. Add a new
-  numbered migration rather than editing `001_init.sql` once it has been run.
+  `labels` in `inquiries_log()` (latest in `005_reschedule_telegram_spam.sql`), and `STAGES`/`STAGE_LABEL` in `app.js`.
+  Add a new numbered migration rather than editing one that has already been run.
 - **Funding programs, payment methods and documents** live in the `check` constraints in `003_enrollment_finance.sql`
   and `FUNDING` / `PAYER` / `METHOD` / `DOCS` in `app.js`.
 - **Website form fields** are mapped in `submit_inquiry()`. Every submission is also

@@ -140,19 +140,49 @@ try {
   await col('new').locator('.card', { hasText: 'Walk-in Dad' }).waitFor();
   ok('staff can add a walk-in/phone inquiry; phone or email required');
 
+  // ── tours to reschedule ──
+  await page.click('#add');
+  await drawer.waitFor();
+  await drawer.locator('input[name=parent_name]').fill('Resched Mom');
+  await drawer.locator('input[name=phone]').fill('305 555 0404');
+  await drawer.locator('select[name=stage]').selectOption('tour_scheduled');
+  await drawer.locator('input[name=tour_at]').fill(tourLocal);
+  await drawer.locator('#save').click();
+  await drawer.locator('.timeline li', { hasText: 'Added by staff' }).waitFor();
+  await drawer.locator('[data-close]').first().click();
+  await col('tour_scheduled').locator('.card', { hasText: 'Resched Mom' }).dragTo(col('reschedule'));
+  await col('reschedule').locator('.card', { hasText: 'Resched Mom' }).locator('.tag', { hasText: /^was / }).waitFor();
+  await page.click('header nav button[data-view=today]');
+  await page.locator('#resched-panel .row', { hasText: 'Resched Mom' }).waitFor();
+  assert.ok(await page.locator('#resched-panel .row', { hasText: 'Resched Mom' }).locator('a[href="sms:3055550404"]').count());
+  assert.equal(await page.locator('.panel', { hasText: 'Upcoming tours' }).locator('.row', { hasText: 'Resched Mom' }).count(), 0);
+  await shot(page, '15-reschedule-today');
+  await page.click('header nav button[data-view=board]');
+  await col('reschedule').locator('.card', { hasText: 'Resched Mom' }).dragTo(col('tour_scheduled'));
+  await drawer.waitFor();
+  assert.equal(await drawer.locator('input[name=tour_at]').inputValue(), '', 'moving back asks for a new time');
+  await drawer.locator('#save').click();
+  await page.waitForSelector('#toast.err:has-text("Pick the tour date and time")');
+  await drawer.locator('input[name=tour_at]').fill(tourLocal.replace('T10:30', 'T09:00'));
+  await drawer.locator('#save').click();
+  await drawer.locator('.timeline li.k-stage', { hasText: 'Reschedule → Tour scheduled' }).waitFor();
+  await drawer.locator('[data-close]').first().click();
+  await col('tour_scheduled').locator('.card', { hasText: 'Resched Mom' }).waitFor();
+  ok('Reschedule: tours to move get their own column and Today list; moving back needs a new time');
+
   // ── list, search, CSV ──
   await page.click('header nav button[data-view=list]');
   await page.fill('#f-q', '555-0199');
   assert.equal(await page.locator('#rows tr[data-id]').count(), 1);
   assert.ok(await page.locator('#rows', { hasText: 'James Carter' }).count());
   await page.fill('#f-q', '');
-  assert.equal(await page.locator('#rows tr[data-id]').count(), 5);
+  assert.equal(await page.locator('#rows tr[data-id]').count(), 6);
   ok('list search matches phone numbers in any format');
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#csv')]);
   const csv = fs.readFileSync(await dl.path(), 'utf8');
   assert.match(csv, /parent_name/);
   assert.match(csv, /Maria Lopez/);
-  assert.equal(csv.trim().split(/\r\n/).length, 6);
+  assert.equal(csv.trim().split(/\r\n/).length, 7);
   ok('CSV export downloads the filtered rows');
   await shot(page, '05-list');
 
@@ -170,7 +200,8 @@ try {
   const feed = await (await fetch(feedUrl)).text();
   assert.match(feed, /^BEGIN:VCALENDAR\r\n/);
   assert.match(feed, /SUMMARY:Tour: Maria Lopez/);
-  assert.equal((feed.match(/BEGIN:VEVENT/g) || []).length, 1);   // Maria is the only family with a tour
+  assert.match(feed, /SUMMARY:Tour: Resched Mom/);   // rescheduled: back on the calendar
+  assert.equal((feed.match(/BEGIN:VEVENT/g) || []).length, 2);   // Maria and Resched Mom are the families with tours
   await page.click('#cal-reset');   // confirm() accepted by the dialog handler
   await page.waitForFunction((old) => document.querySelector('#cal-url').value !== old, feedUrl);
   assert.equal((await fetch(feedUrl)).status, 401);
@@ -208,6 +239,18 @@ try {
   assert.equal(await page.locator('#roster-rows tr[data-id]').count(), 1);
   await page.selectOption('#r-funding', '');
   ok('add a student with documents; filter by missing documents and by funding');
+  assert.ok(await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('.tag.f-private', { hasText: 'Private pay' }).count());
+  await page.selectOption('#r-funding', 'private');
+  assert.deepEqual((await page.locator('#roster-rows tr[data-id] td:first-child b').allTextContents()).sort(), ['Walk-in Kid']);
+  await page.selectOption('#r-funding', '');
+  await page.locator('#roster-rows tr', { hasText: 'Test Kid Beta' }).locator('td').first().click();
+  await drawer.locator('input[name=fund_sr_bpiece]').check();
+  assert.ok(await drawer.locator('input[name=fund_sr]').isChecked(), 'BPIECE ticks School Readiness too');
+  await drawer.locator('#st-save').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await drawer.locator('[data-close]').first().click();
+  assert.ok(await page.locator('#roster-rows tr', { hasText: 'Test Kid Beta' }).locator('.tag', { hasText: 'SR – BPIECE' }).count());
+  ok('no program = Private pay; BPIECE students are also School Readiness');
   await shot(page, '10-enrollment');
 
   // ── student finance, payment, receipt ──
@@ -228,6 +271,9 @@ try {
   assert.ok(await sheet.locator('.receipt', { hasText: '$300.00' }).count());
   assert.ok(await sheet.locator('.receipt', { hasText: '123 Test Street' }).count());
   assert.ok(await sheet.locator('.receipt', { hasText: 'Alpha Parent' }).count());
+  assert.match(await sheet.locator('.receipt .r-year').textContent(), /^School year \d{4} – \d{4}$/);
+  assert.match(await sheet.locator('.receipt .r-box').textContent(), /FES-UA \(Unique Abilities\)[\s\S]*TEST-123/);
+  assert.match(await sheet.locator('.receipt .r-foot').textContent(), /123 Test Street/);
   await shot(page, '11-receipt');
   await sheet.locator('#rc-close').click();
   await drawer.locator('.pay-list li', { hasText: '$300.00' }).waitFor();
@@ -297,6 +343,62 @@ try {
   await page.click('header nav button[data-view=roster]');
   assert.equal((await page.locator('.class-card', { hasText: 'Early 3s' }).locator('.c-count').textContent()).trim(), '1 / 12');
   ok('Settings: class capacity, email wording and finance access save');
+
+  // ── Telegram alerts ──
+  await page.click('header nav button[data-view=staff]');
+  const tg = page.locator('#tg-panel');
+  await tg.locator('input[name=token]').fill('my bot token');
+  await tg.locator('#tg-token button[type=submit]').click();
+  await page.waitForSelector('#toast.err:has-text("not a Telegram bot token")');
+  await tg.locator('input[name=token]').fill('123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+  await tg.locator('#tg-token button[type=submit]').click();
+  await page.waitForSelector('#toast:has-text("Token saved")');
+  await page.locator('#tg-panel #tg-find:not([disabled])').click();
+  await page.locator('#tg-chats option', { hasText: 'Creativa front desk' }).waitFor({ state: 'attached' });
+  await page.selectOption('#tg-chats', '555111222');
+  assert.equal(await page.inputValue('#tg-chat input[name=telegram_chat_id]'), '555111222');
+  await page.locator('#tg-chat input[name=tgf_contact]').uncheck();
+  await page.locator('#tg-chat button[type=submit]').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await page.locator('#tg-panel .tg-status', { hasText: 'Connected to chat 555111222' }).waitFor();
+  await page.locator('#tg-panel #tg-test').click();
+  await page.waitForSelector('#toast:has-text("Test message sent")');
+  assert.equal(await page.locator('#tg-chat input[name=tgf_contact]').isChecked(), false);
+  ok('Telegram: save a bot token, find the chat, choose forms, send a test');
+
+  // ── spam: mark as spam blocks the sender ──
+  const anonRpc = (form, data) => fetch(`${BASE}/rest/v1/rpc/submit_inquiry`, { method: 'POST',
+    headers: { 'content-type': 'application/json', apikey: 'anon-test-key', authorization: 'Bearer anon-test-key' },
+    body: JSON.stringify({ p_form: form, p_data: data }) });
+  assert.equal((await anonRpc('contact', { 'first-name': 'Prank', 'last-name': 'Caller', email: 'prank@example.com', phone: '305 555 0666', message: 'lol' })).status, 204);
+  await page.reload();
+  await page.click('header nav button[data-view=list]');
+  await page.locator('#rows tr', { hasText: 'Prank Caller' }).click();
+  await drawer.locator('#spam').click();
+  await page.waitForSelector('#toast:has-text("Marked as spam")');
+  assert.equal(await page.locator('#rows tr', { hasText: 'Prank Caller' }).count(), 0);
+  await anonRpc('contact', { 'first-name': 'Prank', 'last-name': 'Again', email: 'PRANK@example.com', message: 'lol' });
+  await anonRpc('waitlist', { parent_name: 'Prank Three', phone: '(305) 555-0666' });
+  await page.reload();
+  await page.click('header nav button[data-view=list]');
+  await page.fill('#f-q', 'Prank');
+  assert.equal(await page.locator('#rows tr[data-id]').count(), 0, 'blocked email and phone cannot send again');
+  await page.fill('#f-q', '');
+  await page.click('header nav button[data-view=staff]');
+  const spam = page.locator('#spam-panel');
+  await spam.locator('#block-rows tr', { hasText: 'prank@example.com' }).waitFor();
+  assert.ok(await spam.locator('#block-rows tr', { hasText: '3055550666' }).count());
+  await spam.locator('#spam-stats', { hasText: 'From a blocked sender 2' }).waitFor();
+  assert.match(await spam.locator('#ts-status').textContent(), /Robot check is off/);
+  await spam.locator('#block-add select[name=kind]').selectOption('phone');
+  await spam.locator('#block-add input[name=value]').fill('+1 (786) 555-0000');
+  await spam.locator('#block-add button[type=submit]').click();
+  await spam.locator('#block-rows tr', { hasText: '7865550000' }).waitFor();
+  await spam.locator('#block-rows tr', { hasText: 'prank@example.com' }).locator('[data-unblock]').click();
+  await page.waitForSelector('#toast:has-text("Unblocked")');
+  await spam.locator('#block-rows tr', { hasText: 'prank@example.com' }).waitFor({ state: 'detached' });
+  await shot(page, '16-settings-telegram-spam');
+  ok('Spam: one tap deletes and blocks email + phone; blocked senders are refused; Settings lists, adds and unblocks');
 
   // ── activated staff, as a non-admin ──
   const p2 = await newPage();

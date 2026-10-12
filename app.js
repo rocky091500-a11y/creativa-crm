@@ -3,9 +3,9 @@
 (() => {
   'use strict';
 
-  const STAGES = ['new', 'contacted', 'tour_scheduled', 'toured', 'waitlisted', 'enrolled', 'lost'];
+  const STAGES = ['new', 'contacted', 'tour_scheduled', 'reschedule', 'toured', 'waitlisted', 'enrolled', 'lost'];
   const STAGE_LABEL = {
-    new: 'New', contacted: 'Contacted', tour_scheduled: 'Tour scheduled', toured: 'Toured',
+    new: 'New', contacted: 'Contacted', tour_scheduled: 'Tour scheduled', reschedule: 'Reschedule', toured: 'Toured',
     waitlisted: 'Waitlisted', enrolled: 'Enrolled', lost: 'Lost',
   };
   const CLOSED = new Set(['enrolled', 'lost']);
@@ -26,8 +26,9 @@
     ['doc_yellow_form', 'Yellow form', 'Yellow'], ['doc_birth_cert', 'Birth certificate', 'Birth cert.']];
   const REG_FEE = { paid: 'Paid', not_paid: 'Not paid', na: 'N/A' };
   const RBT = { yes: 'RBT', in_process: 'RBT in process' };
-  const FUNDING = { private: 'Private pay', sr: 'School Readiness', sr_bpiece: 'SR – BPIECE', fes_ua: 'FES-UA',
-    fes_eo: 'FES-EO', vpk: 'VPK' };
+  // Funding programs a student can be on. A student on none of them is private pay.
+  const PROGRAMS_FUNDING = { sr: 'School Readiness', sr_bpiece: 'SR – BPIECE', fes_ua: 'FES-UA', fes_eo: 'FES-EO', vpk: 'VPK' };
+  const FUNDING = { ...PROGRAMS_FUNDING, private: 'Private pay' };
   const FREQ = { monthly: 'monthly', biweekly: 'biweekly', weekly: 'weekly' };
   // How many payments of each kind make up a month's tuition on the Tuition page.
   const PER_MONTH = { monthly: 1, biweekly: 2, weekly: 4 };
@@ -129,6 +130,7 @@
     payments: [],
     settings: null,
     hasEnrollment: false, // false until 003_enrollment_finance.sql has been run
+    hasV5: false,         // false until 005_reschedule_telegram_spam.sql has been run
     month: thisMonth(),
     rosterFilters: { q: '', classroom: '', status: 'enrolled', docs: '', funding: '', ...store.get('rosterFilters', {}) },
     tuitionFilters: { q: '', status: '', funding: '' },
@@ -142,6 +144,14 @@
   const canViewFinance = () => isAdmin() || ['view', 'edit'].includes(state.me?.finance);
   const canEditFinance = () => isAdmin() || state.me?.finance === 'edit';
   const classroomName = (id) => state.classrooms.find((c) => c.id === id)?.name || '';
+  // The Reschedule stage exists once 005_reschedule_telegram_spam.sql has been run.
+  const stages = () => (state.hasV5 ? STAGES : STAGES.filter((s) => s !== 'reschedule'));
+  // A student's funding programs, or ['private'] when they are on none.
+  function fundingOf(sid) {
+    const programs = (state.finance[sid]?.funding || []).filter((k) => PROGRAMS_FUNDING[k]);
+    return programs.length ? programs : ['private'];
+  }
+  const hasFunding = (sid, k) => fundingOf(sid).includes(k);
 
   // ───────────── auth ─────────────
   sb.auth.onAuthStateChange((event, session) => {
@@ -262,6 +272,7 @@
       state.classrooms = c.data;
       state.students = st.data || [];
       state.settings = set.data || null;
+      state.hasV5 = !!state.settings && 'telegram_forms' in state.settings;
       state.finance = Object.fromEntries((f.data || []).map((r) => [r.student_id, r]));
       state.payments = pay.data || [];
     }
@@ -348,7 +359,7 @@
     const programs = [...new Set([...PROGRAMS, ...state.inquiries.map((i) => i.program).filter(Boolean)])];
     return `<div class="toolbar">
       <input type="search" id="f-q" placeholder="Search name, email, phone…" value="${esc(f.q)}">
-      ${withStage ? `<select id="f-stage">${opt('', 'All stages', f.stage)}${STAGES.map((s) => opt(s, STAGE_LABEL[s], f.stage)).join('')}</select>` : ''}
+      ${withStage ? `<select id="f-stage">${opt('', 'All stages', f.stage)}${stages().map((s) => opt(s, STAGE_LABEL[s], f.stage)).join('')}</select>` : ''}
       <select id="f-program">${opt('', 'All programs', f.program)}${programs.map((p) => opt(p, p, f.program)).join('')}</select>
       <select id="f-source">${opt('', 'All sources', f.source)}${Object.entries(SOURCE_LABEL).map(([k, v]) => opt(k, v, f.source)).join('')}</select>
       <select id="f-assigned">${opt('', 'Anyone', f.assigned)}${opt('none', 'Unassigned', f.assigned)}${state.staff.filter((s) => s.active).map((s) => opt(s.id, s.full_name || s.email, f.assigned)).join('')}</select>
@@ -377,8 +388,10 @@
     const due = open.filter((i) => i.next_follow_up && i.next_follow_up <= today)
       .sort((a, b) => a.next_follow_up.localeCompare(b.next_follow_up));
     const now = Date.now(), weekOut = now + 7 * 864e5;
-    const tours = open.filter((i) => i.tour_at && new Date(i.tour_at) >= new Date(today + 'T00:00:00'))
+    const tours = open.filter((i) => i.stage !== 'reschedule' && i.tour_at && new Date(i.tour_at) >= new Date(today + 'T00:00:00'))
       .sort((a, b) => a.tour_at.localeCompare(b.tour_at));
+    const resched = open.filter((i) => i.stage === 'reschedule')
+      .sort((a, b) => (a.tour_at || a.updated_at).localeCompare(b.tour_at || b.updated_at));
     const fresh = open.filter((i) => i.stage === 'new').sort((a, b) => a.created_at.localeCompare(b.created_at));
     const monthStart = today.slice(0, 8) + '01';
     const enrolledMonth = state.inquiries.filter((i) => i.stage === 'enrolled' && localDate(new Date(i.updated_at)) >= monthStart).length;
@@ -406,6 +419,13 @@
           ${tours.map((i) => row(i, `<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>`)).join('')
             || '<p class="empty">No tours scheduled.</p>'}
         </section>
+        ${state.hasV5 ? `<section class="panel" id="resched-panel"><h2>Tours to reschedule</h2>
+          ${resched.map((i) => {
+            const tel = digits(i.phone);
+            return row(i, `<span class="email-status">${i.tour_at ? `<span class="tag due">was ${esc(fmtDateTime(i.tour_at))}</span>` : ''}
+              ${tel ? `<a class="btn small sms" href="tel:${tel}">Call</a><a class="btn small sms" href="sms:${tel}">Text</a>` : ''}</span>`);
+          }).join('') || '<p class="empty">No tours waiting for a new time. Move a family to “Reschedule” on the Pipeline to list them here.</p>'}
+        </section>` : ''}
         <section class="panel"><h2>New inquiries</h2>
           ${fresh.map((i) => row(i, `<span class="muted">${esc(relDays(i.created_at))}</span>`)).join('')
             || '<p class="empty">All caught up.</p>'}
@@ -463,12 +483,13 @@
           : `<span class="tag">follow up ${esc(fmtDate(i.next_follow_up))}</span>`);
     }
     if (i.tour_at && i.stage === 'tour_scheduled') tags.push(`<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>`);
+    if (i.tour_at && i.stage === 'reschedule') tags.push(`<span class="tag due">was ${esc(fmtDateTime(i.tour_at))}</span>`);
     tags.push(`<span class="tag">${esc(SOURCE_LABEL[i.source] || i.source)}</span>`);
     if (i.assigned_to) tags.push(`<span class="tag">${esc(staffName(i.assigned_to))}</span>`);
     return `<div class="card" draggable="true" data-id="${i.id}">
       <select class="move" aria-label="Move ${esc(i.parent_name || 'this family')} to another stage">
         <option value="" selected disabled>Move to…</option>
-        ${STAGES.filter((s) => s !== i.stage).map((s) => `<option value="${s}">${STAGE_LABEL[s]}</option>`).join('')}
+        ${stages().filter((s) => s !== i.stage).map((s) => `<option value="${s}">${STAGE_LABEL[s]}</option>`).join('')}
       </select>
       <div class="name">${esc(i.parent_name || '(no name)')}</div>
       <div class="meta">${esc([i.child_name, ageOf(i.child_dob)].filter(Boolean).join(', '))}${i.program ? ' · ' + esc(i.program) : ''}</div>
@@ -483,6 +504,9 @@
       const reason = prompt(`Why was ${inq.parent_name || 'this family'} lost? (e.g. chose another school, moved, price)`);
       if (!reason || !reason.trim()) return;
       setStage(inq, stage, reason.trim());
+    } else if (stage === 'tour_scheduled' && inq.stage === 'reschedule') {
+      openDrawer(inq.id, { stage, tour_at: null });
+      toast('Pick the new tour date and time, then Save');
     } else if (stage === 'tour_scheduled' && !inq.tour_at) {
       openDrawer(inq.id, { stage });
       toast('Pick the tour date and time, then Save');
@@ -499,7 +523,7 @@
     function drawBoard() {
       const rows = filtered({ includeStage: false });
       $('#f-count').textContent = `${rows.length} inquiries`;
-      $('#board').innerHTML = STAGES.map((s) => {
+      $('#board').innerHTML = stages().map((s) => {
         const items = rows.filter((i) => i.stage === s);
         const shown = CLOSED.has(s) ? items.slice(0, CLOSED_COLUMN_LIMIT) : items;
         return `<section class="col" data-stage="${s}"><h3><span>${STAGE_LABEL[s]}</span><span>${items.length}</span></h3>
@@ -686,7 +710,8 @@
   const fInput = (name, label, value, type = 'text', extra = '') =>
     `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
   const formVal = (form, k) => { const v = form[k].value.trim(); return v === '' ? null : v; };
-  const fundingTags = (sid) => (state.finance[sid]?.funding || []).map((k) => `<span class="tag f-${k}">${esc(FUNDING[k])}</span>`).join('');
+  const fundingTags = (sid) => fundingOf(sid).map((k) => `<span class="tag f-${k}">${esc(FUNDING[k])}</span>`).join('');
+  const fundingText = (sid) => fundingOf(sid).map((k) => FUNDING[k]).join(', ');
   const missingDocs = (s) => DOCS.filter(([k]) => !s[k]);
   const sortStudents = (a, b) => (classSort(a) - classSort(b)) || a.name.localeCompare(b.name);
   function classSort(s) {
@@ -721,10 +746,7 @@
       if (f.classroom && (f.classroom === 'none' ? s.classroom_id : s.classroom_id !== f.classroom)) return false;
       if (f.docs === 'missing' && !missingDocs(s).length) return false;
       if (f.docs === 'complete' && missingDocs(s).length) return false;
-      if (f.funding && canViewFinance()) {
-        const fund = state.finance[s.id]?.funding || [];
-        if (f.funding === 'unset' ? fund.length : !fund.includes(f.funding)) return false;
-      }
+      if (f.funding && canViewFinance() && !hasFunding(s.id, f.funding === 'unset' ? 'private' : f.funding)) return false;
       if (q) {
         const hay = [s.name, s.parent_name, s.parent_email, s.notes, s.therapy, state.finance[s.id]?.award_id].join(' ').toLowerCase();
         if (!hay.includes(q) && !(qd.length >= 3 && digits(s.parent_phone).includes(qd))) return false;
@@ -757,7 +779,7 @@
         <select id="r-classroom">${opt('', 'All classes', f.classroom)}${state.classrooms.map((c) => opt(c.id, c.name, f.classroom)).join('')}${opt('none', 'No class', f.classroom)}</select>
         <select id="r-status">${opt('', 'Every status', f.status)}${Object.entries(STUDENT_STATUS).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
         <select id="r-docs">${opt('', 'Any documents', f.docs)}${opt('missing', 'Missing documents', f.docs)}${opt('complete', 'All documents in', f.docs)}</select>
-        ${fin ? `<select id="r-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding)).join('')}${opt('unset', 'No funding set', f.funding)}</select>` : ''}
+        ${fin ? `<select id="r-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding === 'unset' ? 'private' : f.funding)).join('')}</select>` : ''}
         <span class="spacer"></span>
         <span class="muted small" id="r-count"></span>
         <button class="btn small" id="r-csv" type="button">Download CSV</button>
@@ -796,7 +818,7 @@
           return [s.name, s.dob, classroomName(s.classroom_id), STUDENT_STATUS[s.status], s.start_date, s.withdrawn_on,
             s.parent_name, s.parent_phone, s.parent_email, ...DOCS.map(([k]) => s[k] || 'missing'),
             REG_FEE[s.reg_fee] || '', RBT[s.rbt] || '', s.therapy,
-            ...(fin ? [(fr.funding || []).map((k) => FUNDING[k]).join(', '), fr.award_id, fr.tuition_amount, fr.tuition_amount != null ? FREQ[fr.tuition_frequency] : ''] : []),
+            ...(fin ? [fundingText(s.id), fr.award_id, fr.tuition_amount, fr.tuition_amount != null ? FREQ[fr.tuition_frequency] : ''] : []),
             s.notes];
         }));
     });
@@ -880,7 +902,8 @@
           <label class="full">Notes<textarea name="notes" rows="3">${esc(s.notes)}</textarea></label>
         </div></div>
         ${fin ? `<div class="section"><h3>Funding & tuition</h3>
-          <div class="funding-boxes">${Object.entries(FUNDING).map(([k, v]) => `<label class="pill-check"><input type="checkbox" class="check" name="fund_${k}" ${(fr.funding || []).includes(k) ? 'checked' : ''} ${dis}> ${esc(v)}</label>`).join('')}</div>
+          <div class="funding-boxes">${Object.entries(PROGRAMS_FUNDING).map(([k, v]) => `<label class="pill-check"><input type="checkbox" class="check" name="fund_${k}" ${(fr.funding || []).includes(k) ? 'checked' : ''} ${dis}> ${esc(v)}</label>`).join('')}</div>
+          <p class="muted small fund-hint">No program ticked = <b>Private pay</b>. SR – BPIECE students are also School Readiness.</p>
           <div class="grid2">
             ${fInput('tuition_amount', 'Tuition (family pays)', fr.tuition_amount, 'number', `min="0" step="0.01" inputmode="decimal" ${dis}`)}
             ${fSelect('tuition_frequency', 'Every', Object.entries(FREQ).map(([k, v]) => [k, v[0].toUpperCase() + v.slice(1)]), fr.tuition_frequency, dis)}
@@ -912,6 +935,9 @@
       form[box.dataset.doc].value = box.checked ? (form[box.dataset.doc].value || todayStr()) : '';
     }));
     DOCS.forEach(([k]) => form[k].addEventListener('change', () => { $(`[data-doc="${k}"]`, drawer).checked = !!form[k].value; }));
+    // BPIECE is a kind of School Readiness: ticking it ticks SR, unticking SR unticks it.
+    form.fund_sr_bpiece?.addEventListener('change', () => { if (form.fund_sr_bpiece.checked) form.fund_sr.checked = true; });
+    form.fund_sr?.addEventListener('change', () => { if (!form.fund_sr.checked) form.fund_sr_bpiece.checked = false; });
     $('#st-save', drawer).addEventListener('click', save);
     $('#st-del', drawer)?.addEventListener('click', remove);
     $('#open-inq', drawer)?.addEventListener('click', (e) => { e.preventDefault(); if (!ctl.dirty || confirm('Discard your changes?')) openDrawer(inq.id); });
@@ -935,7 +961,7 @@
         const amount = form.tuition_amount.value.trim();
         if (amount !== '' && !(Number(amount) >= 0)) { form.tuition_amount.focus(); return toast('Tuition must be a number', true); }
         finPatch = {
-          funding: Object.keys(FUNDING).filter((k) => form['fund_' + k].checked),
+          funding: Object.keys(PROGRAMS_FUNDING).filter((k) => form['fund_' + k].checked || (k === 'sr' && form.fund_sr_bpiece.checked)),
           tuition_amount: amount === '' ? null : round2(amount),
           tuition_frequency: form.tuition_frequency.value,
           award_id: formVal(form, 'award_id'),
@@ -1004,7 +1030,6 @@
     const m = p ? p.covers_month.slice(0, 7) : (month || thisMonth());
     const due = sid ? monthDue(sid) : null;
     const suggested = p ? p.amount : due != null ? Math.max(round2(due - paidFor(sid, m)), 0) || '' : '';
-    const fund = (sid && state.finance[sid]?.funding) || [];
     const payer = p ? p.payer : 'parent';
     const students = state.students.filter((s) => s.status !== 'waitlist' || s.id === sid).sort((a, b) => a.name.localeCompare(b.name));
     const st = state.students.find((s) => s.id === sid);
@@ -1038,7 +1063,7 @@
     form.student_id.addEventListener('change', hint);
     form.covers_month.addEventListener('change', hint);
     hint();
-    if (!p && fund.length && !fund.includes('private')) $('#pay-hint', drawer).append(' Funding: ' + fund.map((k) => FUNDING[k]).join(', ') + '.');
+    if (!p && sid && !hasFunding(sid, 'private')) $('#pay-hint', drawer).append(' Funding: ' + fundingText(sid) + '.');
     (sid ? form.amount : form.student_id).focus();
     $('#pay-save', drawer).addEventListener('click', () => save(false));
     $('#pay-save-print', drawer).addEventListener('click', () => save(true));
@@ -1078,29 +1103,35 @@
 
   const longDate = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
+  const schoolYear = (ym) => { const [y, m] = ym.split('-').map(Number); const a = m >= 8 ? y : y - 1; return `${a} – ${a + 1}`; };
+
+  // Laid out like the school's Programs & Hours sheet: logo band, section headings, beige table
+  // headers, a rounded scholarship box and the address line at the foot of the page.
   function receiptHtml(p) {
     const s = state.students.find((x) => x.id === p.student_id) || { name: '' };
     const f = state.finance[p.student_id] || {};
     const set = state.settings || {};
     const from = p.payer === 'parent' ? (s.parent_name || `Family of ${s.name}`) : PAYER[p.payer];
+    const programs = fundingOf(p.student_id).filter((k) => k !== 'private');
+    const programLabel = programs.map((k) => (k === 'fes_ua' ? 'FES-UA (Unique Abilities)' : FUNDING[k])).join(' · ');
     return `<article class="receipt">
-      <header><img src="/assets/logo.png" alt="">
-        <div class="r-school"><h1>${esc(set.school_name || 'Creativa Academy')}</h1><div class="pre">${esc(set.receipt_header || '')}</div></div>
-        <div class="r-no"><b>Receipt</b><span>No. ${esc(p.receipt_no)}</span></div></header>
-      <dl>
-        <dt>Date received</dt><dd>${esc(longDate(p.paid_on))}</dd>
-        <dt>Received from</dt><dd>${esc(from)}</dd>
-        <dt>Student</dt><dd>${esc(s.name)}${s.dob ? ` · born ${esc(longDate(s.dob))}` : ''}</dd>
-        ${s.classroom_id ? `<dt>Class</dt><dd>${esc(classroomName(s.classroom_id))}</dd>` : ''}
-        ${f.award_id ? `<dt>Scholarship / award ID</dt><dd>${esc(f.award_id)}</dd>` : ''}
-        ${(f.funding || []).length ? `<dt>Program</dt><dd>${esc(f.funding.map((k) => FUNDING[k]).join(', '))}</dd>` : ''}
-      </dl>
-      <table><thead><tr><th>Description</th><th class="num">Amount</th></tr></thead>
-        <tbody><tr><td>Tuition for ${esc(fmtMonth(p.covers_month.slice(0, 7)))}${p.note ? `<div class="r-note">${esc(p.note)}</div>` : ''}</td>
-          <td class="num">${money(p.amount)}</td></tr></tbody>
-        <tfoot><tr><th>Total received</th><th class="num">${money(p.amount)}</th></tr></tfoot></table>
-      <p class="r-method">Payment method: ${esc(METHOD[p.method])}${p.reference ? ` (${esc(p.reference)})` : ''}</p>
+      <header class="r-band"><img src="/assets/logo.png" alt="${esc(set.school_name || 'Creativa Academy')}">
+        <div class="r-title"><h1>Payment Receipt</h1><span class="r-year">School year ${esc(schoolYear(p.covers_month.slice(0, 7)))}</span></div></header>
+      <p class="r-intro"><span>Receipt No. <b>${esc(p.receipt_no)}</b></span><span>Date <b>${esc(longDate(p.paid_on))}</b></span></p>
+      <h2 class="r-h">Student</h2>
+      <table class="r-table"><thead><tr><th>Student</th><th>Date of birth</th><th>Class</th><th>Received from</th></tr></thead>
+        <tbody><tr><td>${esc(s.name)}</td><td>${esc(s.dob ? longDate(s.dob) : '')}</td>
+          <td>${esc(classroomName(s.classroom_id))}</td><td>${esc(from)}</td></tr></tbody></table>
+      <h2 class="r-h">Payment</h2>
+      <table class="r-table"><thead><tr><th>Description</th><th>Date received</th><th>Method</th><th class="num">Amount</th></tr></thead>
+        <tbody><tr><td>Tuition — ${esc(fmtMonth(p.covers_month.slice(0, 7)))}${p.note ? `<div class="r-note">${esc(p.note)}</div>` : ''}</td>
+          <td>${esc(longDate(p.paid_on))}</td><td>${esc(METHOD[p.method])}${p.reference ? `<div class="r-note">${esc(p.reference)}</div>` : ''}</td>
+          <td class="num"><b>${money(p.amount)}</b></td></tr></tbody>
+        <tfoot><tr><th colspan="3">Total received</th><th class="num">${money(p.amount)}</th></tr></tfoot></table>
+      ${programs.length || f.award_id ? `<div class="r-box"><h3>${esc(programLabel || 'Scholarship')}</h3>
+        ${f.award_id ? `<p>Scholarship / award ID <b>${esc(f.award_id)}</b></p>` : ''}</div>` : ''}
       <div class="r-sign"><span class="r-line"></span><span>${esc(set.receipt_signer || 'Authorized signature')}</span></div>
+      <footer class="r-foot">${esc(set.receipt_header || '')}</footer>
     </article>`;
   }
 
@@ -1187,13 +1218,13 @@
       $('#' + id, el).addEventListener(ev, (e) => { f[k] = e.target.value; draw(); }));
     $('#t-add', el)?.addEventListener('click', () => openPayment({ month: m }));
     $('#t-fes', el).addEventListener('click', () => showReceipts(monthPays
-      .filter((p) => (state.finance[p.student_id]?.funding || []).includes('fes_ua'))
+      .filter((p) => hasFunding(p.student_id, 'fes_ua'))
       .sort((a, b) => (state.students.find((s) => s.id === a.student_id)?.name || '').localeCompare(state.students.find((s) => s.id === b.student_id)?.name || '') || a.receipt_no - b.receipt_no)));
     $('#t-csv', el).addEventListener('click', () => csvDownload(`creativa-tuition-${m}.csv`,
       ['Student', 'Class', 'Funding', 'Award ID', 'Tuition', 'Frequency', 'Due', 'Paid', 'Balance', 'Status'],
       all.map((r) => {
         const fr = state.finance[r.s.id] || {};
-        return [r.s.name, classroomName(r.s.classroom_id), (fr.funding || []).map((k) => FUNDING[k]).join(', '), fr.award_id,
+        return [r.s.name, classroomName(r.s.classroom_id), fundingText(r.s.id), fr.award_id,
           fr.tuition_amount, fr.tuition_amount != null ? FREQ[fr.tuition_frequency] : '', r.due, r.paid, r.balance, TUITION_STATUS[r.status]];
       })));
     $$('#t-pays [data-receipt]', el).forEach((b) => b.addEventListener('click', (e) => {
@@ -1209,7 +1240,7 @@
         if (f.status === 'owing' && !['unpaid', 'partial'].includes(r.status)) return false;
         if (f.status === 'paid' && r.status !== 'paid') return false;
         if (f.status === 'unset' && r.status !== 'unset') return false;
-        if (f.funding && !(state.finance[r.s.id]?.funding || []).includes(f.funding)) return false;
+        if (f.funding && !hasFunding(r.s.id, f.funding)) return false;
         if (q && !`${r.s.name} ${r.s.parent_name || ''}`.toLowerCase().includes(q)) return false;
         return true;
       });
@@ -1284,12 +1315,9 @@
         <p class="muted small">“Received” counts payments by the date they came in; “Paid toward month” by the month they pay for.</p>
       </section>
       <section class="panel"><h2>Funding</h2>
-        <p class="muted small">Enrolled students by funding program. Set funding on each student’s page.</p>
-        ${[...Object.entries(FUNDING), ['unset', 'No funding set']].map(([k, label]) => {
-          const list = enrolled.filter((s) => {
-            const fund = state.finance[s.id]?.funding || [];
-            return k === 'unset' ? !fund.length : fund.includes(k);
-          });
+        <p class="muted small">Enrolled students by funding program; everyone on no program is private pay. Set funding on each student’s page.</p>
+        ${Object.entries(FUNDING).map(([k, label]) => {
+          const list = enrolled.filter((s) => hasFunding(s.id, k));
           return `<details class="fund-group"><summary><b>${esc(label)}</b> <span class="muted">${list.length}</span></summary>
             <ul>${list.map((s) => `<li><a href="#" data-student="${s.id}">${esc(s.name)}</a> <span class="muted small">${esc(classroomName(s.classroom_id))}${state.finance[s.id]?.award_id ? ' · ID ' + esc(state.finance[s.id].award_id) : ''}</span></li>`).join('') || '<li class="muted">None</li>'}</ul></details>`;
         }).join('')}
@@ -1326,7 +1354,7 @@
         <form id="set-receipt" class="grid2">
           ${fInput('school_name', 'School name', set.school_name)}
           ${fInput('receipt_signer', 'Signed by', set.receipt_signer, 'text', 'placeholder="Name, Director"')}
-          <label class="full">Under the name (address, phone, tax ID)<textarea name="receipt_header" rows="3">${esc(set.receipt_header)}</textarea></label>
+          <label class="full">Address line at the bottom (address · phone · email)<textarea name="receipt_header" rows="2">${esc(set.receipt_header)}</textarea></label>
           <div class="full"><button class="btn small primary" type="submit">Save receipt details</button></div>
         </form>
       </section>
@@ -1345,7 +1373,179 @@
           <label class="full">Follow-up email<textarea name="followup_body" rows="9">${esc(set.followup_body)}</textarea></label>
           <div class="full"><button class="btn small primary" type="submit">Save emails</button></div>
         </form>
-      </section>`;
+      </section>
+      ${state.hasV5 ? telegramPanelHtml() + spamPanelHtml() : ''}`;
+  }
+
+  const WEB_FORMS = Object.keys(SOURCE_LABEL).filter((k) => k !== 'manual');
+
+  function telegramPanelHtml() {
+    const set = state.settings || {};
+    const connected = set.telegram_token_set && set.telegram_chat_id;
+    const last = set.telegram_last_at ? ` Last message ${fmtDateTime(set.telegram_last_at)}: ${set.telegram_last_result === 'ok' ? 'delivered' : set.telegram_last_result || '—'}.` : '';
+    return `<section class="panel settings-panel" id="tg-panel"><h2>Telegram alerts</h2>
+      <p class="muted small">Each new website request is sent to Telegram the moment it is saved in the CRM: only after the
+        robot check, and never from blocked senders. Staff-added inquiries are not sent.</p>
+      <p class="small tg-status ${connected ? 'on' : ''}">${connected ? `<b>Connected</b> to chat ${esc(set.telegram_chat_id)}.` : '<b>Not connected yet.</b>'}${esc(last)}</p>
+      <ol class="muted small steps">
+        <li>In Telegram, open <b>@BotFather</b>, send <code>/newbot</code> and follow the steps (or use your existing Creativa bot). Copy the token it gives you.</li>
+        <li>Paste the token below and press <b>Save token</b>.</li>
+        <li>Send any message to your bot (or add the bot to your staff group), then press <b>Find chat</b> and pick the chat.</li>
+        <li>Press <b>Send test</b>. A message should arrive in Telegram.</li>
+      </ol>
+      <form id="tg-token" class="feed-row">
+        <input name="token" type="password" autocomplete="off" spellcheck="false" aria-label="Bot token"
+          placeholder="${set.telegram_token_set ? 'Token saved. Paste a new one to replace it' : '123456789:AAH…'}">
+        <button class="btn small primary" type="submit">Save token</button>
+        ${set.telegram_token_set ? '<button class="btn small danger" type="button" id="tg-remove">Disconnect</button>' : ''}
+      </form>
+      <form id="tg-chat" class="grid2 tg-chat">
+        <label>Chat ID<input name="telegram_chat_id" value="${esc(set.telegram_chat_id)}" placeholder="e.g. 555111222" autocomplete="off"></label>
+        <div class="tg-find"><button class="btn small" type="button" id="tg-find" ${set.telegram_token_set ? '' : 'disabled'}>Find chat</button>
+          <select id="tg-chats" hidden aria-label="Chats that messaged the bot"></select></div>
+        <fieldset class="full tg-forms"><legend>Send alerts for</legend>
+          ${WEB_FORMS.map((k) => `<label class="pill-check"><input type="checkbox" class="check" name="tgf_${k}" ${(set.telegram_forms || []).includes(k) ? 'checked' : ''}> ${esc(SOURCE_LABEL[k])}</label>`).join('')}
+        </fieldset>
+        <div class="full"><button class="btn small primary" type="submit">Save</button>
+          <button class="btn small" type="button" id="tg-test" ${connected ? '' : 'disabled'}>Send test</button></div>
+      </form>
+    </section>`;
+  }
+
+  const BLOCK_REASON = {
+    'missing-input-response': 'No robot check (a bot, or a very old page)',
+    'invalid-input-response': 'Failed the robot check',
+    'timeout-or-duplicate': 'Robot check expired or reused',
+    'blocked-sender': 'From a blocked sender',
+    'too-many-from-device': 'Too many from one device (over 5 an hour)',
+  };
+  const BLOCK_KIND = { email: 'Email', phone: 'Phone', ip: 'Device' };
+
+  function spamPanelHtml() {
+    return `<section class="panel settings-panel" id="spam-panel"><h2>Spam protection</h2>
+      <p class="small" id="ts-status">Robot check: …</p>
+      <p class="muted small">Website requests pass three checks before they reach the CRM: Cloudflare’s robot check, the
+        list of blocked senders below, and a limit of 5 requests an hour from one device. To block someone, open their
+        inquiry and press <b>Spam</b>: it is deleted and their email, phone and device are blocked.</p>
+      <h3 class="sub-h">Stopped in the last 30 days</h3>
+      <div id="spam-stats" class="muted small">Loading…</div>
+      <h3 class="sub-h">Blocked senders</h3>
+      <div class="table-wrap flat"><table class="block-table"><thead><tr><th>Type</th><th>Blocked</th><th>Note</th><th>Since</th><th></th></tr></thead>
+        <tbody id="block-rows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
+      <form id="block-add" class="feed-row block-add">
+        <select name="kind" aria-label="What to block"><option value="email">Email</option><option value="phone">Phone</option></select>
+        <input name="value" placeholder="Email or phone number to block" autocomplete="off" aria-label="Email or phone">
+        <input name="note" placeholder="Note (optional)" aria-label="Note">
+        <button class="btn small" type="submit">Block</button>
+      </form>
+    </section>`;
+  }
+
+  async function bindTelegramPanel(el) {
+    const panel = $('#tg-panel', el);
+    if (!panel) return;
+    const refresh = async () => {
+      const { data } = await sb.from('settings').select('*').eq('id', 1).maybeSingle();
+      if (data) state.settings = data;
+      renderStaff(el);
+    };
+    $('#tg-token', panel).addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const token = e.target.token.value.trim();
+      if (!token) return toast('Paste the bot token from @BotFather first', true);
+      const { error } = await sb.rpc('set_telegram_token', { p_token: token });
+      if (error) return fail(error, 'Could not save the token');
+      toast('Token saved. Now send your bot a message and press Find chat');
+      refresh();
+    });
+    $('#tg-remove', panel)?.addEventListener('click', async () => {
+      if (!confirm('Disconnect Telegram? Alerts stop until a token is saved again.')) return;
+      const { error } = await sb.rpc('set_telegram_token', { p_token: '' });
+      if (error) return fail(error, 'Could not disconnect');
+      toast('Telegram disconnected');
+      refresh();
+    });
+    $('#tg-find', panel).addEventListener('click', async () => {
+      const btn = $('#tg-find', panel);
+      btn.disabled = true;
+      const { data, error } = await sb.rpc('telegram_recent_chats');
+      btn.disabled = false;
+      if (error) return fail(error, 'Could not reach Telegram');
+      const pick = $('#tg-chats', panel);
+      if (!data.length) return toast('No chats yet. Send your bot a message in Telegram, then press Find chat again', true);
+      pick.innerHTML = '<option value="">Pick a chat…</option>' + data.map((c) => `<option value="${esc(c.chat_id)}">${esc(c.title)} (${esc(c.chat_id)})</option>`).join('');
+      pick.hidden = false;
+      pick.onchange = () => { if (pick.value) $('#tg-chat', panel).telegram_chat_id.value = pick.value; };
+      if (data.length === 1) { pick.value = data[0].chat_id; pick.onchange(); }
+    });
+    $('#tg-chat', panel).addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const chat = f.telegram_chat_id.value.trim();
+      if (chat && !/^(-?\d{1,20}|@[A-Za-z0-9_]{4,64})$/.test(chat)) return toast('A chat ID is a number like 555111222 (groups start with -100)', true);
+      const patch = { telegram_chat_id: chat || null, telegram_forms: WEB_FORMS.filter((k) => f['tgf_' + k].checked) };
+      const { data, error } = await sb.from('settings').update(patch).eq('id', 1).select().single();
+      if (error) return fail(error, 'Could not save');
+      state.settings = data;
+      toast('Saved');
+      renderStaff(el);
+    });
+    $('#tg-test', panel).addEventListener('click', async () => {
+      const { data, error } = await sb.rpc('telegram_send_test');
+      if (error) return fail(error, 'Could not send');
+      if (data === 'ok') toast('Test message sent. Check Telegram'); else toast(`Telegram said: ${data}`, true);
+      refresh();
+    });
+  }
+
+  async function bindSpamPanel(el) {
+    const panel = $('#spam-panel', el);
+    if (!panel) return;
+    const since = new Date(Date.now() - 30 * 864e5).toISOString();
+    const count = (reason) => {
+      let q = sb.from('intake_blocked').select('id', { count: 'exact', head: true }).gte('created_at', since);
+      if (reason) q = q.eq('reason', reason);
+      return q;
+    };
+    const [ts, total, list, ...byReason] = await Promise.all([
+      sb.rpc('turnstile_configured'), count(null),
+      sb.from('intake_blocklist').select('*').order('created_at', { ascending: false }),
+      ...Object.keys(BLOCK_REASON).map((r) => count(r)),
+    ]);
+    if (!document.body.contains(panel)) return;
+    $('#ts-status', panel).innerHTML = ts.error ? 'Robot check: unknown.'
+      : ts.data ? '<b class="ok-text">Robot check is on.</b> Bots that skip or fail it are refused.'
+        : '<b class="warn-text">Robot check is off:</b> the secret key isn’t stored yet (see the README, “Are you human” check).';
+    const parts = Object.keys(BLOCK_REASON).map((r, i) => [BLOCK_REASON[r], byReason[i].count || 0]).filter(([, n]) => n);
+    const other = (total.count || 0) - parts.reduce((t, [, n]) => t + n, 0);
+    if (other > 0) parts.push(['Other', other]);
+    $('#spam-stats', panel).innerHTML = total.error ? 'Could not load.' : total.count
+      ? `<b>${total.count}</b> stopped: ${parts.map(([l, n]) => `${esc(l)} <b>${n}</b>`).join(' · ')}` : 'Nothing stopped yet.';
+    const rows = list.data || [];
+    $('#block-rows', panel).innerHTML = rows.map((b) => `<tr data-block="${b.id}"><td>${esc(BLOCK_KIND[b.kind])}</td>
+        <td><code>${esc(b.value)}</code></td><td>${esc(b.note || '')}</td><td>${esc(fmtDate(b.created_at))}</td>
+        <td><button class="btn ghost small" type="button" data-unblock="${b.id}">Unblock</button></td></tr>`).join('')
+      || '<tr><td colspan="5" class="muted">Nobody is blocked.</td></tr>';
+    $$('[data-unblock]', panel).forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('Unblock? They will be able to send website forms again.')) return;
+      const { error } = await sb.from('intake_blocklist').delete().eq('id', b.dataset.unblock);
+      if (error) return fail(error, 'Could not unblock');
+      toast('Unblocked');
+      bindSpamPanel(el);
+    }));
+    const add = $('#block-add', panel);
+    add.onsubmit = async (e) => {
+      e.preventDefault();
+      const kind = add.kind.value, value = add.value.value.trim();
+      if (kind === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) return toast('Enter the email address to block', true);
+      if (kind === 'phone' && digits(value).length < 7) return toast('Enter the phone number to block', true);
+      const { error } = await sb.from('intake_blocklist').insert({ kind, value, note: add.note.value.trim() || null, created_by: state.me.id });
+      if (error) return fail(error, error.code === '23505' ? 'Already blocked' : 'Could not block');
+      add.value.value = '';
+      add.note.value = '';
+      toast('Blocked');
+      bindSpamPanel(el);
+    };
   }
 
   function bindSettingsPanels(el) {
@@ -1383,6 +1583,8 @@
     });
     saveSettings($('#set-receipt', el), ['school_name', 'receipt_signer', 'receipt_header']);
     saveSettings($('#set-emails', el), ['emails_enabled', 'tour_reminder_subject', 'tour_reminder_body', 'followup_subject', 'followup_body']);
+    bindTelegramPanel(el);
+    bindSpamPanel(el);
   }
 
   // ───────────── Inquiry drawer ─────────────
@@ -1424,7 +1626,7 @@
         ${others.length ? `<div class="section panel small"><b>Same family also inquired:</b>
           ${others.map((o) => `<div><a href="#" data-open="${o.id}">${esc(SOURCE_LABEL[o.source] || o.source)}, ${esc(fmtDate(o.created_at))}</a> · ${STAGE_LABEL[o.stage]}</div>`).join('')}</div>` : ''}
         <div class="section"><h3>Pipeline</h3><div class="grid2">
-          <label>Stage${sel('stage', STAGES.map((s) => [s, STAGE_LABEL[s]]), v.stage)}</label>
+          <label>Stage${sel('stage', (stages().includes(v.stage) ? stages() : STAGES).map((s) => [s, STAGE_LABEL[s]]), v.stage)}</label>
           <label>Assigned to${sel('assigned_to', [['', 'Unassigned'], ...state.staff.filter((s) => s.active || s.id === v.assigned_to).map((s) => [s.id, s.full_name || s.email])], v.assigned_to)}</label>
           ${inp('tour_at', 'Tour date & time', 'datetime-local')}
           ${inp('next_follow_up', 'Next follow-up', 'date')}
@@ -1465,6 +1667,7 @@
       </form>
       <div class="drawer-foot">
         ${id && isAdmin() ? '<button class="btn danger" id="del">Delete</button>' : ''}
+        ${id && isAdmin() && state.hasV5 && inq.source !== 'manual' ? '<button class="btn danger" id="spam" title="Delete and block this sender">Spam</button>' : ''}
         <span class="spacer"></span>
         <button class="btn" data-close>Cancel</button>
         <button class="btn primary" id="save">${id ? 'Save' : 'Add inquiry'}</button>
@@ -1484,6 +1687,15 @@
     $$('[data-open]', drawer).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); if (!dirty || confirm('Discard your changes?')) openDrawer(a.dataset.open); }));
     $('#save', drawer).addEventListener('click', save);
     if (id && isAdmin()) $('#del', drawer).addEventListener('click', remove);
+    $('#spam', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Mark ${inq.parent_name || 'this inquiry'} as spam? It is deleted, and its email, phone and device can’t send website forms again. You can unblock them on Settings.`)) return;
+      const { data, error } = await sb.rpc('mark_inquiry_spam', { p_id: id });
+      if (error) return fail(error, 'Could not mark as spam');
+      state.inquiries = state.inquiries.filter((x) => x.id !== id);
+      closeDrawer();
+      renderView();
+      toast(`Marked as spam · ${data} sender detail${data === 1 ? '' : 's'} blocked`);
+    });
     if (id) {
       $('#note-add', drawer).addEventListener('click', addNote);
       loadTimeline();
@@ -1504,6 +1716,10 @@
       if (!patch.parent_name && !patch.child_name) return toast('Add the parent’s or child’s name', true);
       if (!patch.phone && !patch.email) return toast('Add a phone number or email', true);
       if (patch.stage === 'lost' && !patch.lost_reason) { form.lost_reason.focus(); return toast('Add the reason this family was lost', true); }
+      if (patch.stage === 'tour_scheduled' && !patch.tour_at && inq.stage !== 'tour_scheduled') {
+        form.tour_at.focus();
+        return toast('Pick the tour date and time', true);
+      }
       if (patch.stage !== 'lost') patch.lost_reason = null;
       if (state.hasEnrollment) patch.auto_emails = form.auto_emails.checked;
       const btn = $('#save', drawer);

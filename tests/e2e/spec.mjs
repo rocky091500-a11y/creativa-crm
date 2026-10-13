@@ -267,15 +267,42 @@ try {
   ok('no program = Private pay; BPIECE students are also School Readiness');
   await shot(page, '10-enrollment');
 
-  // ── student finance, payment, receipt ──
+  // ── student finance and contacts ──
   await alphaRow.locator('td').first().click();
   await drawer.waitFor();
   assert.ok(await drawer.locator('input[name=fund_fes_ua]').isChecked());
   assert.equal(await drawer.locator('input[name=award_id]').inputValue(), 'TEST-123');
+  assert.equal(await drawer.locator('input[name=billing_program]').inputValue(), 'Preschool Full-Time');
   assert.equal(await drawer.locator('input[data-doc=doc_blue_form]').isChecked(), true);
-  await drawer.locator('#pay-add').click();
-  await drawer.locator('input[name=amount]').waitFor();
-  assert.equal(await drawer.locator('input[name=amount]').inputValue(), '560', 'amount suggests what is still due');
+  await drawer.locator('.contact-list li', { hasText: 'Alpha Parent' }).locator('a[href="tel:3055550101"]').waitFor();
+  await drawer.locator('#contact-add').click();
+  await drawer.locator('select[name=role]').selectOption('secondary');
+  await drawer.locator('input[name=relationship]').fill('Father');
+  await drawer.locator('input[name=first_name]').fill('Beto');
+  await drawer.locator('input[name=last_name]').fill('Alpha');
+  await drawer.locator('input[name=cell_phone]').fill('(786) 555-0102');
+  await drawer.locator('#ct-save').click();
+  await page.waitForSelector('#toast:has-text("Contact saved")');
+  await drawer.locator('.contact-list li', { hasText: 'Beto Alpha' }).locator('a[href="sms:7865550102"]').waitFor();
+  await drawer.locator('.pay-list li', { hasText: 'No invoices yet' }).waitFor();
+  await drawer.locator('[data-close]').first().click();
+  ok('student page: funding, billing item, every contact (add a father) with call and text links');
+
+  // ── tuition: bill the period, record payments, credits ──
+  await page.click('header nav button[data-view=tuition]');
+  const tRow = (name) => page.locator('#t-rows tr', { hasText: name });
+  await tRow('Test Kid Alpha').locator('.pay-pill', { hasText: 'Not billed yet' }).waitFor();
+  assert.equal(await tRow('Walk-in Kid').locator('.pay-pill').textContent(), 'No rate set');
+  await page.click('#t-bill');   // confirm() accepted
+  await page.waitForSelector('#toast:has-text("2 invoices created")');
+  await tRow('Test Kid Alpha').locator('.pay-pill', { hasText: /^(Open|Late)$/ }).waitFor();   // Late once the Friday grace has passed
+  assert.ok(await tRow('Test Kid Beta').locator('td.num', { hasText: '$80.00' }).count(), 'biweekly rate billed once per period');
+  assert.equal(await page.locator('.stat', { hasText: 'Billed this period' }).locator('b').textContent(), '$640.00');
+  assert.equal(await page.locator('#t-bill').count(), 0, 'nothing left to bill');
+
+  await tRow('Test Kid Alpha').locator('[data-pay-inv]').click();
+  await drawer.locator('select[name=invoice_id]').waitFor();
+  assert.equal(await drawer.locator('input[name=amount]').inputValue(), '560', 'amount suggests the invoice balance');
   await drawer.locator('input[name=amount]').fill('300');
   await drawer.locator('select[name=method]').selectOption('zelle');
   await drawer.locator('#pay-save-print').click();
@@ -283,50 +310,60 @@ try {
   await sheet.waitFor();
   assert.ok(await sheet.locator('.receipt', { hasText: 'TEST-123' }).count());
   assert.ok(await sheet.locator('.receipt', { hasText: '$300.00' }).count());
-  assert.ok(await sheet.locator('.receipt', { hasText: '123 Test Street' }).count());
   assert.ok(await sheet.locator('.receipt', { hasText: 'Alpha Parent' }).count());
+  assert.match(await sheet.locator('.receipt .r-table').nth(1).textContent(), /Tuition \(Preschool Full-Time\) — \w+ \d+ – \w+ \d+, \d{4}/);
   assert.match(await sheet.locator('.receipt .r-year').textContent(), /^School year \d{4} – \d{4}$/);
   assert.match(await sheet.locator('.receipt .r-box').textContent(), /FES-UA \(Unique Abilities\)[\s\S]*TEST-123/);
   assert.match(await sheet.locator('.receipt .r-foot').textContent(), /123 Test Street/);
   await shot(page, '11-receipt');
   await page.pdf({ path: path.join(SHOTS, '11-receipt-print.pdf'), format: 'Letter', printBackground: true });   // what Print / Save as PDF gives
   await sheet.locator('#rc-close').click();
-  await drawer.locator('.pay-list li', { hasText: '$300.00' }).waitFor();
-  await drawer.locator('[data-close]').first().click();
-  ok('record a payment from the student page; receipt shows award ID, school header, amount');
-
-  // ── tuition ──
-  await page.click('header nav button[data-view=tuition]');
-  const tRow = (name) => page.locator('#t-rows tr', { hasText: name });
   await tRow('Test Kid Alpha').locator('.pay-pill', { hasText: 'Partly paid' }).waitFor();
-  await tRow('Test Kid Beta').locator('.pay-pill', { hasText: 'Not paid' }).waitFor();
-  assert.ok(await tRow('Test Kid Beta').locator('td', { hasText: '$160.00' }).count(), 'biweekly tuition counts twice a month');
-  assert.equal(await page.locator('.stat', { hasText: 'Still owed' }).locator('b').textContent(), '$420.00');
-  assert.equal(await tRow('Walk-in Kid').locator('.pay-pill').textContent(), 'No tuition set');
-  await tRow('Test Kid Beta').locator('[data-pay-for]').click();
-  await drawer.locator('input[name=amount]').waitFor();
-  await drawer.locator('select[name=payer]').selectOption('sr');
+  assert.ok(await tRow('Test Kid Alpha').locator('td.num', { hasText: '$260.00' }).count());
+  ok('Tuition: bill the period in one tap; a payment pays its invoice; receipt names the billing period');
+
+  await page.click('#t-add');
+  await drawer.locator('select[name=student_id]').selectOption({ label: 'Test Kid Beta · VPK' });
+  await drawer.locator('select[name=invoice_id]').selectOption('');
+  await drawer.locator('input[name=amount]').fill('50');
   await drawer.locator('#pay-save').click();
   await page.waitForSelector('#toast:has-text("Saved · receipt")');
+  await page.locator('#t-credits tr', { hasText: 'Test Kid Beta' }).waitFor();
+  assert.ok((await page.locator('.stat', { hasText: 'Owed, all periods' }).locator('span').textContent()).includes('$50.00 credits'));
+  await page.locator('#t-credits tr', { hasText: 'Test Kid Beta' }).locator('[data-apply]').click();
+  await drawer.locator('select[name=invoice_id]').selectOption({ index: 1 });
+  await drawer.locator('#pay-save').click();
+  await tRow('Test Kid Beta').locator('.pay-pill', { hasText: 'Partly paid' }).waitFor();
+  assert.equal(await page.locator('#t-credits tr[data-pay]').count(), 0, 'credit applied');
+  await tRow('Test Kid Beta').locator('[data-pay-inv]').click();
+  assert.equal(await drawer.locator('input[name=amount]').inputValue(), '30');
+  await drawer.locator('select[name=payer]').selectOption('sr');
+  await drawer.locator('#pay-save').click();
   await tRow('Test Kid Beta').locator('.pay-pill', { hasText: /^Paid$/ }).waitFor();
-  assert.equal(await page.locator('.stat', { hasText: 'Still owed' }).locator('b').textContent(), '$260.00');
+  assert.equal(await page.locator('.stat', { hasText: 'Still owed this period' }).locator('b').textContent(), '$260.00');
+  await page.locator('#t-open tr', { hasText: 'Test Kid Alpha' }).waitFor();
+  assert.equal(await page.locator('#t-open tr[data-inv]').count(), 1, 'only Alpha still owes');
   await page.click('#t-fes');
   await sheet.waitFor();
-  assert.equal(await sheet.locator('.receipt').count(), 1, 'only FES-UA receipts');
+  assert.equal(await sheet.locator('.receipt').count(), 1, 'only FES-UA family receipts');
   await sheet.locator('#rc-close').click();
+  await page.click('#p-next');
+  await tRow('Test Kid Alpha').locator('.pay-pill', { hasText: 'Not billed yet' }).waitFor();
+  await page.click('#p-now');
   await shot(page, '12-tuition');
-  ok('Tuition: who has paid, partial and unpaid, balances; record payment from the list; FES-UA receipts batch');
+  ok('credits: keep a payment as a credit, apply it to an invoice; owed list; FES-UA receipts; next period');
 
   // ── reports ──
   await page.click('header nav button[data-view=reports]');
-  assert.equal(await page.locator('.stat', { hasText: 'Received in' }).locator('b').textContent(), '$460.00');
-  assert.ok(await page.locator('.panel', { hasText: 'By who paid' }).locator('tr', { hasText: 'School Readiness' }).locator('td', { hasText: '$160.00' }).count());
+  assert.equal(await page.locator('.stat', { hasText: 'Received in' }).locator('b').textContent(), '$380.00');
+  assert.equal(await page.locator('.stat', { hasText: 'Billed in the month' }).locator('b').textContent(), '$640.00');
+  assert.ok(await page.locator('.panel', { hasText: 'By who paid' }).locator('tr', { hasText: 'School Readiness' }).locator('td', { hasText: '$30.00' }).count());
   await page.locator('.fund-group summary', { hasText: 'FES-UA' }).click();
   assert.ok(await page.locator('.fund-group', { hasText: 'FES-UA' }).locator('li', { hasText: 'ID TEST-123' }).count());
   const [rdl] = await Promise.all([page.waitForEvent('download'), page.click('#rp-csv')]);
-  assert.equal(fs.readFileSync(await rdl.path(), 'utf8').trim().split(/\r\n/).length, 3);
+  assert.equal(fs.readFileSync(await rdl.path(), 'utf8').trim().split(/\r\n/).length, 4);
   await shot(page, '13-reports');
-  ok('Reports: month total, by payer, funding lists with award IDs, payments CSV');
+  ok('Reports: received and billed in the month, by payer, funding lists with award IDs, payments CSV');
 
   // ── enrolled inquiry → enrollment list ──
   await page.click('header nav button[data-view=list]');
@@ -439,7 +476,7 @@ try {
   await p3.click('header nav button[data-view=tuition]');
   await p3.locator('#t-rows tr', { hasText: 'Test Kid Alpha' }).waitFor();
   assert.equal(await p3.locator('#t-add').count(), 0);
-  assert.equal(await p3.locator('[data-pay-for]').count(), 0);
+  assert.equal(await p3.locator('[data-pay-for], [data-pay-inv], [data-bill-one], #t-bill').count(), 0);
   ok('view-only finance: sees Tuition, cannot record payments');
 
   // ── phone ──

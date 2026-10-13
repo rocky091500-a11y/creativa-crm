@@ -1,2 +1,8 @@
 node_modules/
 .DS_Store
+
+# Real family data (names, phones, scholarship IDs, billing). This repo is public and Netlify
+# publishes the repo root, so it must never be committed. See data/README.md.
+data/*
+!data/README.md
+__pycache__/

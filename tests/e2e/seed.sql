@@ -24,8 +24,10 @@ insert into public.students (name, dob, classroom_id, status, rbt, therapy)
   select 'Test Kid Beta', '2021-09-01', id, 'enrolled', 'yes', 'Speech' from public.classrooms where name = 'VPK';
 insert into public.students (name, classroom_id, status, notes)
   select 'Test Kid Gamma', id, 'waitlist', 'Starting January' from public.classrooms where name = '18–23 months';
-insert into public.student_finance (student_id, funding, tuition_amount, tuition_frequency, award_id)
-  select id, '{fes_ua}', 560, 'monthly', 'TEST-123' from public.students where name = 'Test Kid Alpha';
+insert into public.student_finance (student_id, funding, tuition_amount, tuition_frequency, award_id, billing_program)
+  select id, '{fes_ua}', 560, 'biweekly', 'TEST-123', 'Preschool Full-Time' from public.students where name = 'Test Kid Alpha';
+insert into public.student_contacts (student_id, role, relationship, first_name, last_name, cell_phone)
+  select id, 'primary', 'Mother', 'Alpha', 'Parent', '305 555 0101' from public.students where name = 'Test Kid Alpha';
 insert into public.student_finance (student_id, funding, tuition_amount, tuition_frequency)
   select id, '{sr,vpk}', 80, 'biweekly' from public.students where name = 'Test Kid Beta';
 update public.settings set receipt_header = '123 Test Street, Miami FL', receipt_signer = 'Emily Owner, Director';

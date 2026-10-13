@@ -341,3 +341,20 @@ code { font-size: 12px; background: var(--cream); padding: 1px 5px; border-radiu
   #resched-panel .row { flex-wrap: wrap; }
   #resched-panel .row .when { flex: 1 0 100%; white-space: normal; }
 }
+
+/* billing (006): contacts, invoice statuses */
+.contact-list { list-style: none; margin: 12px 0 8px; padding: 0; }
+.contact-list li { border-top: 1px solid var(--line); padding: 8px 0; font-size: 14px; }
+.contact-list li:first-child { border-top: 0; }
+.contact-list .c-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.contact-list .c-head .btn { margin-left: auto; padding: 2px 8px; font-size: 12px; }
+.contact-list .c-phones { display: flex; gap: 4px 14px; flex-wrap: wrap; color: var(--ink-soft); font-size: 13px; margin-top: 2px; }
+.contact-list .sms-link { font-size: 12px; }
+.bill-family { align-self: end; padding-bottom: 8px; }
+.pay-pill.ps-open { background: #F6E7C8; color: var(--warn); }
+.pay-pill.ps-overdue { background: #F3D9D4; color: var(--danger); }
+.pay-pill.ps-stepup { background: #DDE9EE; color: #3E6373; }
+.pay-pill.ps-not_invoiced { background: var(--cream-deep); color: var(--ink); }
+.pay-pill.ps-not_billed, .pay-pill.ps-void { color: var(--ink-soft); }
+.tag.f-stepup_pending { background: #DDE9EE; color: #3E6373; }
+.panel h2 .muted { font-family: var(--body); font-weight: 500; margin-left: 6px; }

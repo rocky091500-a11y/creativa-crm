@@ -10,8 +10,9 @@ contact form from creativaacademy.com lands here, and staff move each family fro
 - **Inquiry drawer** — call/text/email buttons, every form field, notes & call log, full original submission
 - **Enrollment** — every student by class (enrolled, waiting list, withdrawn), class counts against capacity,
   documents received (registration packet, blue form, yellow form, birth certificate), RBT/therapies, registration fee
-- **Tuition** (finance access) — each month: who has paid, partly paid or owes; record payments; print receipts
-  (one at a time, or every FES-UA receipt for the month at once for reimbursement uploads)
+- **Tuition** (finance access) — biweekly billing: bill everyone for the period in one tap, see who has paid, is late
+  or is Step Up pending, record payments against invoices, keep and apply credits, see everything still owed, and
+  print receipts (one at a time, or every FES-UA receipt for the period at once for reimbursement uploads)
 - **Reports** (finance access) — money received per month, by who paid / method / class, the school year at a
   glance, and who is on School Readiness, SR – BPIECE, FES-UA (with award IDs), FES-EO, VPK or private pay
 - **Settings** (admins) — staff access and finance access, classes and teachers, receipt address line, tour email
@@ -45,7 +46,8 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
-     then `003_enrollment_finance.sql`, `004_turnstile.sql` and `005_reschedule_telegram_spam.sql`, in that order.
+     then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_reschedule_telegram_spam.sql` and
+     `006_billing_contacts.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -143,6 +145,21 @@ so bots are refused whether they use the forms or call the CRM directly. Refusal
 - The website's five forms declare their hidden `bot-field` to Netlify (`netlify-honeypot`), so Netlify's copy also
   drops bots that fill it in.
 
+## Billing (006)
+
+`006_billing_contacts.sql` follows the school's billing rules: each child is invoiced their biweekly rate every other
+Monday (the first billing Monday is 2026-10-05, set in `settings.billing_anchor`), due that day with grace until
+Friday. On **Tuition**, **Bill this period** creates the period's invoices (`create_period_invoices`); it skips
+children already billed, with no rate, marked *not billed to the family* (e.g. FES paid by Step Up), on
+**Step Up (pending)** (Kindergarten awaiting Step Up eligibility: never shown as late), or not enrolled in that period.
+
+- A payment pays one invoice of the same child, or stays a **credit** until someone applies it. Deleting an invoice
+  turns its payments into credits.
+- Each child also has every contact (Primary = mother, Secondary = father, Emergency/Authorized) and a billing
+  family account, so siblings billed together are easy to find.
+- Master data (students, contacts, invoices, credits, open A/R) is loaded with `imports/build_master_import.py`; see
+  `data/README.md`. The data files never go in this repository.
+
 ## Telegram alerts
 
 `005_reschedule_telegram_spam.sql` sends each new website request to Telegram as soon as it is saved: tour
@@ -171,7 +188,7 @@ email. Moving them back to *Tour scheduled* asks for the new date and time.
 ```bash
 # Database rules (intake mapping, spam handling, who can see/change what, calendar feed,
 # roster/finance access, receipts, which tour emails are due, Turnstile, reschedule,
-# Telegram alerts, blocked senders and the per-device limit)
+# Telegram alerts, blocked senders and the per-device limit, billing periods and invoices)
 PGHOST=... PGPORT=... PGUSER=postgres tests/run-db-tests.sh
 
 # Tour email job (fake Supabase and Resend)

@@ -21,6 +21,8 @@ contact form from creativaacademy.com lands here, and staff move each family fro
 - **Tour calendar** — every scheduled tour as a private calendar feed for Google Calendar or phones
 - **Tour emails** — a reminder the day before each tour, and a “how was your visit?” email a week later if
   nobody has heard from the family (English + Spanish)
+- **Tour texts** — the same reminders by text message through Twilio; families' replies land on their timeline,
+  STOP is honored automatically
 
 Plain HTML/CSS/JS, no build step. Data and logins live in Supabase; hosted on Netlify.
 
@@ -120,6 +122,48 @@ One-time setup:
 3. Redeploy. Netlify → Logs → Functions → `tour-emails` shows each run. Without `RESEND_API_KEY` it only logs what it
    would send.
 
+## Tour texts (Twilio)
+
+`supabase/migrations/005_text_reminders.sql` and `netlify/functions/tour-texts.mjs` (hourly) send the tour reminders
+by text too, on the email schedule but only between 9am and 8pm Miami time:
+
+- **Reminder text**: the day before the tour, to every family at *Tour scheduled* with a US phone number.
+- **Follow-up text**: 7–10 days after the tour, only to families with no email address (everyone else gets the
+  follow-up email), and only if nobody has logged a call, email or text with them since — a reply by text counts.
+
+Each text goes once per tour and is logged on the timeline. The per-family switch in the inquiry turns off emails and
+texts together. Admins edit the wording, or switch texts off, on **Settings → Automatic text messages** (off until
+Twilio is ready).
+
+Replies: `netlify/functions/text-inbound.mjs` receives every text sent to the school's Twilio number, checks it really
+came from Twilio, and logs it on that family's timeline. **STOP** (or UNSUBSCRIBE, CANCEL, END, QUIT, PARAR) adds the
+number to `text_opt_outs` and it is never texted automatically again; **START** undoes it. Twilio sends the opt-out
+confirmation itself. With `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` set, every reply (and every STOP) is also
+posted to that Telegram chat, which is free; with `TEXT_FORWARD_TO` set, ordinary replies are also texted on to that phone
+(one more text each).
+
+One-time setup:
+1. **Twilio** — create an account at twilio.com, upgrade it (trial accounts can only text verified numbers) and buy
+   a local Miami number (305/786).
+2. **A2P 10DLC registration** (required by US carriers for business texting; approval takes a few days to a couple
+   of weeks). Twilio Console → Messaging → Regulatory compliance → A2P 10DLC:
+   - **Brand**: Creativa Academy's legal name, EIN, address and website.
+   - **Campaign**: use case *Customer care* (or *Mixed*). Description: “Tour reminders and follow-ups for families who
+     requested a tour of our preschool.” Sample message: the reminder text from Settings.
+     Opt-in: “Parents enter their phone number on the tour, waitlist or contact form at creativaacademy.com, next to a
+     notice that we may text them about their inquiry and tour (link to creativaacademy.com/privacy/).” Opt-out: STOP.
+     Privacy policy: `https://creativaacademy.com/privacy/`.
+   - Create a **Messaging Service**, add the number to it, and link it to the campaign.
+3. In the Messaging Service → **Integration**: “Send a webhook”, Request URL
+   `https://crm.creativaacademy.com/.netlify/functions/text-inbound`, method POST.
+4. **Netlify** → Site configuration → Environment variables (besides `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`):
+   - `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` — Twilio Console → Account info
+   - `TWILIO_MESSAGING_SERVICE_SID` — the Messaging Service (starts with `MG`); or `TWILIO_FROM` = the number
+   - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (optional, free) — the same bot and chat the website uses
+   - `TEXT_FORWARD_TO` (optional) — e.g. the front-desk cell, `+17865550123`
+5. Redeploy, run `005_text_reminders.sql` in the Supabase SQL Editor, then switch texts on in **Settings**.
+   Netlify → Logs → Functions → `tour-texts` shows each run; without the Twilio variables it only logs what it would send.
+
 ## "Are you human" check (Cloudflare Turnstile)
 
 `supabase/migrations/004_turnstile.sql` puts Cloudflare Turnstile in front of website intake:
@@ -187,12 +231,12 @@ email. Moving them back to *Tour scheduled* asks for the new date and time.
 
 ```bash
 # Database rules (intake mapping, spam handling, who can see/change what, calendar feed,
-# roster/finance access, receipts, which tour emails are due, Turnstile, reschedule,
+# roster/finance access, receipts, which tour emails and texts are due, opt-outs, Turnstile, reschedule,
 # Telegram alerts, blocked senders and the per-device limit, billing periods and invoices)
 PGHOST=... PGPORT=... PGUSER=postgres tests/run-db-tests.sh
 
-# Tour email job (fake Supabase and Resend)
-node --test tests/tour-emails.test.mjs
+# Tour email and text jobs, incoming texts (fake Supabase, Resend and Twilio)
+node --test tests/tour-emails.test.mjs tests/tour-texts.test.mjs
 
 # Full browser walkthrough: Postgres + PostgREST + headless Chromium
 POSTGREST=/path/to/postgrest SUPABASE_JS=/path/to/supabase.min.js \

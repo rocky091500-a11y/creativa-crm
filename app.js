@@ -56,6 +56,15 @@
   const money = (n) => moneyFmt.format(Number(n) || 0);
   const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
   const digits = (s) => String(s || '').replace(/\D/g, '');
+  // Same rule as public._e164(): only US numbers get automatic texts.
+  const e164 = (s) => {
+    const d = digits(s);
+    if (d.length === 10 && d[0] >= '2') return '+1' + d;
+    if (d.length === 11 && d[0] === '1' && d[1] >= '2') return '+' + d;
+    return null;
+  };
+  const textsOn = () => state.settings?.texts_enabled === true;
+  const textsStopped = (phone) => { const n = e164(phone); return Boolean(n && state.optOuts?.has(n)); };
 
   function fmtDate(s) {
     if (!s) return '';
@@ -241,7 +250,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay] = await Promise.all([
+    const [p, i, c, st, set, f, pay, oo] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -249,6 +258,7 @@
       sb.from('settings').select('*').maybeSingle(),
       fin ? selectAll('student_finance', 'student_id') : none,
       fin ? selectAll('payments', 'paid_on', false) : none,
+      sb.from('text_opt_outs').select('phone'), // missing until 005_text_reminders.sql is run
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -265,6 +275,7 @@
       state.finance = Object.fromEntries((f.data || []).map((r) => [r.student_id, r]));
       state.payments = pay.data || [];
     }
+    state.optOuts = new Set((oo.error ? [] : oo.data || []).map((r) => r.phone));
     state.loadedAt = Date.now();
   }
 
@@ -432,14 +443,24 @@
         ? `Hi${first ? ' ' + first : ''}! This is Creativa Academy reminding you of your tour tomorrow at ${t}. See you then! / ¡Hola! Le recordamos su visita mañana a las ${t}.`
         : `Hi${first ? ' ' + first : ''}! This is Creativa Academy. Thank you for visiting us! How was your tour? Any questions about enrolling? / ¡Gracias por visitarnos! ¿Cómo le fue en la visita?`;
     };
+    // Automatic text (Twilio job, netlify/functions/tour-texts.mjs): sent, stopped, or queued.
+    const textTag = (i, kind) => {
+      const texted = kind === 'reminder' ? i.reminder_texted_at : i.followup_texted_at;
+      if (texted) return `<span class="tag tour">texted ${esc(fmtDate(texted))}</span>`;
+      if (!textsOn() || i.auto_emails === false || !e164(i.phone)) return '';
+      if (textsStopped(i.phone)) return '<span class="tag">texts stopped</span>';
+      if (kind === 'followup' && i.email && state.settings?.emails_enabled !== false) return '';
+      return `<span class="tag">${kind === 'reminder' ? 'text at 9am' : 'text queued'}</span>`;
+    };
     const status = (i, kind) => {
+      const auto = textTag(i, kind);
       const sent = kind === 'reminder' ? i.tour_reminder_sent_at : i.followup_sent_at;
-      if (sent) return `<span class="tag tour">emailed ${esc(fmtDate(sent))}</span>`;
+      if (sent) return `<span class="tag tour">emailed ${esc(fmtDate(sent))}</span>${auto}`;
       const tel = digits(i.phone);
-      const text = tel ? `<a class="btn small sms" href="sms:${tel}?&body=${encodeURIComponent(smsText(i, kind))}">Text</a>` : '';
-      if (!i.email) return `<span class="tag due">no email</span>${text}`;
-      if (i.auto_emails === false || state.settings?.emails_enabled === false) return `<span class="tag">emails off</span>${text}`;
-      return `<span class="tag">${kind === 'reminder' ? 'email at 9am' : 'email queued'}</span>${text}`;
+      const text = tel && !auto ? `<a class="btn small sms" href="sms:${tel}?&body=${encodeURIComponent(smsText(i, kind))}">Text</a>` : '';
+      if (!i.email) return `${auto || '<span class="tag due">no email</span>'}${text}`;
+      if (i.auto_emails === false || state.settings?.emails_enabled === false) return `<span class="tag">emails off</span>${auto}${text}`;
+      return `<span class="tag">${kind === 'reminder' ? 'email at 9am' : 'email queued'}</span>${auto}${text}`;
     };
     const line = (i, kind) => `<div class="row" data-id="${i.id}"><div class="who"><b>${esc(i.parent_name || '(no name)')}</b>
         <div>${kind === 'reminder' ? 'Tour' : 'Toured'} ${esc(fmtDateTime(i.tour_at))}</div></div>
@@ -449,7 +470,7 @@
       ${reminders.map((i) => line(i, 'reminder')).join('') || '<p class="empty">No tours tomorrow.</p>'}
       <h3 class="sub-h">Toured a week ago: “how was your visit?”</h3>
       ${followups.map((i) => line(i, 'followup')).join('') || '<p class="empty">Nobody to check in with.</p>'}
-      <p class="muted small">The follow-up email is skipped if someone logs a call, email or text with the family after the tour.</p>
+      <p class="muted small">The follow-up is skipped if someone logs a call, email or text with the family after the tour${textsOn() ? ' (a reply by text counts)' : ''}.</p>
     </section>`;
   }
 
@@ -1345,7 +1366,21 @@
           <label class="full">Follow-up email<textarea name="followup_body" rows="9">${esc(set.followup_body)}</textarea></label>
           <div class="full"><button class="btn small primary" type="submit">Save emails</button></div>
         </form>
-      </section>`;
+      </section>
+      ${'texts_enabled' in set ? `<section class="panel settings-panel"><h2>Automatic text messages</h2>
+        <p class="muted small">Sent through Twilio by the hourly text job, between 9am and 8pm: a reminder the day before each
+        tour to every family with a US phone number, and the “how was your visit?” text to families the follow-up email
+        can’t reach (no email address). Same placeholders as the emails. Families who reply STOP are never texted again
+        (${state.optOuts?.size || 0} so far); other replies show on the family’s timeline.</p>
+        <p class="muted small">Keep each text short and end it with “Reply STOP to opt out.” Accented letters (ñ, á, ¿)
+        make a text count as several messages, so it costs a little more.</p>
+        <form id="set-texts" class="grid2">
+          <label class="full pill-check"><input type="checkbox" class="check" name="texts_enabled" ${set.texts_enabled ? 'checked' : ''}> Send automatic tour texts</label>
+          <label class="full">Reminder text<textarea name="tour_reminder_text" rows="4" maxlength="600">${esc(set.tour_reminder_text)}</textarea></label>
+          <label class="full">Follow-up text<textarea name="followup_text" rows="4" maxlength="600">${esc(set.followup_text)}</textarea></label>
+          <div class="full"><button class="btn small primary" type="submit">Save texts</button></div>
+        </form>
+      </section>` : ''}`;
   }
 
   function bindSettingsPanels(el) {
@@ -1373,8 +1408,8 @@
       e.preventDefault();
       const patch = {};
       keys.forEach((k) => { patch[k] = form[k].type === 'checkbox' ? form[k].checked : (form[k].value.trim() || null); });
-      if (['school_name', 'tour_reminder_subject', 'tour_reminder_body', 'followup_subject', 'followup_body'].some((k) => k in patch && !patch[k])) {
-        return toast('Subjects, emails and the school name can’t be empty', true);
+      if (['school_name', 'tour_reminder_subject', 'tour_reminder_body', 'followup_subject', 'followup_body', 'tour_reminder_text', 'followup_text'].some((k) => k in patch && !patch[k])) {
+        return toast('Subjects, emails, texts and the school name can’t be empty', true);
       }
       const { data, error } = await sb.from('settings').update(patch).eq('id', 1).select().single();
       if (error) return fail(error, 'Could not save');
@@ -1383,6 +1418,7 @@
     });
     saveSettings($('#set-receipt', el), ['school_name', 'receipt_signer', 'receipt_header']);
     saveSettings($('#set-emails', el), ['emails_enabled', 'tour_reminder_subject', 'tour_reminder_body', 'followup_subject', 'followup_body']);
+    if ($('#set-texts', el)) saveSettings($('#set-texts', el), ['texts_enabled', 'tour_reminder_text', 'followup_text']);
   }
 
   // ───────────── Inquiry drawer ─────────────
@@ -1430,10 +1466,13 @@
           ${inp('next_follow_up', 'Next follow-up', 'date')}
           <label class="full" id="lost-wrap" ${v.stage === 'lost' ? '' : 'hidden'}>Reason lost${inp('lost_reason', '').replace(/^<label>|<\/label>$/g, '')}</label>
           ${state.hasEnrollment ? `<label class="full pill-check"><input type="checkbox" class="check" name="auto_emails" ${v.auto_emails !== false ? 'checked' : ''}>
-            Automatic tour emails (reminder the day before, check-in a week after)</label>
-            ${inq.tour_reminder_sent_at || inq.followup_sent_at ? `<p class="full muted small">${[
+            Automatic tour ${'texts_enabled' in (state.settings || {}) ? 'emails &amp; texts' : 'emails'} (reminder the day before, check-in a week after)</label>
+            ${inq.tour_reminder_sent_at || inq.followup_sent_at || inq.reminder_texted_at || inq.followup_texted_at || textsStopped(inq.phone) ? `<p class="full muted small">${[
               inq.tour_reminder_sent_at && 'Reminder emailed ' + fmtDateTime(inq.tour_reminder_sent_at),
-              inq.followup_sent_at && 'Follow-up emailed ' + fmtDateTime(inq.followup_sent_at)].filter(Boolean).map(esc).join(' · ')}</p>` : ''}` : ''}
+              inq.reminder_texted_at && 'Reminder texted ' + fmtDateTime(inq.reminder_texted_at),
+              inq.followup_sent_at && 'Follow-up emailed ' + fmtDateTime(inq.followup_sent_at),
+              inq.followup_texted_at && 'Follow-up texted ' + fmtDateTime(inq.followup_texted_at),
+              textsStopped(inq.phone) && 'Replied STOP: no automatic texts'].filter(Boolean).map(esc).join(' · ')}</p>` : ''}` : ''}
         </div>
         ${enrollLink}</div>
         <div class="section"><h3>Parent</h3><div class="grid2">

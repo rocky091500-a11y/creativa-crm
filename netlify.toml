@@ -3,7 +3,7 @@
   publish = "."
   command = ""
 
-# Hourly tour reminder / follow-up emails (see README → Tour emails).
+# Hourly tour reminder / follow-up emails and texts, and incoming texts (see README → Tour emails, Tour texts).
 [functions]
   directory = "netlify/functions"
 

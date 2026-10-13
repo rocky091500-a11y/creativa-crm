@@ -292,6 +292,17 @@ try {
   await page.locator('#set-emails input[name=tour_reminder_subject]').fill('See you tomorrow!');
   await page.locator('#set-emails button[type=submit]').click();
   await page.waitForSelector('#toast:has-text("Saved")');
+  assert.equal(await page.locator('#set-texts input[name=texts_enabled]').isChecked(), false, 'texts start off');
+  await page.locator('#set-texts input[name=texts_enabled]').check();
+  await page.locator('#set-texts textarea[name=tour_reminder_text]').fill('Creativa: tour tomorrow at {tour_time}. Reply STOP to opt out.');
+  const savedTexts = page.waitForResponse((r) => r.url().includes('/settings') && r.request().method() === 'PATCH');
+  await page.locator('#set-texts button[type=submit]').click();
+  assert.equal((await savedTexts).status(), 200);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.click('header nav button[data-view=staff]');
+  assert.equal(await page.locator('#set-texts input[name=texts_enabled]').isChecked(), true);
+  assert.equal(await page.locator('#set-texts textarea[name=tour_reminder_text]').inputValue(), 'Creativa: tour tomorrow at {tour_time}. Reply STOP to opt out.');
+  ok('Settings: automatic texts switch on and their wording saves');
   await page.locator('tr', { hasText: 'teacher@creativaacademy.com' }).locator('select[data-k=finance]').selectOption('view');
   await page.waitForSelector('#toast:has-text("Saved")');
   await page.click('header nav button[data-view=roster]');

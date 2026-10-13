@@ -3,9 +3,9 @@
 (() => {
   'use strict';
 
-  const STAGES = ['new', 'contacted', 'tour_scheduled', 'toured', 'waitlisted', 'enrolled', 'lost'];
+  const STAGES = ['new', 'contacted', 'tour_scheduled', 'reschedule', 'toured', 'waitlisted', 'enrolled', 'lost'];
   const STAGE_LABEL = {
-    new: 'New', contacted: 'Contacted', tour_scheduled: 'Tour scheduled', toured: 'Toured',
+    new: 'New', contacted: 'Contacted', tour_scheduled: 'Tour scheduled', reschedule: 'Reschedule', toured: 'Toured',
     waitlisted: 'Waitlisted', enrolled: 'Enrolled', lost: 'Lost',
   };
   const CLOSED = new Set(['enrolled', 'lost']);
@@ -26,8 +26,15 @@
     ['doc_yellow_form', 'Yellow form', 'Yellow'], ['doc_birth_cert', 'Birth certificate', 'Birth cert.']];
   const REG_FEE = { paid: 'Paid', not_paid: 'Not paid', na: 'N/A' };
   const RBT = { yes: 'RBT', in_process: 'RBT in process' };
-  const FUNDING = { private: 'Private pay', sr: 'School Readiness', sr_bpiece: 'SR – BPIECE', fes_ua: 'FES-UA',
-    fes_eo: 'FES-EO', vpk: 'VPK' };
+  // Funding programs a student can be on. A student on none of them is private pay.
+  const PROGRAMS_FUNDING = { sr: 'School Readiness', sr_bpiece: 'SR – BPIECE', fes_ua: 'FES-UA', fes_eo: 'FES-EO', vpk: 'VPK',
+    stepup_pending: 'Step Up (pending)' };
+  // Biweekly billing (007_billing_contacts.sql)
+  const CONTACT_ROLE = { primary: 'Primary', secondary: 'Secondary', emergency: 'Emergency / authorized' };
+  const INV_STATUS = { paid: 'Paid', partial: 'Partly paid', open: 'Open', overdue: 'Late', void: 'Void',
+    not_invoiced: 'Not billed yet', stepup: 'Step Up pending', not_billed: 'Not billed to family', unset: 'No rate set',
+    none: 'Nothing due' };
+  const FUNDING = { ...PROGRAMS_FUNDING, private: 'Private pay' };
   const FREQ = { monthly: 'monthly', biweekly: 'biweekly', weekly: 'weekly' };
   // How many payments of each kind make up a month's tuition on the Tuition page.
   const PER_MONTH = { monthly: 1, biweekly: 2, weekly: 4 };
@@ -138,6 +145,11 @@
     payments: [],
     settings: null,
     hasEnrollment: false, // false until 003_enrollment_finance.sql has been run
+    hasV5: false,         // false until 006_reschedule_telegram_spam.sql has been run
+    hasV6: false,         // false until 007_billing_contacts.sql has been run
+    invoices: [],
+    contacts: [],
+    period: null,         // billing Monday shown on the Tuition page
     month: thisMonth(),
     rosterFilters: { q: '', classroom: '', status: 'enrolled', docs: '', funding: '', ...store.get('rosterFilters', {}) },
     tuitionFilters: { q: '', status: '', funding: '' },
@@ -151,6 +163,40 @@
   const canViewFinance = () => isAdmin() || ['view', 'edit'].includes(state.me?.finance);
   const canEditFinance = () => isAdmin() || state.me?.finance === 'edit';
   const classroomName = (id) => state.classrooms.find((c) => c.id === id)?.name || '';
+  // The Reschedule stage exists once 006_reschedule_telegram_spam.sql has been run.
+  const stages = () => (state.hasV5 ? STAGES : STAGES.filter((s) => s !== 'reschedule'));
+  // A student's funding programs, or ['private'] when they are on none.
+  function fundingOf(sid) {
+    const programs = (state.finance[sid]?.funding || []).filter((k) => PROGRAMS_FUNDING[k]);
+    if (programs.includes('sr_bpiece') && !programs.includes('sr')) programs.unshift('sr');   // BPIECE is School Readiness
+    return programs.length ? programs : ['private'];
+  }
+  const hasFunding = (sid, k) => fundingOf(sid).includes(k);
+
+  // ── billing periods: every billing_period_days (14) from billing_anchor, a Monday ──
+  const addDays = (d, n) => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + n); return localDate(x); };
+  const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 864e5);
+  const billing = () => ({ anchor: state.settings?.billing_anchor || '2026-10-05', days: state.settings?.billing_period_days || 14 });
+  function periodOf(day) {
+    const { anchor, days } = billing();
+    return addDays(anchor, Math.floor(daysBetween(anchor, day) / days) * days);
+  }
+  const periodEnd = (p) => addDays(p, billing().days - 3);          // Friday of the second week
+  const fmtPeriod = (p) => `${fmtDate(p)} – ${fmtDate(periodEnd(p))}`;
+  const longPeriod = (p) => `${new Date(p + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${longDate(periodEnd(p))}`;
+  const invoicePaid = (inv) => round2(state.payments.filter((x) => x.invoice_id === inv.id).reduce((t, x) => t + Number(x.amount), 0));
+  function invoiceStatus(inv) {
+    if (inv.void) return 'void';
+    const paid = invoicePaid(inv);
+    if (paid >= Number(inv.amount)) return 'paid';
+    if (paid > 0) return 'partial';
+    return todayStr() > addDays(inv.due_date, 4) ? 'overdue' : 'open';   // the billing system allows until Friday
+  }
+  const invoiceBalance = (inv) => (inv.void ? 0 : Math.max(round2(Number(inv.amount) - invoicePaid(inv)), 0));
+  const openInvoices = (sid) => state.invoices.filter((i) => i.student_id === sid && !i.void && invoiceBalance(i) > 0)
+    .sort((a, b) => a.invoice_date.localeCompare(b.invoice_date));
+  const invoiceLabel = (inv) => (inv.kind === 'tuition' ? `${inv.description} · ${fmtPeriod(inv.period_start)}` : `${inv.description} · ${fmtDate(inv.invoice_date)}`);
+  const contactName = (c) => [c.first_name, c.last_name].filter(Boolean).join(' ');
 
   // ───────────── auth ─────────────
   sb.auth.onAuthStateChange((event, session) => {
@@ -250,7 +296,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, oo] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -258,6 +304,8 @@
       sb.from('settings').select('*').maybeSingle(),
       fin ? selectAll('student_finance', 'student_id') : none,
       fin ? selectAll('payments', 'paid_on', false) : none,
+      fin ? selectAll('invoices', 'invoice_date', false) : none,
+      selectAll('student_contacts', 'created_at'),
       sb.from('text_opt_outs').select('phone'), // missing until 005_text_reminders.sql is run
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
@@ -272,6 +320,13 @@
       state.classrooms = c.data;
       state.students = st.data || [];
       state.settings = set.data || null;
+      state.hasV5 = !!state.settings && 'telegram_forms' in state.settings;
+      state.hasV6 = !!state.settings && 'billing_anchor' in state.settings;
+      if (state.hasV6) {
+        for (const [res, what] of [[inv, 'invoices'], [con, 'contacts']]) if (res.error) fail(res.error, `Could not load ${what}`);
+        state.invoices = inv.data || [];
+        state.contacts = con.data || [];
+      }
       state.finance = Object.fromEntries((f.data || []).map((r) => [r.student_id, r]));
       state.payments = pay.data || [];
     }
@@ -359,7 +414,7 @@
     const programs = [...new Set([...PROGRAMS, ...state.inquiries.map((i) => i.program).filter(Boolean)])];
     return `<div class="toolbar">
       <input type="search" id="f-q" placeholder="Search name, email, phone…" value="${esc(f.q)}">
-      ${withStage ? `<select id="f-stage">${opt('', 'All stages', f.stage)}${STAGES.map((s) => opt(s, STAGE_LABEL[s], f.stage)).join('')}</select>` : ''}
+      ${withStage ? `<select id="f-stage">${opt('', 'All stages', f.stage)}${stages().map((s) => opt(s, STAGE_LABEL[s], f.stage)).join('')}</select>` : ''}
       <select id="f-program">${opt('', 'All programs', f.program)}${programs.map((p) => opt(p, p, f.program)).join('')}</select>
       <select id="f-source">${opt('', 'All sources', f.source)}${Object.entries(SOURCE_LABEL).map(([k, v]) => opt(k, v, f.source)).join('')}</select>
       <select id="f-assigned">${opt('', 'Anyone', f.assigned)}${opt('none', 'Unassigned', f.assigned)}${state.staff.filter((s) => s.active).map((s) => opt(s.id, s.full_name || s.email, f.assigned)).join('')}</select>
@@ -388,8 +443,10 @@
     const due = open.filter((i) => i.next_follow_up && i.next_follow_up <= today)
       .sort((a, b) => a.next_follow_up.localeCompare(b.next_follow_up));
     const now = Date.now(), weekOut = now + 7 * 864e5;
-    const tours = open.filter((i) => i.tour_at && new Date(i.tour_at) >= new Date(today + 'T00:00:00'))
+    const tours = open.filter((i) => i.stage !== 'reschedule' && i.tour_at && new Date(i.tour_at) >= new Date(today + 'T00:00:00'))
       .sort((a, b) => a.tour_at.localeCompare(b.tour_at));
+    const resched = open.filter((i) => i.stage === 'reschedule')
+      .sort((a, b) => (a.tour_at || a.updated_at).localeCompare(b.tour_at || b.updated_at));
     const fresh = open.filter((i) => i.stage === 'new').sort((a, b) => a.created_at.localeCompare(b.created_at));
     const monthStart = today.slice(0, 8) + '01';
     const enrolledMonth = state.inquiries.filter((i) => i.stage === 'enrolled' && localDate(new Date(i.updated_at)) >= monthStart).length;
@@ -417,6 +474,13 @@
           ${tours.map((i) => row(i, `<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>`)).join('')
             || '<p class="empty">No tours scheduled.</p>'}
         </section>
+        ${state.hasV5 ? `<section class="panel" id="resched-panel"><h2>Tours to reschedule</h2>
+          ${resched.map((i) => {
+            const tel = digits(i.phone);
+            return row(i, `<span class="email-status">${i.tour_at ? `<span class="tag due">was ${esc(fmtDateTime(i.tour_at))}</span>` : ''}
+              ${tel ? `<a class="btn small sms" href="tel:${tel}">Call</a><a class="btn small sms" href="sms:${tel}">Text</a>` : ''}</span>`);
+          }).join('') || '<p class="empty">No tours waiting for a new time. Move a family to “Reschedule” on the Pipeline to list them here.</p>'}
+        </section>` : ''}
         <section class="panel"><h2>New inquiries</h2>
           ${fresh.map((i) => row(i, `<span class="muted">${esc(relDays(i.created_at))}</span>`)).join('')
             || '<p class="empty">All caught up.</p>'}
@@ -484,12 +548,13 @@
           : `<span class="tag">follow up ${esc(fmtDate(i.next_follow_up))}</span>`);
     }
     if (i.tour_at && i.stage === 'tour_scheduled') tags.push(`<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>`);
+    if (i.tour_at && i.stage === 'reschedule') tags.push(`<span class="tag due">was ${esc(fmtDateTime(i.tour_at))}</span>`);
     tags.push(`<span class="tag">${esc(SOURCE_LABEL[i.source] || i.source)}</span>`);
     if (i.assigned_to) tags.push(`<span class="tag">${esc(staffName(i.assigned_to))}</span>`);
     return `<div class="card" draggable="true" data-id="${i.id}">
       <select class="move" aria-label="Move ${esc(i.parent_name || 'this family')} to another stage">
         <option value="" selected disabled>Move to…</option>
-        ${STAGES.filter((s) => s !== i.stage).map((s) => `<option value="${s}">${STAGE_LABEL[s]}</option>`).join('')}
+        ${stages().filter((s) => s !== i.stage).map((s) => `<option value="${s}">${STAGE_LABEL[s]}</option>`).join('')}
       </select>
       <div class="name">${esc(i.parent_name || '(no name)')}</div>
       <div class="meta">${esc([i.child_name, ageOf(i.child_dob)].filter(Boolean).join(', '))}${i.program ? ' · ' + esc(i.program) : ''}</div>
@@ -504,6 +569,9 @@
       const reason = prompt(`Why was ${inq.parent_name || 'this family'} lost? (e.g. chose another school, moved, price)`);
       if (!reason || !reason.trim()) return;
       setStage(inq, stage, reason.trim());
+    } else if (stage === 'tour_scheduled' && inq.stage === 'reschedule') {
+      openDrawer(inq.id, { stage, tour_at: null });
+      toast('Pick the new tour date and time, then Save');
     } else if (stage === 'tour_scheduled' && !inq.tour_at) {
       openDrawer(inq.id, { stage });
       toast('Pick the tour date and time, then Save');
@@ -520,7 +588,7 @@
     function drawBoard() {
       const rows = filtered({ includeStage: false });
       $('#f-count').textContent = `${rows.length} inquiries`;
-      $('#board').innerHTML = STAGES.map((s) => {
+      $('#board').innerHTML = stages().map((s) => {
         const items = rows.filter((i) => i.stage === s);
         const shown = CLOSED.has(s) ? items.slice(0, CLOSED_COLUMN_LIMIT) : items;
         return `<section class="col" data-stage="${s}"><h3><span>${STAGE_LABEL[s]}</span><span>${items.length}</span></h3>
@@ -707,7 +775,8 @@
   const fInput = (name, label, value, type = 'text', extra = '') =>
     `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
   const formVal = (form, k) => { const v = form[k].value.trim(); return v === '' ? null : v; };
-  const fundingTags = (sid) => (state.finance[sid]?.funding || []).map((k) => `<span class="tag f-${k}">${esc(FUNDING[k])}</span>`).join('');
+  const fundingTags = (sid) => fundingOf(sid).map((k) => `<span class="tag f-${k}">${esc(FUNDING[k])}</span>`).join('');
+  const fundingText = (sid) => fundingOf(sid).map((k) => FUNDING[k]).join(', ');
   const missingDocs = (s) => DOCS.filter(([k]) => !s[k]);
   const sortStudents = (a, b) => (classSort(a) - classSort(b)) || a.name.localeCompare(b.name);
   function classSort(s) {
@@ -742,10 +811,7 @@
       if (f.classroom && (f.classroom === 'none' ? s.classroom_id : s.classroom_id !== f.classroom)) return false;
       if (f.docs === 'missing' && !missingDocs(s).length) return false;
       if (f.docs === 'complete' && missingDocs(s).length) return false;
-      if (f.funding && canViewFinance()) {
-        const fund = state.finance[s.id]?.funding || [];
-        if (f.funding === 'unset' ? fund.length : !fund.includes(f.funding)) return false;
-      }
+      if (f.funding && canViewFinance() && !hasFunding(s.id, f.funding === 'unset' ? 'private' : f.funding)) return false;
       if (q) {
         const hay = [s.name, s.parent_name, s.parent_email, s.notes, s.therapy, state.finance[s.id]?.award_id].join(' ').toLowerCase();
         if (!hay.includes(q) && !(qd.length >= 3 && digits(s.parent_phone).includes(qd))) return false;
@@ -778,7 +844,7 @@
         <select id="r-classroom">${opt('', 'All classes', f.classroom)}${state.classrooms.map((c) => opt(c.id, c.name, f.classroom)).join('')}${opt('none', 'No class', f.classroom)}</select>
         <select id="r-status">${opt('', 'Every status', f.status)}${Object.entries(STUDENT_STATUS).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
         <select id="r-docs">${opt('', 'Any documents', f.docs)}${opt('missing', 'Missing documents', f.docs)}${opt('complete', 'All documents in', f.docs)}</select>
-        ${fin ? `<select id="r-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding)).join('')}${opt('unset', 'No funding set', f.funding)}</select>` : ''}
+        ${fin ? `<select id="r-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding === 'unset' ? 'private' : f.funding)).join('')}</select>` : ''}
         <span class="spacer"></span>
         <span class="muted small" id="r-count"></span>
         <button class="btn small" id="r-csv" type="button">Download CSV</button>
@@ -817,7 +883,7 @@
           return [s.name, s.dob, classroomName(s.classroom_id), STUDENT_STATUS[s.status], s.start_date, s.withdrawn_on,
             s.parent_name, s.parent_phone, s.parent_email, ...DOCS.map(([k]) => s[k] || 'missing'),
             REG_FEE[s.reg_fee] || '', RBT[s.rbt] || '', s.therapy,
-            ...(fin ? [(fr.funding || []).map((k) => FUNDING[k]).join(', '), fr.award_id, fr.tuition_amount, fr.tuition_amount != null ? FREQ[fr.tuition_frequency] : ''] : []),
+            ...(fin ? [fundingText(s.id), fr.award_id, fr.tuition_amount, fr.tuition_amount != null ? FREQ[fr.tuition_frequency] : ''] : []),
             s.notes];
         }));
     });
@@ -860,7 +926,10 @@
     if (!s0) return;
     const s = { ...s0, ...preset };
     const fin = canViewFinance(), finEdit = canEditFinance();
-    const fr = (id && state.finance[id]) || { funding: [], tuition_frequency: 'monthly' };
+    const fr = (id && state.finance[id]) || { funding: [], tuition_frequency: state.hasV6 ? 'biweekly' : 'monthly', bill_family: true };
+    const contacts = id ? state.contacts.filter((c) => c.student_id === id)
+      .sort((a, b) => Object.keys(CONTACT_ROLE).indexOf(a.role) - Object.keys(CONTACT_ROLE).indexOf(b.role)) : [];
+    const invs = id ? state.invoices.filter((i) => i.student_id === id).sort((a, b) => b.invoice_date.localeCompare(a.invoice_date)) : [];
     const pays = id ? state.payments.filter((p) => p.student_id === id).sort((a, b) => b.paid_on.localeCompare(a.paid_on) || b.receipt_no - a.receipt_no) : [];
     const tel = digits(s.parent_phone);
     const inq = s.inquiry_id && state.inquiries.find((i) => i.id === s.inquiry_id);
@@ -893,7 +962,18 @@
           ${fInput('parent_name', 'Parent name', s.parent_name)}
           ${fInput('parent_phone', 'Phone', s.parent_phone, 'tel')}
           ${fInput('parent_email', 'Email', s.parent_email, 'email')}
-        </div></div>
+          ${state.hasV6 ? fInput('family_account', 'Family account (billing)', s.family_account, 'text', 'placeholder="e.g. LOPEZ, MARIA"') : ''}
+        </div>
+        ${state.hasV6 && id ? `<ul class="contact-list">${contacts.map((c) => {
+          const phones = [['Cell', c.cell_phone], ['Text', c.sms_phone], ['Work', c.work_phone], ['Home', c.home_phone]].filter(([, v]) => v);
+          return `<li><div class="c-head"><b>${esc(contactName(c) || '(no name)')}</b>
+              <span class="tag">${esc(CONTACT_ROLE[c.role])}${c.relationship ? ' · ' + esc(c.relationship) : ''}</span>
+              <button class="btn ghost small" type="button" data-contact="${c.id}">Edit</button></div>
+            ${phones.length ? `<div class="c-phones">${phones.map(([l, v]) => `<span>${l} <a href="tel:${digits(v)}">${esc(v)}</a>${l !== 'Work' && l !== 'Home' ? ` <a class="sms-link" href="sms:${digits(v)}">text</a>` : ''}</span>`).join('')}</div>` : ''}
+            ${c.email ? `<div class="c-phones"><a href="mailto:${esc(c.email)}">${esc(c.email)}</a></div>` : ''}
+            ${c.notes ? `<div class="muted small">${esc(c.notes)}</div>` : ''}</li>`;
+        }).join('') || '<li class="muted small">No contacts yet.</li>'}</ul>
+          <button class="btn small" type="button" id="contact-add">+ Add contact</button>` : ''}</div>
         <div class="section"><h3>Support & registration</h3><div class="grid2">
           ${fSelect('rbt', 'RBT', [['', 'No'], ['yes', 'Yes'], ['in_process', 'In process']], s.rbt)}
           ${fInput('therapy', 'Therapies', s.therapy, 'text', 'placeholder="Speech, OT…"')}
@@ -901,18 +981,31 @@
           <label class="full">Notes<textarea name="notes" rows="3">${esc(s.notes)}</textarea></label>
         </div></div>
         ${fin ? `<div class="section"><h3>Funding & tuition</h3>
-          <div class="funding-boxes">${Object.entries(FUNDING).map(([k, v]) => `<label class="pill-check"><input type="checkbox" class="check" name="fund_${k}" ${(fr.funding || []).includes(k) ? 'checked' : ''} ${dis}> ${esc(v)}</label>`).join('')}</div>
+          <div class="funding-boxes">${Object.entries(PROGRAMS_FUNDING).map(([k, v]) => `<label class="pill-check"><input type="checkbox" class="check" name="fund_${k}" ${(fr.funding || []).includes(k) ? 'checked' : ''} ${dis}> ${esc(v)}</label>`).join('')}</div>
+          <p class="muted small fund-hint">No program ticked = <b>Private pay</b>. SR – BPIECE students are also School Readiness.
+            Step Up (pending) = Kindergarten waiting on Step Up: nothing is billed and it doesn’t count as late.</p>
           <div class="grid2">
-            ${fInput('tuition_amount', 'Tuition (family pays)', fr.tuition_amount, 'number', `min="0" step="0.01" inputmode="decimal" ${dis}`)}
+            ${fInput('tuition_amount', state.hasV6 ? 'Rate (family pays)' : 'Tuition (family pays)', fr.tuition_amount, 'number', `min="0" step="0.01" inputmode="decimal" ${dis}`)}
             ${fSelect('tuition_frequency', 'Every', Object.entries(FREQ).map(([k, v]) => [k, v[0].toUpperCase() + v.slice(1)]), fr.tuition_frequency, dis)}
+            ${state.hasV6 ? `${fInput('billing_program', 'Billing item', fr.billing_program, 'text', `placeholder="Preschool Full-Time" ${dis}`)}
+              <label class="pill-check bill-family"><input type="checkbox" class="check" name="bill_family" ${fr.bill_family !== false ? 'checked' : ''} ${dis}>
+                Bill the family every period</label>` : ''}
             ${fInput('award_id', 'Award / scholarship ID', fr.award_id, 'text', dis)}
             <label class="full">Funding notes<textarea name="fin_notes" rows="2" ${dis}>${esc(fr.notes)}</textarea></label>
           </div></div>
+          ${id && state.hasV6 ? `<div class="section"><h3>Invoices</h3>
+            <ul class="pay-list">${invs.map((i) => {
+              const st = invoiceStatus(i);
+              return `<li><span class="p-date">${esc(fmtDate(i.invoice_date))}</span>
+                <span class="p-what">${esc(invoiceLabel(i))}</span><b>${money(i.amount)}</b>
+                <span class="pay-pill ps-${st}">${INV_STATUS[st]}${['partial', 'overdue', 'open'].includes(st) ? ' · ' + money(invoiceBalance(i)) + ' due' : ''}</span>
+                ${finEdit && invoiceBalance(i) > 0 ? `<button class="btn ghost small" type="button" data-pay-inv="${i.id}">Record payment</button>` : ''}</li>`;
+            }).join('') || '<li class="muted">No invoices yet. Bill from the Tuition page.</li>'}</ul></div>` : ''}
           ${id ? `<div class="section"><h3>Payments</h3>
             ${finEdit ? '<button class="btn small" type="button" id="pay-add">+ Record payment</button>' : ''}
             <ul class="pay-list">${pays.map((p) => `<li data-pay="${p.id}">
                 <span class="p-date">${esc(fmtDate(p.paid_on))}</span>
-                <span class="p-what">${esc(fmtMonth(p.covers_month.slice(0, 7)))} · ${esc(PAYER[p.payer])} · ${esc(METHOD[p.method])}</span>
+                <span class="p-what">${esc(paymentFor(p))} · ${esc(PAYER[p.payer])} · ${esc(METHOD[p.method])}</span>
                 <b>${money(p.amount)}</b>
                 <button class="btn ghost small" type="button" data-receipt="${p.id}">Receipt #${p.receipt_no}</button>
                 ${finEdit ? `<button class="btn ghost small" type="button" data-edit-pay="${p.id}">Edit</button>` : ''}</li>`).join('')
@@ -933,6 +1026,9 @@
       form[box.dataset.doc].value = box.checked ? (form[box.dataset.doc].value || todayStr()) : '';
     }));
     DOCS.forEach(([k]) => form[k].addEventListener('change', () => { $(`[data-doc="${k}"]`, drawer).checked = !!form[k].value; }));
+    // BPIECE is a kind of School Readiness: ticking it ticks SR, unticking SR unticks it.
+    form.fund_sr_bpiece?.addEventListener('change', () => { if (form.fund_sr_bpiece.checked) form.fund_sr.checked = true; });
+    form.fund_sr?.addEventListener('change', () => { if (!form.fund_sr.checked) form.fund_sr_bpiece.checked = false; });
     $('#st-save', drawer).addEventListener('click', save);
     $('#st-del', drawer)?.addEventListener('click', remove);
     $('#open-inq', drawer)?.addEventListener('click', (e) => { e.preventDefault(); if (!ctl.dirty || confirm('Discard your changes?')) openDrawer(inq.id); });
@@ -943,10 +1039,18 @@
     }));
     $$('[data-receipt]', drawer).forEach((b) => b.addEventListener('click', () =>
       showReceipts(state.payments.filter((p) => p.id === b.dataset.receipt))));
+    $$('[data-pay-inv]', drawer).forEach((b) => b.addEventListener('click', () => {
+      if (!ctl.dirty || confirm('Discard your changes?')) openPayment({ studentId: id, invoiceId: b.dataset.payInv, back });
+    }));
+    $('#contact-add', drawer)?.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openContact({ studentId: id, back }); });
+    $$('[data-contact]', drawer).forEach((b) => b.addEventListener('click', () => {
+      if (!ctl.dirty || confirm('Discard your changes?')) openContact({ contactId: b.dataset.contact, back });
+    }));
 
     async function save() {
       const patch = {};
       STUDENT_FIELDS.forEach((k) => { patch[k] = formVal(form, k); });
+      if (state.hasV6) patch.family_account = formVal(form, 'family_account');
       if (!patch.name) { form.name.focus(); return toast('Add the student’s name', true); }
       if (patch.status === 'withdrawn') patch.withdrawn_on = patch.withdrawn_on || todayStr();
       else { patch.withdrawn_on = null; patch.withdraw_reason = null; }
@@ -956,11 +1060,12 @@
         const amount = form.tuition_amount.value.trim();
         if (amount !== '' && !(Number(amount) >= 0)) { form.tuition_amount.focus(); return toast('Tuition must be a number', true); }
         finPatch = {
-          funding: Object.keys(FUNDING).filter((k) => form['fund_' + k].checked),
+          funding: Object.keys(PROGRAMS_FUNDING).filter((k) => form['fund_' + k].checked || (k === 'sr' && form.fund_sr_bpiece.checked)),
           tuition_amount: amount === '' ? null : round2(amount),
           tuition_frequency: form.tuition_frequency.value,
           award_id: formVal(form, 'award_id'),
           notes: formVal(form, 'fin_notes'),
+          ...(state.hasV6 ? { billing_program: formVal(form, 'billing_program'), bill_family: form.bill_family.checked } : {}),
         };
         const empty = !finPatch.funding.length && finPatch.tuition_amount == null && !finPatch.award_id && !finPatch.notes;
         if (empty && !(id && state.finance[id])) finPatch = null;
@@ -983,7 +1088,7 @@
     }
 
     async function remove() {
-      if (pays.length) return toast('This student has payments on record. Set the status to Withdrawn instead.', true);
+      if (pays.length || invs.length) return toast('This student has invoices or payments on record. Set the status to Withdrawn instead.', true);
       if (!confirm(`Delete ${s.name} from the enrollment list? To keep their history, set the status to Withdrawn instead.`)) return;
       const { error } = await sb.from('students').delete().eq('id', id);
       if (error) return fail(error, 'Could not delete');
@@ -1019,29 +1124,47 @@
     return true;
   }
 
-  function openPayment({ studentId, paymentId, month, back }) {
+  // What a payment was for: its invoice, a credit not yet applied, or (before 007) a month.
+  function paymentFor(p) {
+    if (p.invoice_id) {
+      const inv = state.invoices.find((i) => i.id === p.invoice_id);
+      return inv ? invoiceLabel(inv) : 'Invoice';
+    }
+    return state.hasV6 ? 'Credit (not applied)' : fmtMonth(p.covers_month.slice(0, 7));
+  }
+
+  function openPayment({ studentId, paymentId, invoiceId, month, back }) {
     const p = paymentId ? state.payments.find((x) => x.id === paymentId) : null;
     const sid = p ? p.student_id : studentId;
+    const v6 = state.hasV6;
     const m = p ? p.covers_month.slice(0, 7) : (month || thisMonth());
-    const due = sid ? monthDue(sid) : null;
-    const suggested = p ? p.amount : due != null ? Math.max(round2(due - paidFor(sid, m)), 0) || '' : '';
-    const fund = (sid && state.finance[sid]?.funding) || [];
+    // With billing: suggest the chosen (or oldest open) invoice and its balance. Before 007: the month's tuition.
+    const invId = p ? p.invoice_id : invoiceId || (sid && v6 && !month ? openInvoices(sid)[0]?.id : null);
+    const due = sid && !v6 ? monthDue(sid) : null;
+    const inv0 = invId && state.invoices.find((i) => i.id === invId);
+    const suggested = p ? p.amount : inv0 ? invoiceBalance(inv0) || '' : due != null ? Math.max(round2(due - paidFor(sid, m)), 0) || '' : '';
     const payer = p ? p.payer : 'parent';
     const students = state.students.filter((s) => s.status !== 'waitlist' || s.id === sid).sort((a, b) => a.name.localeCompare(b.name));
     const st = state.students.find((s) => s.id === sid);
+    const invoiceOptions = (studentIdNow) => {
+      const list = state.invoices.filter((i) => i.student_id === studentIdNow && !i.void && (invoiceBalance(i) > 0 || i.id === invId))
+        .sort((a, b) => a.invoice_date.localeCompare(b.invoice_date));
+      return optionsHtml([['', 'None: keep as a credit'], ...list.map((i) => [i.id, `${invoiceLabel(i)} · ${money(invoiceBalance(i))} due`])], invId || '');
+    };
     const ctl = mountDrawer({
       title: p ? `Payment · receipt #${p.receipt_no}` : 'Record payment',
       sub: st ? esc(st.name) : '',
       body: `<div class="section"><div class="grid2">
           <label class="full">Student<select name="student_id" required>${sid ? '' : '<option value="">Choose a student…</option>'}
             ${optionsHtml(students.map((s) => [s.id, `${s.name}${s.classroom_id ? ' · ' + classroomName(s.classroom_id) : ''}`]), sid)}</select></label>
+          ${v6 ? `<label class="full">Pays invoice<select name="invoice_id">${sid ? invoiceOptions(sid) : '<option value="">None: keep as a credit</option>'}</select></label>` : ''}
           ${fInput('amount', 'Amount ($)', suggested, 'number', 'min="0.01" step="0.01" inputmode="decimal" required')}
-          ${fInput('covers_month', 'For the month of', m, 'month', 'required')}
+          ${v6 ? '' : fInput('covers_month', 'For the month of', m, 'month', 'required')}
           ${fInput('paid_on', 'Date received', p ? p.paid_on : todayStr(), 'date', 'required')}
           ${fSelect('payer', 'Paid by', Object.entries(PAYER), payer)}
           ${fSelect('method', 'Method', Object.entries(METHOD), p ? p.method : 'cash')}
           ${fInput('reference', 'Check # / confirmation', p?.reference)}
-          <label class="full">Note (printed on the receipt)<input name="note" value="${esc(p?.note)}" placeholder="e.g. Tuition weeks of Oct 6 and Oct 20"></label>
+          <label class="full">Note (printed on the receipt)<input name="note" value="${esc(p?.note)}" placeholder="e.g. Zelle confirmation 1234"></label>
         </div>
         <p class="muted small" id="pay-hint"></p></div>`,
       foot: `${p ? '<button class="btn danger" id="pay-del" type="button">Delete</button>' : ''}<span class="spacer"></span>
@@ -1051,15 +1174,39 @@
     });
     const { drawer, form } = ctl;
     const hint = () => {
-      const id = form.student_id.value, mo = form.covers_month.value;
+      const id = form.student_id.value;
+      if (v6) {
+        const inv = form.invoice_id.value && state.invoices.find((i) => i.id === form.invoice_id.value);
+        const own = p && inv && p.invoice_id === inv.id ? Number(p.amount) : 0;
+        $('#pay-hint', drawer).textContent = inv
+          ? `${invoiceLabel(inv)}: ${money(inv.amount)} billed, ${money(invoicePaid(inv) - own)} already paid.`
+          : id ? 'Not applied to an invoice: it stays as a credit you can apply later on the Tuition page.' : '';
+        return;
+      }
+      const mo = form.covers_month.value;
       const d = id ? monthDue(id) : null;
       $('#pay-hint', drawer).textContent = id && mo && d != null
         ? `${fmtMonth(mo)}: ${money(d)} due, ${money(paidFor(id, mo) - (p && p.covers_month.slice(0, 7) === mo ? Number(p.amount) : 0))} already paid.` : '';
     };
-    form.student_id.addEventListener('change', hint);
-    form.covers_month.addEventListener('change', hint);
+    form.student_id.addEventListener('change', () => {
+      if (v6) {
+        form.invoice_id.innerHTML = invoiceOptions(form.student_id.value);
+        const first = openInvoices(form.student_id.value)[0];
+        if (first && !p) { form.invoice_id.value = first.id; form.amount.value = invoiceBalance(first); }
+      }
+      hint();
+    });
+    if (v6) {
+      form.invoice_id.addEventListener('change', () => {
+        const inv = state.invoices.find((i) => i.id === form.invoice_id.value);
+        if (inv && !p) form.amount.value = invoiceBalance(inv) || form.amount.value;
+        hint();
+      });
+    } else {
+      form.covers_month.addEventListener('change', hint);
+    }
     hint();
-    if (!p && fund.length && !fund.includes('private')) $('#pay-hint', drawer).append(' Funding: ' + fund.map((k) => FUNDING[k]).join(', ') + '.');
+    if (!p && sid && !hasFunding(sid, 'private')) $('#pay-hint', drawer).append(' Funding: ' + fundingText(sid) + '.');
     (sid ? form.amount : form.student_id).focus();
     $('#pay-save', drawer).addEventListener('click', () => save(false));
     $('#pay-save-print', drawer).addEventListener('click', () => save(true));
@@ -1078,12 +1225,15 @@
       const amount = Number(form.amount.value);
       if (!form.student_id.value) return toast('Choose the student', true);
       if (!(amount > 0)) { form.amount.focus(); return toast('Enter the amount received', true); }
-      if (!/^\d{4}-\d{2}$/.test(form.covers_month.value)) { form.covers_month.focus(); return toast('Pick the month this pays for', true); }
+      if (!v6 && !/^\d{4}-\d{2}$/.test(form.covers_month.value)) { form.covers_month.focus(); return toast('Pick the month this pays for', true); }
       if (!form.paid_on.value) return toast('Enter the date received', true);
+      const inv = v6 && form.invoice_id.value ? state.invoices.find((i) => i.id === form.invoice_id.value) : null;
       const row = {
-        student_id: form.student_id.value, amount: round2(amount), covers_month: form.covers_month.value + '-01',
+        student_id: form.student_id.value, amount: round2(amount),
+        covers_month: v6 ? (inv ? inv.invoice_date : form.paid_on.value).slice(0, 7) + '-01' : form.covers_month.value + '-01',
         paid_on: form.paid_on.value, payer: form.payer.value, method: form.method.value,
         reference: formVal(form, 'reference'), note: formVal(form, 'note'),
+        ...(v6 ? { invoice_id: inv ? inv.id : null } : {}),
       };
       $$('.drawer-foot .btn', drawer).forEach((b) => { b.disabled = true; });
       const q = p ? sb.from('payments').update(row).eq('id', p.id) : sb.from('payments').insert({ ...row, created_by: state.me.id });
@@ -1097,31 +1247,93 @@
     }
   }
 
+  // Contacts: parents, guardians and emergency/authorized pick-up people.
+  function openContact({ studentId, contactId, back }) {
+    const c = contactId ? state.contacts.find((x) => x.id === contactId) : { role: 'primary' };
+    if (!c) return;
+    const sid = c.student_id || studentId;
+    const st = state.students.find((s) => s.id === sid);
+    const ctl = mountDrawer({
+      title: contactId ? esc(contactName(c) || 'Contact') : 'New contact',
+      sub: st ? esc(st.name) : '',
+      body: `<div class="section"><div class="grid2">
+          ${fSelect('role', 'Role', Object.entries(CONTACT_ROLE), c.role)}
+          ${fInput('relationship', 'Relationship', c.relationship, 'text', 'placeholder="Mother, Father, Grandmother…"')}
+          ${fInput('first_name', 'First name', c.first_name)}
+          ${fInput('last_name', 'Last name', c.last_name)}
+          ${fInput('cell_phone', 'Cell phone', c.cell_phone, 'tel')}
+          ${fInput('sms_phone', 'Text (SMS) phone', c.sms_phone, 'tel')}
+          ${fInput('work_phone', 'Work phone', c.work_phone, 'tel')}
+          ${fInput('home_phone', 'Home phone', c.home_phone, 'tel')}
+          ${fInput('email', 'Email', c.email, 'email')}
+          <label class="full">Notes<input name="notes" value="${esc(c.notes)}" placeholder="e.g. Call mom first"></label>
+        </div></div>`,
+      foot: `${contactId ? '<button class="btn danger" id="ct-del" type="button">Remove</button>' : ''}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button>
+        <button class="btn primary" id="ct-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    form.first_name.focus();
+    const done = () => { ctl.dirty = false; renderView(); if (back) back(); else closeDrawer(); };
+    $('#ct-save', drawer).addEventListener('click', async () => {
+      const row = { student_id: sid };
+      ['role', 'relationship', 'first_name', 'last_name', 'cell_phone', 'sms_phone', 'work_phone', 'home_phone', 'email', 'notes']
+        .forEach((k) => { row[k] = formVal(form, k); });
+      if (!row.first_name && !row.last_name) { form.first_name.focus(); return toast('Add the contact’s name', true); }
+      const q = contactId ? sb.from('student_contacts').update(row).eq('id', contactId) : sb.from('student_contacts').insert(row);
+      const { data, error } = await q.select().single();
+      if (error) return fail(error, 'Could not save the contact');
+      state.contacts = [...state.contacts.filter((x) => x.id !== data.id), data];
+      toast('Contact saved');
+      done();
+    });
+    $('#ct-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Remove ${contactName(c) || 'this contact'}?`)) return;
+      const { error } = await sb.from('student_contacts').delete().eq('id', contactId);
+      if (error) return fail(error, 'Could not remove');
+      state.contacts = state.contacts.filter((x) => x.id !== contactId);
+      toast('Contact removed');
+      done();
+    });
+  }
+
   const longDate = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
+  const schoolYear = (ym) => { const [y, m] = ym.split('-').map(Number); const a = m >= 8 ? y : y - 1; return `${a} – ${a + 1}`; };
+
+  function receiptLine(p) {
+    const inv = p.invoice_id && state.invoices.find((i) => i.id === p.invoice_id);
+    if (inv) return inv.kind === 'tuition' ? `Tuition (${inv.description}) — ${longPeriod(inv.period_start)}` : inv.description;
+    return state.hasV6 ? 'Payment on account' : `Tuition — ${fmtMonth(p.covers_month.slice(0, 7))}`;
+  }
+
+  // Laid out like the school's Programs & Hours sheet: logo band, section headings, beige table
+  // headers, a rounded scholarship box and the address line at the foot of the page.
   function receiptHtml(p) {
     const s = state.students.find((x) => x.id === p.student_id) || { name: '' };
     const f = state.finance[p.student_id] || {};
     const set = state.settings || {};
     const from = p.payer === 'parent' ? (s.parent_name || `Family of ${s.name}`) : PAYER[p.payer];
+    const programs = fundingOf(p.student_id).filter((k) => k !== 'private');
+    const programLabel = programs.map((k) => (k === 'fes_ua' ? 'FES-UA (Unique Abilities)' : FUNDING[k])).join(' · ');
     return `<article class="receipt">
-      <header><img src="/assets/logo.png" alt="">
-        <div class="r-school"><h1>${esc(set.school_name || 'Creativa Academy')}</h1><div class="pre">${esc(set.receipt_header || '')}</div></div>
-        <div class="r-no"><b>Receipt</b><span>No. ${esc(p.receipt_no)}</span></div></header>
-      <dl>
-        <dt>Date received</dt><dd>${esc(longDate(p.paid_on))}</dd>
-        <dt>Received from</dt><dd>${esc(from)}</dd>
-        <dt>Student</dt><dd>${esc(s.name)}${s.dob ? ` · born ${esc(longDate(s.dob))}` : ''}</dd>
-        ${s.classroom_id ? `<dt>Class</dt><dd>${esc(classroomName(s.classroom_id))}</dd>` : ''}
-        ${f.award_id ? `<dt>Scholarship / award ID</dt><dd>${esc(f.award_id)}</dd>` : ''}
-        ${(f.funding || []).length ? `<dt>Program</dt><dd>${esc(f.funding.map((k) => FUNDING[k]).join(', '))}</dd>` : ''}
-      </dl>
-      <table><thead><tr><th>Description</th><th class="num">Amount</th></tr></thead>
-        <tbody><tr><td>Tuition for ${esc(fmtMonth(p.covers_month.slice(0, 7)))}${p.note ? `<div class="r-note">${esc(p.note)}</div>` : ''}</td>
-          <td class="num">${money(p.amount)}</td></tr></tbody>
-        <tfoot><tr><th>Total received</th><th class="num">${money(p.amount)}</th></tr></tfoot></table>
-      <p class="r-method">Payment method: ${esc(METHOD[p.method])}${p.reference ? ` (${esc(p.reference)})` : ''}</p>
+      <header class="r-band"><img src="/assets/logo.png" alt="${esc(set.school_name || 'Creativa Academy')}">
+        <div class="r-title"><h1>Payment Receipt</h1><span class="r-year">School year ${esc(schoolYear(p.covers_month.slice(0, 7)))}</span></div></header>
+      <p class="r-intro"><span>Receipt No. <b>${esc(p.receipt_no)}</b></span><span>Date <b>${esc(longDate(p.paid_on))}</b></span></p>
+      <h2 class="r-h">Student</h2>
+      <table class="r-table"><thead><tr><th>Student</th><th>Date of birth</th><th>Class</th><th>Received from</th></tr></thead>
+        <tbody><tr><td>${esc(s.name)}</td><td>${esc(s.dob ? longDate(s.dob) : '')}</td>
+          <td>${esc(classroomName(s.classroom_id))}</td><td>${esc(from)}</td></tr></tbody></table>
+      <h2 class="r-h">Payment</h2>
+      <table class="r-table"><thead><tr><th>Description</th><th>Date received</th><th>Method</th><th class="num">Amount</th></tr></thead>
+        <tbody><tr><td>${esc(receiptLine(p))}${p.note ? `<div class="r-note">${esc(p.note)}</div>` : ''}</td>
+          <td>${esc(longDate(p.paid_on))}</td><td>${esc(METHOD[p.method])}${p.reference ? `<div class="r-note">${esc(p.reference)}</div>` : ''}</td>
+          <td class="num"><b>${money(p.amount)}</b></td></tr></tbody>
+        <tfoot><tr><th colspan="3">Total received</th><th class="num">${money(p.amount)}</th></tr></tfoot></table>
+      ${programs.length || f.award_id ? `<div class="r-box"><h3>${esc(programLabel || 'Scholarship')}</h3>
+        ${f.award_id ? `<p>Scholarship / award ID <b>${esc(f.award_id)}</b></p>` : ''}</div>` : ''}
       <div class="r-sign"><span class="r-line"></span><span>${esc(set.receipt_signer || 'Authorized signature')}</span></div>
+      <footer class="r-foot"><b>${esc(set.school_name || 'Creativa Academy')}</b>${set.receipt_header ? `\n${esc(set.receipt_header)}` : ''}</footer>
     </article>`;
   }
 
@@ -1166,7 +1378,7 @@
     });
   }
 
-  function renderTuition(el) {
+  function renderTuitionMonthly(el) {
     const m = state.month, f = state.tuitionFilters, edit = canEditFinance();
     const all = tuitionRows(m);
     const expected = round2(all.reduce((t, r) => t + (r.due || 0), 0));
@@ -1203,18 +1415,23 @@
           <td class="num">${money(p.amount)}</td><td><button class="btn ghost small" type="button" data-receipt="${p.id}">#${p.receipt_no}</button></td></tr>`).join('')
           || '<tr><td colspan="6" class="muted">No payments recorded for this month yet.</td></tr>'}</tbody></table></div>
       </section>`;
-    bindMonthBar(el, renderTuition);
+    bindMonthBar(el, renderTuitionMonthly);
     [['t-q', 'q', 'input'], ['t-status', 'status', 'change'], ['t-funding', 'funding', 'change']].forEach(([id, k, ev]) =>
       $('#' + id, el).addEventListener(ev, (e) => { f[k] = e.target.value; draw(); }));
     $('#t-add', el)?.addEventListener('click', () => openPayment({ month: m }));
-    $('#t-fes', el).addEventListener('click', () => showReceipts(monthPays
-      .filter((p) => (state.finance[p.student_id]?.funding || []).includes('fes_ua'))
-      .sort((a, b) => (state.students.find((s) => s.id === a.student_id)?.name || '').localeCompare(state.students.find((s) => s.id === b.student_id)?.name || '') || a.receipt_no - b.receipt_no)));
+    // Receipts for FES-UA reimbursement: only money the family paid, not payments from Step Up or other programs.
+    $('#t-fes', el).addEventListener('click', () => {
+      const fes = monthPays.filter((p) => hasFunding(p.student_id, 'fes_ua'));
+      const family = fes.filter((p) => p.payer === 'parent');
+      const nameOf = (p) => state.students.find((s) => s.id === p.student_id)?.name || '';
+      showReceipts(family.sort((a, b) => nameOf(a).localeCompare(nameOf(b)) || a.receipt_no - b.receipt_no));
+      if (family.length && fes.length > family.length) toast(`${fes.length - family.length} payment(s) from programs left out (only family payments are reimbursed)`);
+    });
     $('#t-csv', el).addEventListener('click', () => csvDownload(`creativa-tuition-${m}.csv`,
       ['Student', 'Class', 'Funding', 'Award ID', 'Tuition', 'Frequency', 'Due', 'Paid', 'Balance', 'Status'],
       all.map((r) => {
         const fr = state.finance[r.s.id] || {};
-        return [r.s.name, classroomName(r.s.classroom_id), (fr.funding || []).map((k) => FUNDING[k]).join(', '), fr.award_id,
+        return [r.s.name, classroomName(r.s.classroom_id), fundingText(r.s.id), fr.award_id,
           fr.tuition_amount, fr.tuition_amount != null ? FREQ[fr.tuition_frequency] : '', r.due, r.paid, r.balance, TUITION_STATUS[r.status]];
       })));
     $$('#t-pays [data-receipt]', el).forEach((b) => b.addEventListener('click', (e) => {
@@ -1230,7 +1447,7 @@
         if (f.status === 'owing' && !['unpaid', 'partial'].includes(r.status)) return false;
         if (f.status === 'paid' && r.status !== 'paid') return false;
         if (f.status === 'unset' && r.status !== 'unset') return false;
-        if (f.funding && !(state.finance[r.s.id]?.funding || []).includes(f.funding)) return false;
+        if (f.funding && !hasFunding(r.s.id, f.funding)) return false;
         if (q && !`${r.s.name} ${r.s.parent_name || ''}`.toLowerCase().includes(q)) return false;
         return true;
       });
@@ -1254,6 +1471,174 @@
     }
   }
 
+  // ───────────── Tuition, billed every two weeks (007) ─────────────
+  function activeInPeriod(s, p) {
+    if (s.status === 'waitlist') return false;
+    if (s.start_date && s.start_date > periodEnd(p)) return false;
+    if (s.status === 'withdrawn') return !!s.withdrawn_on && s.withdrawn_on >= p;
+    return true;
+  }
+  function billRows(p) {
+    return state.students.filter((s) => activeInPeriod(s, p)).sort(sortStudents).map((s) => {
+      const fr = state.finance[s.id] || {};
+      const inv = state.invoices.find((i) => i.student_id === s.id && i.kind === 'tuition' && i.period_start === p && !i.void);
+      let status;
+      if (inv) status = invoiceStatus(inv);
+      else if (hasFunding(s.id, 'stepup_pending')) status = 'stepup';
+      else if (fr.bill_family === false) status = 'not_billed';
+      else if (fr.tuition_amount == null) status = 'unset';
+      else if (Number(fr.tuition_amount) === 0) status = 'none';
+      else status = 'not_invoiced';
+      const paid = inv ? invoicePaid(inv) : 0;
+      return { s, fr, inv, status, paid, balance: inv ? invoiceBalance(inv) : 0 };
+    });
+  }
+  const periodAmount = (fr) => round2(Number(fr.tuition_amount) * (fr.tuition_frequency === 'weekly' ? 2 : 1));
+
+  function renderTuition(el) {
+    if (!state.hasV6) return renderTuitionMonthly(el);
+    const p = state.period || (state.period = periodOf(todayStr()));
+    const f = state.tuitionFilters, edit = canEditFinance();
+    const rows = billRows(p);
+    const billed = round2(rows.reduce((t, r) => t + (r.inv ? Number(r.inv.amount) : 0), 0));
+    const paidP = round2(rows.reduce((t, r) => t + r.paid, 0));
+    const owedP = round2(rows.reduce((t, r) => t + r.balance, 0));
+    const open = state.invoices.filter((i) => !i.void && invoiceBalance(i) > 0).sort((a, b) => a.due_date.localeCompare(b.due_date));
+    const credits = state.payments.filter((x) => !x.invoice_id).sort((a, b) => a.paid_on.localeCompare(b.paid_on));
+    const owedAll = round2(open.reduce((t, i) => t + invoiceBalance(i), 0));
+    const creditAll = round2(credits.reduce((t, x) => t + Number(x.amount), 0));
+    const toBill = rows.filter((r) => r.status === 'not_invoiced').length;
+    const periodPays = state.payments.filter((x) => x.paid_on >= p && x.paid_on < addDays(p, billing().days))
+      .sort((a, b) => a.paid_on.localeCompare(b.paid_on) || a.receipt_no - b.receipt_no);
+    const nameOf = (sid) => state.students.find((s) => s.id === sid)?.name || '';
+    const familyOf = (sid) => state.students.find((s) => s.id === sid)?.family_account || '';
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+    const late = (i) => { const d = daysBetween(i.due_date, todayStr()); return d <= 0 ? 'current' : d <= 30 ? '1–30 days' : d <= 60 ? '31–60 days' : d <= 90 ? '61–90 days' : 'over 90 days'; };
+    el.innerHTML = `<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period">‹</button>
+        <b>${esc(fmtPeriod(p))}, ${p.slice(0, 4)}</b>
+        <button class="btn small" id="p-next" type="button" aria-label="Next billing period">›</button>
+        ${p !== periodOf(todayStr()) ? '<button class="btn small ghost" id="p-now" type="button">This period</button>' : ''}
+        <span class="muted small">Billed Monday ${esc(fmtDate(p))}, due that day (grace until Friday ${esc(fmtDate(addDays(p, 4)))}).</span></div>
+      <div class="stats">
+        <div class="stat"><b>${money(billed)}</b><span>Billed this period</span></div>
+        <div class="stat"><b>${money(paidP)}</b><span>Paid on this period’s invoices</span></div>
+        <div class="stat"><b>${money(owedP)}</b><span>Still owed this period</span></div>
+        <div class="stat"><b>${money(round2(owedAll - creditAll))}</b><span>Owed, all periods (less ${money(creditAll)} credits)</span></div>
+      </div>
+      <div class="toolbar">
+        <input type="search" id="t-q" placeholder="Search student or family…" value="${esc(f.q)}">
+        <select id="t-status">${opt('', 'Everyone', f.status)}${opt('owing', 'Owes money', f.status)}${opt('paid', 'Paid', f.status)}${opt('not_invoiced', 'Not billed yet', f.status)}${opt('stepup', 'Step Up pending', f.status)}${opt('unset', 'No rate set', f.status)}</select>
+        <select id="t-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding)).join('')}</select>
+        <span class="spacer"></span>
+        ${edit && toBill ? `<button class="btn small primary" id="t-bill" type="button">Bill this period (${toBill})</button>` : ''}
+        <button class="btn small" id="t-fes" type="button">Print FES-UA receipts</button>
+        <button class="btn small" id="t-csv" type="button">Download CSV</button>
+        ${edit ? '<button class="btn small" id="t-add" type="button">+ Record payment</button>' : ''}
+      </div>
+      <div class="table-wrap"><table class="tuition"><thead><tr>
+        <th>Student</th><th>Funding</th><th class="num">Rate</th><th class="num">Billed</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th>${edit ? '<th></th>' : ''}
+      </tr></thead><tbody id="t-rows"></tbody></table></div>
+      <p class="muted small">Each child is billed their biweekly rate on the billing Monday. Step Up (pending) children aren’t billed and
+        aren’t late. Set the rate, billing item and funding on each child’s page.</p>
+      <section class="panel"><h2>Owed from all periods <span class="muted small">${money(owedAll)}</span></h2>
+        <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Student</th><th>For</th><th>Due</th><th class="num">Balance</th><th>Late</th></tr></thead>
+        <tbody id="t-open">${open.map((i) => `<tr data-inv="${i.id}" data-sid="${i.student_id}"><td>${esc(familyOf(i.student_id))}</td><td>${esc(nameOf(i.student_id))}</td>
+          <td>${esc(invoiceLabel(i))}</td><td>${esc(fmtDate(i.due_date))}</td><td class="num">${money(invoiceBalance(i))}</td>
+          <td>${hasFunding(i.student_id, 'stepup_pending') ? '<span class="pay-pill ps-stepup">Step Up pending</span>' : `<span class="pay-pill ${late(i) === 'current' ? 'ps-open' : 'ps-overdue'}">${late(i)}</span>`}</td></tr>`).join('')
+          || '<tr><td colspan="6" class="muted">Nobody owes anything.</td></tr>'}</tbody></table></div>
+      </section>
+      <section class="panel"><h2>Credits: money not applied to an invoice <span class="muted small">${money(creditAll)}</span></h2>
+        <div class="table-wrap flat"><table><thead><tr><th>Received</th><th>Student</th><th>Method</th><th class="num">Amount</th><th>Note</th>${edit ? '<th></th>' : ''}</tr></thead>
+        <tbody id="t-credits">${credits.map((x) => `<tr data-pay="${x.id}"><td>${esc(fmtDate(x.paid_on))}</td><td>${esc(nameOf(x.student_id))}</td>
+          <td>${esc(METHOD[x.method])}</td><td class="num">${money(x.amount)}</td><td class="small">${esc(x.note || '')}</td>
+          ${edit ? `<td>${openInvoices(x.student_id).length ? `<button class="btn small" type="button" data-apply="${x.id}">Apply</button>` : ''}</td>` : ''}</tr>`).join('')
+          || `<tr><td colspan="${edit ? 6 : 5}" class="muted">No credits.</td></tr>`}</tbody></table></div>
+      </section>
+      <section class="panel"><h2>Payments received ${esc(fmtPeriod(p))}</h2>
+        <div class="table-wrap flat"><table><thead><tr><th>Received</th><th>Student</th><th>For</th><th>Method</th><th class="num">Amount</th><th>Receipt</th></tr></thead>
+        <tbody id="t-pays">${periodPays.map((x) => `<tr data-pay="${x.id}"><td>${esc(fmtDate(x.paid_on))}</td><td>${esc(nameOf(x.student_id))}</td>
+          <td>${esc(paymentFor(x))}</td><td>${esc(METHOD[x.method])}${x.reference ? ` <span class="muted small">${esc(x.reference)}</span>` : ''}</td>
+          <td class="num">${money(x.amount)}</td><td><button class="btn ghost small" type="button" data-receipt="${x.id}">#${x.receipt_no}</button></td></tr>`).join('')
+          || '<tr><td colspan="6" class="muted">No payments received in this period yet.</td></tr>'}</tbody></table></div>
+      </section>`;
+
+    const go = (np) => { state.period = np; renderTuition(el); };
+    $('#p-prev', el).addEventListener('click', () => go(addDays(p, -billing().days)));
+    $('#p-next', el).addEventListener('click', () => go(addDays(p, billing().days)));
+    $('#p-now', el)?.addEventListener('click', () => go(periodOf(todayStr())));
+    [['t-q', 'q', 'input'], ['t-status', 'status', 'change'], ['t-funding', 'funding', 'change']].forEach(([id, k, ev]) =>
+      $('#' + id, el).addEventListener(ev, (e) => { f[k] = e.target.value; draw(); }));
+    $('#t-add', el)?.addEventListener('click', () => openPayment({}));
+    $('#t-bill', el)?.addEventListener('click', async () => {
+      if (!confirm(`Bill ${toBill} ${toBill === 1 ? 'child' : 'children'} for ${fmtPeriod(p)}? Each gets an invoice for their biweekly rate, dated ${fmtDate(p)}.`)) return;
+      const { data, error } = await sb.rpc('create_period_invoices', { p_period: p });
+      if (error) return fail(error, 'Could not create the invoices');
+      const r = await selectAll('invoices', 'invoice_date', false);
+      if (!r.error) state.invoices = r.data;
+      toast(`${data} invoice${data === 1 ? '' : 's'} created for ${fmtPeriod(p)}`);
+      renderTuition(el);
+    });
+    $('#t-fes', el).addEventListener('click', () => {
+      const fes = periodPays.filter((x) => hasFunding(x.student_id, 'fes_ua'));
+      const family = fes.filter((x) => x.payer === 'parent');
+      showReceipts(family.sort((a, b) => nameOf(a.student_id).localeCompare(nameOf(b.student_id)) || a.receipt_no - b.receipt_no));
+      if (family.length && fes.length > family.length) toast(`${fes.length - family.length} payment(s) from programs left out (only family payments are reimbursed)`);
+    });
+    $('#t-csv', el).addEventListener('click', () => csvDownload(`creativa-billing-${p}.csv`,
+      ['Student', 'Family account', 'Class', 'Funding', 'Award ID', 'Rate', 'Billing item', 'Billed', 'Paid', 'Balance', 'Status'],
+      rows.map((r) => [r.s.name, r.s.family_account, classroomName(r.s.classroom_id), fundingText(r.s.id), r.fr.award_id,
+        r.fr.tuition_amount, r.fr.billing_program, r.inv ? r.inv.amount : '', r.paid || '', r.balance || '', INV_STATUS[r.status]])));
+    $$('[data-receipt]', el).forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showReceipts(state.payments.filter((x) => x.id === b.dataset.receipt));
+    }));
+    $$('#t-open tr[data-inv]', el).forEach((tr) => tr.addEventListener('click', () => {
+      if (edit) openPayment({ studentId: tr.dataset.sid, invoiceId: tr.dataset.inv }); else openStudent(tr.dataset.sid);
+    }));
+    $$('[data-apply]', el).forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); openPayment({ paymentId: b.dataset.apply }); }));
+    if (edit) $$('#t-pays tr[data-pay], #t-credits tr[data-pay]', el).forEach((tr) => tr.addEventListener('click', () => openPayment({ paymentId: tr.dataset.pay })));
+    draw();
+
+    function draw() {
+      const q = f.q.trim().toLowerCase();
+      const shown = rows.filter((r) => {
+        if (f.status === 'owing' && !(r.balance > 0)) return false;
+        if (f.status && f.status !== 'owing' && r.status !== f.status) return false;
+        if (f.funding && !hasFunding(r.s.id, f.funding)) return false;
+        if (q && !`${r.s.name} ${r.s.parent_name || ''} ${r.s.family_account || ''}`.toLowerCase().includes(q)) return false;
+        return true;
+      });
+      $('#t-rows', el).innerHTML = shown.map((r) => `<tr data-id="${r.s.id}">
+          <td><b>${esc(r.s.name)}</b><div class="muted small">${esc([classroomName(r.s.classroom_id), r.s.family_account].filter(Boolean).join(' · '))}</div></td>
+          <td>${fundingTags(r.s.id)}</td>
+          <td class="num">${r.fr.tuition_amount != null ? `${money(r.fr.tuition_amount)}<div class="muted small">${FREQ[r.fr.tuition_frequency] || ''}</div>` : ''}</td>
+          <td class="num">${r.inv ? money(r.inv.amount) : ''}</td>
+          <td class="num">${r.paid ? money(r.paid) : ''}</td>
+          <td class="num">${r.balance ? money(r.balance) : ''}</td>
+          <td><span class="pay-pill ps-${r.status}">${INV_STATUS[r.status]}</span></td>
+          ${edit ? `<td>${r.inv && r.balance > 0 ? `<button class="btn small" type="button" data-pay-inv="${r.inv.id}">Record payment</button>`
+            : r.status === 'not_invoiced' ? `<button class="btn small" type="button" data-bill-one="${r.s.id}">Bill ${money(periodAmount(r.fr))}</button>`
+              : r.inv ? `<button class="btn small" type="button" data-pay-for="${r.s.id}">+ Payment</button>` : ''}</td>` : ''}</tr>`).join('')
+        || `<tr><td colspan="${edit ? 8 : 7}" class="muted">Nobody matches.</td></tr>`;
+      $$('#t-rows tr[data-id]', el).forEach((tr) => tr.addEventListener('click', async (e) => {
+        const payInv = e.target.closest('[data-pay-inv]'), one = e.target.closest('[data-bill-one]'), payFor = e.target.closest('[data-pay-for]');
+        if (payInv) return openPayment({ studentId: tr.dataset.id, invoiceId: payInv.dataset.payInv });
+        if (payFor) return openPayment({ studentId: tr.dataset.id });
+        if (one) {
+          const r = rows.find((x) => x.s.id === tr.dataset.id);
+          one.disabled = true;
+          const { data, error } = await sb.from('invoices').insert({ student_id: r.s.id, kind: 'tuition', description: r.fr.billing_program || 'Tuition',
+            period_start: p, invoice_date: p, due_date: p, amount: periodAmount(r.fr), created_by: state.me.id }).select().single();
+          if (error) { one.disabled = false; return fail(error, 'Could not create the invoice'); }
+          state.invoices.push(data);
+          toast(`${r.s.name} billed ${money(data.amount)}`);
+          return renderTuition(el);
+        }
+        openStudent(tr.dataset.id);
+      }));
+    }
+  }
+
   // ───────────── Reports ─────────────
   function renderReports(el) {
     const m = state.month;
@@ -1268,9 +1653,13 @@
     const byPayer = sumBy((p) => PAYER[p.payer]);
     const byMethod = sumBy((p) => METHOD[p.method]);
     const byClass = sumBy((p) => classroomName(state.students.find((s) => s.id === p.student_id)?.classroom_id) || 'No class');
-    const expectedFor = (mo) => round2(tuitionRows(mo).reduce((t, r) => t + (r.due || 0), 0));
-    const rowsFor = tuitionRows(m);
-    const owed = round2(rowsFor.reduce((t, r) => t + Math.max(r.balance, 0), 0));
+    // With billing (007): what was actually invoiced in the month and what is still open on it.
+    const monthInvoices = (mo) => state.invoices.filter((i) => !i.void && i.invoice_date >= monthStart(mo) && i.invoice_date <= monthEnd(mo));
+    const expectedFor = (mo) => (state.hasV6 ? round2(monthInvoices(mo).reduce((t, i) => t + Number(i.amount), 0))
+      : round2(tuitionRows(mo).reduce((t, r) => t + (r.due || 0), 0)));
+    const owedFor = (mo) => (state.hasV6 ? round2(monthInvoices(mo).reduce((t, i) => t + invoiceBalance(i), 0))
+      : round2(tuitionRows(mo).reduce((t, r) => t + Math.max(r.balance, 0), 0)));
+    const owed = owedFor(m);
     // School year runs August–July.
     const [y, mo] = m.split('-').map(Number);
     const startYear = mo >= 8 ? y : y - 1;
@@ -1284,7 +1673,7 @@
       <div class="stats">
         <div class="stat"><b>${money(total)}</b><span>Received in ${esc(fmtMonth(m))}</span></div>
         <div class="stat"><b>${pays.length}</b><span>Payments</span></div>
-        <div class="stat"><b>${money(expectedFor(m))}</b><span>Tuition due for the month</span></div>
+        <div class="stat"><b>${money(expectedFor(m))}</b><span>${state.hasV6 ? 'Billed in the month' : 'Tuition due for the month'}</span></div>
         <div class="stat"><b>${money(owed)}</b><span>Still owed for the month</span></div>
       </div>
       <div class="today-grid">
@@ -1293,24 +1682,22 @@
         <section class="panel"><h2>By class</h2><table class="mini"><tbody>${table(byClass)}</tbody></table></section>
       </div>
       <section class="panel report-year"><h2>School year ${startYear}–${String(startYear + 1).slice(2)}</h2>
-        <div class="table-wrap flat"><table><thead><tr><th>Month</th><th class="num">Received</th><th class="num">Tuition due</th><th class="num">Paid toward month</th></tr></thead>
+        <div class="table-wrap flat"><table><thead><tr><th>Month</th><th class="num">Received</th><th class="num">${state.hasV6 ? 'Billed' : 'Tuition due'}</th><th class="num">${state.hasV6 ? 'Still owed' : 'Paid toward month'}</th></tr></thead>
         <tbody>${year.map((ym) => {
           const rec = round2(state.payments.filter((p) => inMonth(p, ym)).reduce((t, p) => t + Number(p.amount), 0));
-          const toward = round2(state.payments.filter((p) => p.covers_month === monthStart(ym)).reduce((t, p) => t + Number(p.amount), 0));
+          const toward = state.hasV6 ? owedFor(ym) : round2(state.payments.filter((p) => p.covers_month === monthStart(ym)).reduce((t, p) => t + Number(p.amount), 0));
           return `<tr class="${ym === m ? 'cur' : ''}" data-month="${ym}"><td>${esc(fmtMonth(ym))}</td><td class="num">${rec ? money(rec) : '—'}</td>
             <td class="num">${money(expectedFor(ym))}</td><td class="num">${toward ? money(toward) : '—'}</td></tr>`;
         }).join('')}</tbody>
         <tfoot><tr><th>Total</th><th class="num">${money(state.payments.filter((p) => p.paid_on >= monthStart(year[0]) && p.paid_on <= monthEnd(year[11])).reduce((t, p) => t + Number(p.amount), 0))}</th><th></th><th></th></tr></tfoot>
         </table></div>
-        <p class="muted small">“Received” counts payments by the date they came in; “Paid toward month” by the month they pay for.</p>
+        <p class="muted small">${state.hasV6 ? '“Received” counts payments by the date they came in; “Billed” the invoices dated in the month, and “Still owed” what is unpaid on them.'
+          : '“Received” counts payments by the date they came in; “Paid toward month” by the month they pay for.'}</p>
       </section>
       <section class="panel"><h2>Funding</h2>
-        <p class="muted small">Enrolled students by funding program. Set funding on each student’s page.</p>
-        ${[...Object.entries(FUNDING), ['unset', 'No funding set']].map(([k, label]) => {
-          const list = enrolled.filter((s) => {
-            const fund = state.finance[s.id]?.funding || [];
-            return k === 'unset' ? !fund.length : fund.includes(k);
-          });
+        <p class="muted small">Enrolled students by funding program; everyone on no program is private pay. Set funding on each student’s page.</p>
+        ${Object.entries(FUNDING).map(([k, label]) => {
+          const list = enrolled.filter((s) => hasFunding(s.id, k));
           return `<details class="fund-group"><summary><b>${esc(label)}</b> <span class="muted">${list.length}</span></summary>
             <ul>${list.map((s) => `<li><a href="#" data-student="${s.id}">${esc(s.name)}</a> <span class="muted small">${esc(classroomName(s.classroom_id))}${state.finance[s.id]?.award_id ? ' · ID ' + esc(state.finance[s.id].award_id) : ''}</span></li>`).join('') || '<li class="muted">None</li>'}</ul></details>`;
         }).join('')}
@@ -1347,7 +1734,7 @@
         <form id="set-receipt" class="grid2">
           ${fInput('school_name', 'School name', set.school_name)}
           ${fInput('receipt_signer', 'Signed by', set.receipt_signer, 'text', 'placeholder="Name, Director"')}
-          <label class="full">Under the name (address, phone, tax ID)<textarea name="receipt_header" rows="3">${esc(set.receipt_header)}</textarea></label>
+          <label class="full">Address line at the bottom (address · phone · email)<textarea name="receipt_header" rows="2">${esc(set.receipt_header)}</textarea></label>
           <div class="full"><button class="btn small primary" type="submit">Save receipt details</button></div>
         </form>
       </section>
@@ -1380,7 +1767,203 @@
           <label class="full">Follow-up text<textarea name="followup_text" rows="4" maxlength="600">${esc(set.followup_text)}</textarea></label>
           <div class="full"><button class="btn small primary" type="submit">Save texts</button></div>
         </form>
-      </section>` : ''}`;
+      </section>` : ''}
+      ${state.hasV5 ? telegramPanelHtml() + spamPanelHtml() : ''}`;
+  }
+
+  const WEB_FORMS = Object.keys(SOURCE_LABEL).filter((k) => k !== 'manual');
+
+  function telegramPanelHtml() {
+    const set = state.settings || {};
+    const connected = set.telegram_token_set && set.telegram_chat_id;
+    const last = set.telegram_last_at ? ` Last message ${fmtDateTime(set.telegram_last_at)}.` : '';
+    return `<section class="panel settings-panel" id="tg-panel"><h2>Telegram alerts</h2>
+      <p class="muted small">Each new website request is sent to Telegram the moment it is saved in the CRM: only after the
+        robot check, and never from blocked senders. Staff-added inquiries are not sent.</p>
+      <p class="small tg-status ${connected ? 'on' : ''}">${connected ? `<b>Connected</b> to chat ${esc(set.telegram_chat_id)}.` : '<b>Not connected yet.</b>'}<span class="tg-last">${esc(last)}</span></p>
+      <ol class="muted small steps">
+        <li>In Telegram, open <b>@BotFather</b>, send <code>/newbot</code> and follow the steps (or use your existing Creativa bot). Copy the token it gives you.</li>
+        <li>Paste the token below and press <b>Save token</b>.</li>
+        <li>Send any message to your bot (or add the bot to your staff group), then press <b>Find chat</b> and pick the chat.</li>
+        <li>Press <b>Send test</b>. A message should arrive in Telegram.</li>
+      </ol>
+      <form id="tg-token" class="feed-row">
+        <input name="token" type="password" autocomplete="off" spellcheck="false" aria-label="Bot token"
+          placeholder="${set.telegram_token_set ? 'Token saved. Paste a new one to replace it' : '123456789:AAH…'}">
+        <button class="btn small primary" type="submit">Save token</button>
+        ${set.telegram_token_set ? '<button class="btn small danger" type="button" id="tg-remove">Disconnect</button>' : ''}
+      </form>
+      <form id="tg-chat" class="grid2 tg-chat">
+        <label>Chat ID<input name="telegram_chat_id" value="${esc(set.telegram_chat_id)}" placeholder="e.g. 555111222" autocomplete="off"></label>
+        <div class="tg-find"><button class="btn small" type="button" id="tg-find" ${set.telegram_token_set ? '' : 'disabled'}>Find chat</button>
+          <select id="tg-chats" hidden aria-label="Chats that messaged the bot"></select></div>
+        <fieldset class="full tg-forms"><legend>Send alerts for</legend>
+          ${WEB_FORMS.map((k) => `<label class="pill-check"><input type="checkbox" class="check" name="tgf_${k}" ${(set.telegram_forms || []).includes(k) ? 'checked' : ''}> ${esc(SOURCE_LABEL[k])}</label>`).join('')}
+        </fieldset>
+        <div class="full"><button class="btn small primary" type="submit">Save</button>
+          <button class="btn small" type="button" id="tg-test" ${connected ? '' : 'disabled'}>Send test</button></div>
+      </form>
+    </section>`;
+  }
+
+  const BLOCK_REASON = {
+    'missing-input-response': 'No robot check (a bot, or a very old page)',
+    'invalid-input-response': 'Failed the robot check',
+    'timeout-or-duplicate': 'Robot check expired or reused',
+    'blocked-sender': 'From a blocked sender',
+    'too-many-from-device': 'Too many from one device (over 5 an hour)',
+  };
+  const BLOCK_KIND = { email: 'Email', phone: 'Phone', ip: 'Device' };
+
+  function spamPanelHtml() {
+    return `<section class="panel settings-panel" id="spam-panel"><h2>Spam protection</h2>
+      <p class="small" id="ts-status">Robot check: …</p>
+      <p class="muted small">Website requests pass three checks before they reach the CRM: Cloudflare’s robot check, the
+        list of blocked senders below, and a limit of 5 requests an hour from one device. To block someone, open their
+        inquiry and press <b>Spam</b>: it is deleted and their email, phone and device are blocked.</p>
+      <p class="muted small">These checks cover the CRM and Telegram alerts. Netlify still keeps its own copy of every form and
+        emails it to you unfiltered; once Telegram alerts are on, turn those emails off in Netlify
+        (<b>Site configuration → Forms → Form notifications</b>) so only checked requests reach you.</p>
+      <h3 class="sub-h">Stopped in the last 30 days</h3>
+      <div id="spam-stats" class="muted small">Loading…</div>
+      <h3 class="sub-h">Blocked senders</h3>
+      <div class="table-wrap flat"><table class="block-table"><thead><tr><th>Type</th><th>Blocked</th><th>Note</th><th>Since</th><th></th></tr></thead>
+        <tbody id="block-rows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
+      <form id="block-add" class="feed-row block-add">
+        <select name="kind" aria-label="What to block"><option value="email">Email</option><option value="phone">Phone</option></select>
+        <input name="value" placeholder="Email or phone number to block" autocomplete="off" aria-label="Email or phone">
+        <input name="note" placeholder="Note (optional)" aria-label="Note">
+        <button class="btn small" type="submit">Block</button>
+      </form>
+    </section>`;
+  }
+
+  async function bindTelegramPanel(el) {
+    const panel = $('#tg-panel', el);
+    if (!panel) return;
+    // Redraw only this panel, keeping a chat ID or form choices that haven't been saved yet.
+    const refresh = async () => {
+      const { data } = await sb.from('settings').select('*').eq('id', 1).maybeSingle();
+      if (data) state.settings = data;
+      const f = $('#tg-chat', panel);
+      const keep = { chat: f.telegram_chat_id.value, forms: WEB_FORMS.map((k) => f['tgf_' + k].checked) };
+      panel.outerHTML = telegramPanelHtml();
+      const g = $('#tg-chat', el);
+      g.telegram_chat_id.value = keep.chat;
+      WEB_FORMS.forEach((k, i) => { g['tgf_' + k].checked = keep.forms[i]; });
+      bindTelegramPanel(el);
+    };
+    showTelegramStatus(panel);
+    $('#tg-token', panel).addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const token = e.target.token.value.trim();
+      if (!token) return toast('Paste the bot token from @BotFather first', true);
+      const { error } = await sb.rpc('set_telegram_token', { p_token: token });
+      if (error) return fail(error, 'Could not save the token');
+      toast('Token saved. Now send your bot a message and press Find chat');
+      refresh();
+    });
+    $('#tg-remove', panel)?.addEventListener('click', async () => {
+      if (!confirm('Disconnect Telegram? Alerts stop until a token is saved again.')) return;
+      const { error } = await sb.rpc('set_telegram_token', { p_token: '' });
+      if (error) return fail(error, 'Could not disconnect');
+      toast('Telegram disconnected');
+      refresh();
+    });
+    $('#tg-find', panel).addEventListener('click', async () => {
+      const btn = $('#tg-find', panel);
+      btn.disabled = true;
+      const { data, error } = await sb.rpc('telegram_recent_chats');
+      btn.disabled = false;
+      if (error) return fail(error, 'Could not reach Telegram');
+      const pick = $('#tg-chats', panel);
+      if (!data.length) return toast('No chats yet. Send your bot a message in Telegram, then press Find chat again', true);
+      pick.innerHTML = '<option value="">Pick a chat…</option>' + data.map((c) => `<option value="${esc(c.chat_id)}">${esc(c.title)} (${esc(c.chat_id)})</option>`).join('');
+      pick.hidden = false;
+      pick.onchange = () => { if (pick.value) $('#tg-chat', panel).telegram_chat_id.value = pick.value; };
+      if (data.length === 1) { pick.value = data[0].chat_id; pick.onchange(); }
+    });
+    $('#tg-chat', panel).addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const chat = f.telegram_chat_id.value.trim();
+      if (chat && !/^(-?\d{1,20}|@[A-Za-z0-9_]{4,64})$/.test(chat)) return toast('A chat ID is a number like 555111222 (groups start with -100)', true);
+      const patch = { telegram_chat_id: chat || null, telegram_forms: WEB_FORMS.filter((k) => f['tgf_' + k].checked) };
+      const { data, error } = await sb.from('settings').update(patch).eq('id', 1).select().single();
+      if (error) return fail(error, 'Could not save');
+      state.settings = data;
+      toast('Saved');
+      refresh();
+    });
+    $('#tg-test', panel).addEventListener('click', async () => {
+      const { data, error } = await sb.rpc('telegram_send_test');
+      if (error) return fail(error, 'Could not send');
+      if (data === 'ok') toast('Test message sent. Check Telegram'); else toast(`Telegram said: ${data}`, true);
+      showTelegramStatus(panel);
+    });
+  }
+
+  // "Last message …": alerts go out in the background, so ask the database how the last one went.
+  async function showTelegramStatus(panel) {
+    const set = state.settings || {};
+    const line = $('.tg-last', panel);
+    if (!line || !set.telegram_last_at) return;
+    const { data } = await sb.rpc('telegram_status');
+    const r = (Array.isArray(data) ? data[0] : data) || {};
+    if (!r.last_at || !document.body.contains(line)) return;
+    const what = { ok: 'delivered', sent: 'sent', sending: 'sending…', queued: 'sending…' }[r.result] || `Telegram said: ${r.result || 'no answer'}`;
+    line.textContent = ` Last message ${fmtDateTime(r.last_at)}: ${what}.`;
+    line.classList.toggle('warn-text', !['ok', 'sent', 'sending', 'queued'].includes(r.result));
+  }
+
+  async function bindSpamPanel(el) {
+    const panel = $('#spam-panel', el);
+    if (!panel) return;
+    const since = new Date(Date.now() - 30 * 864e5).toISOString();
+    const count = (reason) => {
+      let q = sb.from('intake_blocked').select('id', { count: 'exact', head: true }).gte('created_at', since);
+      if (reason) q = q.eq('reason', reason);
+      return q;
+    };
+    const [ts, total, list, ...byReason] = await Promise.all([
+      sb.rpc('turnstile_configured'), count(null),
+      sb.from('intake_blocklist').select('*').order('created_at', { ascending: false }),
+      ...Object.keys(BLOCK_REASON).map((r) => count(r)),
+    ]);
+    if (!document.body.contains(panel)) return;
+    $('#ts-status', panel).innerHTML = ts.error ? 'Robot check: unknown.'
+      : ts.data ? '<b class="ok-text">Robot check is on.</b> Bots that skip or fail it are refused.'
+        : '<b class="warn-text">Robot check is off:</b> the secret key isn’t stored yet (see the README, “Are you human” check).';
+    const parts = Object.keys(BLOCK_REASON).map((r, i) => [BLOCK_REASON[r], byReason[i].count || 0]).filter(([, n]) => n);
+    const other = (total.count || 0) - parts.reduce((t, [, n]) => t + n, 0);
+    if (other > 0) parts.push(['Other', other]);
+    $('#spam-stats', panel).innerHTML = total.error ? 'Could not load.' : total.count
+      ? `<b>${total.count}</b> stopped: ${parts.map(([l, n]) => `${esc(l)} <b>${n}</b>`).join(' · ')}` : 'Nothing stopped yet.';
+    const rows = list.data || [];
+    $('#block-rows', panel).innerHTML = rows.map((b) => `<tr data-block="${b.id}"><td>${esc(BLOCK_KIND[b.kind])}</td>
+        <td><code>${esc(b.value)}</code></td><td>${esc(b.note || '')}</td><td>${esc(fmtDate(b.created_at))}</td>
+        <td><button class="btn ghost small" type="button" data-unblock="${b.id}">Unblock</button></td></tr>`).join('')
+      || '<tr><td colspan="5" class="muted">Nobody is blocked.</td></tr>';
+    $$('[data-unblock]', panel).forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('Unblock? They will be able to send website forms again.')) return;
+      const { error } = await sb.from('intake_blocklist').delete().eq('id', b.dataset.unblock);
+      if (error) return fail(error, 'Could not unblock');
+      toast('Unblocked');
+      bindSpamPanel(el);
+    }));
+    const add = $('#block-add', panel);
+    add.onsubmit = async (e) => {
+      e.preventDefault();
+      const kind = add.kind.value, value = add.value.value.trim();
+      if (kind === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) return toast('Enter the email address to block', true);
+      if (kind === 'phone' && digits(value).length < 10) return toast('Enter the full phone number with area code', true);
+      const { error } = await sb.from('intake_blocklist').insert({ kind, value, note: add.note.value.trim() || null, created_by: state.me.id });
+      if (error) return fail(error, error.code === '23505' ? 'Already blocked' : 'Could not block');
+      add.value.value = '';
+      add.note.value = '';
+      toast('Blocked');
+      bindSpamPanel(el);
+    };
   }
 
   function bindSettingsPanels(el) {
@@ -1419,6 +2002,8 @@
     saveSettings($('#set-receipt', el), ['school_name', 'receipt_signer', 'receipt_header']);
     saveSettings($('#set-emails', el), ['emails_enabled', 'tour_reminder_subject', 'tour_reminder_body', 'followup_subject', 'followup_body']);
     if ($('#set-texts', el)) saveSettings($('#set-texts', el), ['texts_enabled', 'tour_reminder_text', 'followup_text']);
+    bindTelegramPanel(el);
+    bindSpamPanel(el);
   }
 
   // ───────────── Inquiry drawer ─────────────
@@ -1460,7 +2045,7 @@
         ${others.length ? `<div class="section panel small"><b>Same family also inquired:</b>
           ${others.map((o) => `<div><a href="#" data-open="${o.id}">${esc(SOURCE_LABEL[o.source] || o.source)}, ${esc(fmtDate(o.created_at))}</a> · ${STAGE_LABEL[o.stage]}</div>`).join('')}</div>` : ''}
         <div class="section"><h3>Pipeline</h3><div class="grid2">
-          <label>Stage${sel('stage', STAGES.map((s) => [s, STAGE_LABEL[s]]), v.stage)}</label>
+          <label>Stage${sel('stage', (stages().includes(v.stage) ? stages() : STAGES).map((s) => [s, STAGE_LABEL[s]]), v.stage)}</label>
           <label>Assigned to${sel('assigned_to', [['', 'Unassigned'], ...state.staff.filter((s) => s.active || s.id === v.assigned_to).map((s) => [s.id, s.full_name || s.email])], v.assigned_to)}</label>
           ${inp('tour_at', 'Tour date & time', 'datetime-local')}
           ${inp('next_follow_up', 'Next follow-up', 'date')}
@@ -1504,6 +2089,7 @@
       </form>
       <div class="drawer-foot">
         ${id && isAdmin() ? '<button class="btn danger" id="del">Delete</button>' : ''}
+        ${id && isAdmin() && state.hasV5 && inq.source !== 'manual' ? '<button class="btn danger" id="spam" title="Delete and block this sender">Spam</button>' : ''}
         <span class="spacer"></span>
         <button class="btn" data-close>Cancel</button>
         <button class="btn primary" id="save">${id ? 'Save' : 'Add inquiry'}</button>
@@ -1514,7 +2100,11 @@
     const form = $('#inq-form', drawer);
     let dirty = Object.keys(preset).length > 0;
     form.addEventListener('input', () => { dirty = true; });
-    form.stage.addEventListener('change', () => { $('#lost-wrap', drawer).hidden = form.stage.value !== 'lost'; });
+    form.stage.addEventListener('change', () => {
+      $('#lost-wrap', drawer).hidden = form.stage.value !== 'lost';
+      // Back from Reschedule needs a new time, same as moving the card on the Pipeline.
+      if (inq.stage === 'reschedule' && form.stage.value === 'tour_scheduled') { form.tour_at.value = ''; form.tour_at.focus(); }
+    });
     form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
     const tryClose = () => { if (!dirty || confirm('Discard your changes?')) closeDrawer(); };
     $$('[data-close]', drawer).forEach((b) => b.addEventListener('click', tryClose));
@@ -1523,6 +2113,15 @@
     $$('[data-open]', drawer).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); if (!dirty || confirm('Discard your changes?')) openDrawer(a.dataset.open); }));
     $('#save', drawer).addEventListener('click', save);
     if (id && isAdmin()) $('#del', drawer).addEventListener('click', remove);
+    $('#spam', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Mark ${inq.parent_name || 'this inquiry'} as spam? It is deleted, and its email, phone and device can’t send website forms again. You can unblock them on Settings.`)) return;
+      const { data, error } = await sb.rpc('mark_inquiry_spam', { p_id: id });
+      if (error) return fail(error, 'Could not mark as spam');
+      state.inquiries = state.inquiries.filter((x) => x.id !== id);
+      closeDrawer();
+      renderView();
+      toast(`Marked as spam · ${data} sender detail${data === 1 ? '' : 's'} blocked`);
+    });
     if (id) {
       $('#note-add', drawer).addEventListener('click', addNote);
       loadTimeline();
@@ -1543,6 +2142,19 @@
       if (!patch.parent_name && !patch.child_name) return toast('Add the parent’s or child’s name', true);
       if (!patch.phone && !patch.email) return toast('Add a phone number or email', true);
       if (patch.stage === 'lost' && !patch.lost_reason) { form.lost_reason.focus(); return toast('Add the reason this family was lost', true); }
+      if (inq.stage === 'reschedule') {
+        const changed = patch.tour_at && new Date(patch.tour_at).getTime() !== new Date(inq.tour_at || 0).getTime();
+        // A new, future time typed in while still at Reschedule means the tour has been rescheduled.
+        if (patch.stage === 'reschedule' && changed && new Date(patch.tour_at) > new Date()) patch.stage = 'tour_scheduled';
+        if (patch.stage === 'tour_scheduled' && !changed) {
+          form.tour_at.focus();
+          return toast('Pick the new tour date and time', true);
+        }
+      }
+      if (patch.stage === 'tour_scheduled' && !patch.tour_at && inq.stage !== 'tour_scheduled') {
+        form.tour_at.focus();
+        return toast('Pick the tour date and time', true);
+      }
       if (patch.stage !== 'lost') patch.lost_reason = null;
       if (state.hasEnrollment) patch.auto_emails = form.auto_emails.checked;
       const btn = $('#save', drawer);

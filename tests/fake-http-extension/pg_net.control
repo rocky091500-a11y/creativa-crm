@@ -1,0 +1,4 @@
+# Test stand-in for Supabase's pg_net (async HTTP): http_post only queues the request.
+comment = 'fake pg_net for tests: queues requests, nothing is sent'
+default_version = '1.0'
+relocatable = false

@@ -1,4 +1,4 @@
--- Migration 005: Reschedule stage, Telegram alerts, blocked senders and the per-device limit.
+-- Migration 006: Reschedule stage, Telegram alerts, blocked senders and the per-device limit.
 -- Runs last (see run-db-tests.sh): users come from db.test.sql, and turnstile.test.sql leaves the
 -- always-pass Turnstile test secret stored, so every website submission here carries a token.
 \set ON_ERROR_STOP on
@@ -22,9 +22,9 @@ create or replace function pg_temp.status_as_admin() returns text language plpgs
   set local role authenticated; select result into r from public.telegram_status(); reset role;
   perform set_config(''request.jwt.claim.sub'', '''', false); return r; end';
 
--- turnstile.test.sql re-ran 004, which puts its own submit_inquiry back: apply 005 again (also proves a rerun is safe).
-\ir ../supabase/migrations/005_reschedule_telegram_spam.sql
-\ir ../supabase/migrations/005_reschedule_telegram_spam.sql
+-- turnstile.test.sql re-ran 004, which puts its own submit_inquiry back: apply 006 again (also proves a rerun is safe).
+\ir ../supabase/migrations/006_reschedule_telegram_spam.sql
+\ir ../supabase/migrations/006_reschedule_telegram_spam.sql
 select pg_temp.as_user(null);
 select pg_temp.from_ip(null);
 

@@ -11,5 +11,5 @@ To load the master data into the CRM:
 python3 -I imports/build_master_import.py data/creativa-crm-master.json data/creativa-crm-master.md > data/import.sql
 ```
 
-then paste `data/import.sql` into the Supabase SQL Editor (after migrations 001–006). It is safe to run
+then paste `data/import.sql` into the Supabase SQL Editor (after migrations 001–007). It is safe to run
 twice. The last query compares the CRM with the master data (students, contacts, invoices, open A/R).

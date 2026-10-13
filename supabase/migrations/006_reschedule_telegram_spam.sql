@@ -1,5 +1,5 @@
 -- Creativa CRM — tours to reschedule, Telegram alerts for website requests, and blocking spammers.
--- Run once in the Supabase SQL editor, after 001–004 (in that order). Safe to run again.
+-- Run once in the Supabase SQL editor, after 001–005 (in that order). Safe to run again.
 --
 --   1. A "Reschedule" stage for tours that have to be moved. Those families leave the tour
 --      calendar and get no reminder email until they are back at "Tour scheduled".

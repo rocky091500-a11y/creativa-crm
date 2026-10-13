@@ -1,5 +1,5 @@
 -- Creativa CRM — biweekly billing (invoices) and family contacts.
--- Run once in the Supabase SQL editor, after 001–005 (in that order). Safe to run again.
+-- Run once in the Supabase SQL editor, after 001–006 (in that order). Safe to run again.
 --
 -- Billing rules (school year 2026-27): one tuition invoice per student every 14 days, dated the
 -- billing Monday (first one 2026-10-05) and due the same day; the billing system gives grace

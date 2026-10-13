@@ -46,8 +46,8 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
-     then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_reschedule_telegram_spam.sql` and
-     `006_billing_contacts.sql`, in that order.
+     then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
+     `006_reschedule_telegram_spam.sql` and `007_billing_contacts.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -135,19 +135,19 @@ so bots are refused whether they use the forms or call the CRM directly. Refusal
 - Spam blocked in the last 30 days:
   `select form, reason, count(*) from intake_blocked where created_at > now() - interval '30 days' group by 1, 2;`
 
-- **Spam protection (005)**: on top of the robot check, every website request is refused if its email, phone or
+- **Spam protection (006)**: on top of the robot check, every website request is refused if its email, phone or
   device (IP address) is on the blocked list, or if that device already sent 5 requests in the past hour. An admin
   presses **Spam** on an inquiry to delete it and block its email, phone and device; Settings → Spam protection
   lists who is blocked (unblock or add an email/phone by hand) and what was stopped in the last 30 days.
-  `005` also shortens the robot check's wait to 1.5 s so a slow Cloudflare can't push a request past Supabase's
-  3-second limit for website calls. Run migrations in order and don't re-run `004` after `005` (it would put back
+  `006` also shortens the robot check's wait to 1.5 s so a slow Cloudflare can't push a request past Supabase's
+  3-second limit for website calls. Run migrations in order and don't re-run `004` after `006` (it would put back
   004's intake without these checks).
 - The website's five forms declare their hidden `bot-field` to Netlify (`netlify-honeypot`), so Netlify's copy also
   drops bots that fill it in.
 
-## Billing (006)
+## Billing (007)
 
-`006_billing_contacts.sql` follows the school's billing rules: each child is invoiced their biweekly rate every other
+`007_billing_contacts.sql` follows the school's billing rules: each child is invoiced their biweekly rate every other
 Monday (the first billing Monday is 2026-10-05, set in `settings.billing_anchor`), due that day with grace until
 Friday. On **Tuition**, **Bill this period** creates the period's invoices (`create_period_invoices`); it skips
 children already billed, with no rate, marked *not billed to the family* (e.g. FES paid by Step Up), on
@@ -162,7 +162,7 @@ children already billed, with no rate, marked *not billed to the family* (e.g. F
 
 ## Telegram alerts
 
-`005_reschedule_telegram_spam.sql` sends each new website request to Telegram as soon as it is saved: tour
+`006_reschedule_telegram_spam.sql` sends each new website request to Telegram as soon as it is saved: tour
 requests, waitlist, contact, Bloom and family support (choose which on Settings). Only requests that passed the
 robot check and aren't from a blocked sender get this far, staff-added inquiries are never sent, and a resubmit
 within 2 minutes doesn't send twice. The alert is queued with Supabase's `pg_net` and goes out in the background
@@ -205,7 +205,7 @@ PGHOST=... PGPORT=... PGUSER=postgres tests/e2e/run.sh
 ## Changing things
 
 - **Stages** live in three places that must match: the `check` constraint and the
-  `labels` in `inquiries_log()` (latest in `005_reschedule_telegram_spam.sql`), and `STAGES`/`STAGE_LABEL` in `app.js`.
+  `labels` in `inquiries_log()` (latest in `006_reschedule_telegram_spam.sql`), and `STAGES`/`STAGE_LABEL` in `app.js`.
   Add a new numbered migration rather than editing one that has already been run.
 - **Funding programs, payment methods and documents** live in the `check` constraints in `003_enrollment_finance.sql`
   and `FUNDING` / `PAYER` / `METHOD` / `DOCS` in `app.js`.

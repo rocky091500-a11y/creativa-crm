@@ -1,4 +1,4 @@
--- Migration 006: biweekly invoices, payments applied to invoices, contacts, Step Up (pending).
+-- Migration 007: biweekly invoices, payments applied to invoices, contacts, Step Up (pending).
 -- Runs after the other tests (users from db.test.sql: owner = admin, teacher = staff, books = finance edit).
 \set ON_ERROR_STOP on
 set client_min_messages = notice;
@@ -7,7 +7,7 @@ create or replace function pg_temp.ok(cond boolean, label text) returns void lan
   raise notice ''ok - %'', label; end';
 create or replace function pg_temp.as_user(uid uuid) returns void language plpgsql as 'begin
   perform set_config(''request.jwt.claim.sub'', coalesce(uid::text, ''''), false); end';
-\ir ../supabase/migrations/006_billing_contacts.sql
+\ir ../supabase/migrations/007_billing_contacts.sql
 select pg_temp.as_user(null);
 
 -- children for billing

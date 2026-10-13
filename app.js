@@ -29,7 +29,7 @@
   // Funding programs a student can be on. A student on none of them is private pay.
   const PROGRAMS_FUNDING = { sr: 'School Readiness', sr_bpiece: 'SR – BPIECE', fes_ua: 'FES-UA', fes_eo: 'FES-EO', vpk: 'VPK',
     stepup_pending: 'Step Up (pending)' };
-  // Biweekly billing (006_billing_contacts.sql)
+  // Biweekly billing (007_billing_contacts.sql)
   const CONTACT_ROLE = { primary: 'Primary', secondary: 'Secondary', emergency: 'Emergency / authorized' };
   const INV_STATUS = { paid: 'Paid', partial: 'Partly paid', open: 'Open', overdue: 'Late', void: 'Void',
     not_invoiced: 'Not billed yet', stepup: 'Step Up pending', not_billed: 'Not billed to family', unset: 'No rate set',
@@ -136,8 +136,8 @@
     payments: [],
     settings: null,
     hasEnrollment: false, // false until 003_enrollment_finance.sql has been run
-    hasV5: false,         // false until 005_reschedule_telegram_spam.sql has been run
-    hasV6: false,         // false until 006_billing_contacts.sql has been run
+    hasV5: false,         // false until 006_reschedule_telegram_spam.sql has been run
+    hasV6: false,         // false until 007_billing_contacts.sql has been run
     invoices: [],
     contacts: [],
     period: null,         // billing Monday shown on the Tuition page
@@ -154,7 +154,7 @@
   const canViewFinance = () => isAdmin() || ['view', 'edit'].includes(state.me?.finance);
   const canEditFinance = () => isAdmin() || state.me?.finance === 'edit';
   const classroomName = (id) => state.classrooms.find((c) => c.id === id)?.name || '';
-  // The Reschedule stage exists once 005_reschedule_telegram_spam.sql has been run.
+  // The Reschedule stage exists once 006_reschedule_telegram_spam.sql has been run.
   const stages = () => (state.hasV5 ? STAGES : STAGES.filter((s) => s !== 'reschedule'));
   // A student's funding programs, or ['private'] when they are on none.
   function fundingOf(sid) {
@@ -1103,7 +1103,7 @@
     return true;
   }
 
-  // What a payment was for: its invoice, a credit not yet applied, or (before 006) a month.
+  // What a payment was for: its invoice, a credit not yet applied, or (before 007) a month.
   function paymentFor(p) {
     if (p.invoice_id) {
       const inv = state.invoices.find((i) => i.id === p.invoice_id);
@@ -1117,7 +1117,7 @@
     const sid = p ? p.student_id : studentId;
     const v6 = state.hasV6;
     const m = p ? p.covers_month.slice(0, 7) : (month || thisMonth());
-    // With billing: suggest the chosen (or oldest open) invoice and its balance. Before 006: the month's tuition.
+    // With billing: suggest the chosen (or oldest open) invoice and its balance. Before 007: the month's tuition.
     const invId = p ? p.invoice_id : invoiceId || (sid && v6 && !month ? openInvoices(sid)[0]?.id : null);
     const due = sid && !v6 ? monthDue(sid) : null;
     const inv0 = invId && state.invoices.find((i) => i.id === invId);
@@ -1450,7 +1450,7 @@
     }
   }
 
-  // ───────────── Tuition, billed every two weeks (006) ─────────────
+  // ───────────── Tuition, billed every two weeks (007) ─────────────
   function activeInPeriod(s, p) {
     if (s.status === 'waitlist') return false;
     if (s.start_date && s.start_date > periodEnd(p)) return false;
@@ -1632,7 +1632,7 @@
     const byPayer = sumBy((p) => PAYER[p.payer]);
     const byMethod = sumBy((p) => METHOD[p.method]);
     const byClass = sumBy((p) => classroomName(state.students.find((s) => s.id === p.student_id)?.classroom_id) || 'No class');
-    // With billing (006): what was actually invoiced in the month and what is still open on it.
+    // With billing (007): what was actually invoiced in the month and what is still open on it.
     const monthInvoices = (mo) => state.invoices.filter((i) => !i.void && i.invoice_date >= monthStart(mo) && i.invoice_date <= monthEnd(mo));
     const expectedFor = (mo) => (state.hasV6 ? round2(monthInvoices(mo).reduce((t, i) => t + Number(i.amount), 0))
       : round2(tuitionRows(mo).reduce((t, r) => t + (r.due || 0), 0)));

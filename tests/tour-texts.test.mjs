@@ -138,3 +138,25 @@ test('if the database is down the reply is still forwarded', async () => {
   assert.match(await res.text(), /<Message to="\+17865550000">Creativa text from \+13055550101: hello<\/Message>/);
   assert.ok(lines.some((l) => l.includes('could not log')));
 });
+
+test('replies and opt-outs are posted to Telegram when it is set up; a Telegram outage changes nothing', async () => {
+  const sent = [];
+  const make = (action, telegramOk = true) => async (url, init) => {
+    if (url.startsWith('https://api.telegram.org/')) {
+      sent.push({ url, body: JSON.parse(init.body) });
+      return new Response('{}', { status: telegramOk ? 200 : 502 });
+    }
+    return new Response(JSON.stringify([{ inquiry_id: 'i1', parent_name: 'Maria Lopez', action }]), { status: 200 });
+  };
+  const tgEnv = { ...inboundEnv, TELEGRAM_BOT_TOKEN: '123:abc', TELEGRAM_CHAT_ID: '-100777' };
+  const r1 = await handle(twilioRequest({ From: '+13055550101', Body: 'Running 10 min late' }), tgEnv, make('message'), () => {});
+  assert.equal(await r1.text(), '<?xml version="1.0" encoding="UTF-8"?><Response></Response>', 'no text forward without TEXT_FORWARD_TO');
+  assert.equal(sent[0].url, 'https://api.telegram.org/bot123:abc/sendMessage');
+  assert.deepEqual(sent[0].body, { chat_id: '-100777', text: '💬 Creativa text from Maria Lopez (+13055550101):\nRunning 10 min late', disable_web_page_preview: true });
+  await handle(twilioRequest({ From: '+13055550101', Body: 'STOP' }), tgEnv, make('opt_out'), () => {});
+  assert.equal(sent[1].body.text, '🔕 Maria Lopez (+13055550101) replied STOP: no more automatic texts');
+  const lines = [];
+  const r3 = await handle(twilioRequest({ From: '+13055550101', Body: 'hi' }), { ...tgEnv, TEXT_FORWARD_TO: '+17865550000' }, make('message', false), (l) => lines.push(l));
+  assert.match(await r3.text(), /<Message to="\+17865550000">/, 'text forward still happens');
+  assert.ok(lines.some((l) => l.includes('Telegram notice failed')));
+});

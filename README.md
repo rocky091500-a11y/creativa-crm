@@ -130,7 +130,9 @@ Twilio is ready).
 Replies: `netlify/functions/text-inbound.mjs` receives every text sent to the school's Twilio number, checks it really
 came from Twilio, and logs it on that family's timeline. **STOP** (or UNSUBSCRIBE, CANCEL, END, QUIT, PARAR) adds the
 number to `text_opt_outs` and it is never texted automatically again; **START** undoes it. Twilio sends the opt-out
-confirmation itself. With `TEXT_FORWARD_TO` set, ordinary replies are also forwarded to that phone.
+confirmation itself. With `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` set, every reply (and every STOP) is also
+posted to that Telegram chat, which is free; with `TEXT_FORWARD_TO` set, ordinary replies are also texted on to that phone
+(one more text each).
 
 One-time setup:
 1. **Twilio** — create an account at twilio.com, upgrade it (trial accounts can only text verified numbers) and buy
@@ -149,6 +151,7 @@ One-time setup:
 4. **Netlify** → Site configuration → Environment variables (besides `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`):
    - `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` — Twilio Console → Account info
    - `TWILIO_MESSAGING_SERVICE_SID` — the Messaging Service (starts with `MG`); or `TWILIO_FROM` = the number
+   - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (optional, free) — the same bot and chat the website uses
    - `TEXT_FORWARD_TO` (optional) — e.g. the front-desk cell, `+17865550123`
 5. Redeploy, run `005_text_reminders.sql` in the Supabase SQL Editor, then switch texts on in **Settings**.
    Netlify → Logs → Functions → `tour-texts` shows each run; without the Twilio variables it only logs what it would send.

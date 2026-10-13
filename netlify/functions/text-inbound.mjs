@@ -1,13 +1,15 @@
 // Twilio calls this when a family texts the school's Twilio number (usually a reply to a tour text).
 // The text is logged on that family's timeline in the CRM; STOP / START opt the number out / back in
-// (Twilio itself sends the "you're unsubscribed" confirmation). With TEXT_FORWARD_TO set, other
-// replies are also forwarded to that phone (e.g. the front-desk cell) so someone sees them right away.
+// (Twilio itself sends the "you're unsubscribed" confirmation). So someone sees replies right away,
+// they are also posted to Creativa's Telegram chat (free) when TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+// are set, and/or texted on to TEXT_FORWARD_TO (costs one more text each).
 //
 // Twilio Console → Messaging → Services → (the service) → Integration → "Send a webhook":
 //   https://crm.creativaacademy.com/.netlify/functions/text-inbound   (HTTP POST)
 //
 // Netlify environment variables: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TWILIO_AUTH_TOKEN (to check
 // that each request really comes from Twilio), and optionally
+//   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID   the bot and chat that get a copy of each reply
 //   TEXT_FORWARD_TO      +17865550123
 //   TWILIO_WEBHOOK_URL   only if the address above is different (it must match Twilio's exactly)
 
@@ -58,10 +60,27 @@ export async function handle(req, env, fetchImpl = fetch, log = console.log) {
   }
   if (who && !who.inquiry_id) log(`text-inbound: text from ${from}, not a number in the CRM (${who.action})`);
 
+  const label = who?.parent_name ? `${who.parent_name} (${from})` : from;
+  if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
+    const note = !who || who.action === 'message' ? `💬 Creativa text from ${label}:\n${body}`
+      : who.action === 'opt_out' ? `🔕 ${label} replied ${body.trim()}: no more automatic texts`
+      : `🔔 ${label} replied ${body.trim()}: automatic texts back on`;
+    try {
+      const res = await fetchImpl(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text: note.slice(0, 4000), disable_web_page_preview: true }),
+        signal: AbortSignal.timeout(5000), // Twilio gives up on the webhook after 15s
+      });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    } catch (e) {
+      log(`text-inbound: Telegram notice failed: ${e.message}`);
+    }
+  }
+
   // STOP / START are answered by Twilio itself; just forward ordinary messages.
   const forwardTo = env.TEXT_FORWARD_TO;
   if (!forwardTo || forwardTo === from || (who && who.action !== 'message')) return twiml();
-  const label = who?.parent_name ? `${who.parent_name} (${from})` : from;
   return twiml(`<Message to="${xml(forwardTo)}">${xml(`Creativa text from ${label}: ${body}`.slice(0, 1200))}</Message>`);
 }
 

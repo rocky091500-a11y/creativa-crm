@@ -185,15 +185,16 @@ select s.id, 'fee', v.item, v.inv::date, v.due::date, v.amount, 'import', {q('Im
  where not exists (select 1 from public.invoices i where i.student_id = s.id and i.kind = 'fee'
                      and i.description = v.item and i.invoice_date = v.inv::date);
 
--- 6. Money received but not applied to an invoice (credits).
+-- 6. Money received but not applied to an invoice (credits). Skipped when the child already has a payment
+--    made that day the same way, applied or not: a credit corrected and applied later is not added again.
 insert into public.payments (student_id, paid_on, covers_month, amount, payer, method, reference, note)
 select s.id, v.paid::date, date_trunc('month', v.paid::date)::date, v.amount, 'parent', v.method, 'Unapplied credit', v.note
   from (values
 {values(credits, ['child', 'date', 'amount', 'method', 'note'])}
   ) as v(child, paid, amount, method, note)
   join public.students s on lower(s.name) = lower(v.child)
- where not exists (select 1 from public.payments p where p.student_id = s.id and p.invoice_id is null
-                     and p.paid_on = v.paid::date and p.amount = v.amount and p.method = v.method);
+ where not exists (select 1 from public.payments p where p.student_id = s.id
+                     and p.paid_on = v.paid::date and p.method = v.method);
 
 -- 7. Withdrawn students stay withdrawn (nothing to change; listed for the check below).
 create temp table m_withdrawn (name text) on commit drop;

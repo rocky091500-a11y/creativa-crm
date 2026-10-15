@@ -82,19 +82,35 @@ exception when insufficient_privilege then null; end';
 reset role;
 
 -- ═════════════ pay schedule ═════════════
-select pg_temp.ok((select payroll_anchor = '2026-10-12' and (payroll_anchor - billing_anchor) % 14 = 7 from public.settings),
-                  'pay periods start the weeks between tuition Mondays (Oct 12 vs Oct 5)');
-select pg_temp.ok((select (period_start, period_end) = ('2026-10-12'::date, '2026-10-25'::date) from public.payroll_period('2026-10-15')), 'every two weeks from Mon Oct 12');
-select pg_temp.ok((select (period_start, period_end) = ('2026-09-28'::date, '2026-10-11'::date) from public.payroll_period('2026-10-05')), 'periods before the start date too');
-select pg_temp.ok(not exists (select 1 from generate_series(0, 25) n
-                               where (public.payroll_period('2026-10-05'::date + 14 * n)).period_start = '2026-10-05'::date + 14 * n),
-                  'no pay period starts on a tuition billing Monday, all school year');
-update public.settings set payroll_anchor = '2026-10-05';   -- what the first copy of 008 set
+-- Paid every two weeks for Friday to Thursday (10 workdays), alternating with tuition: Oct 2–15, Oct 16–29, …
+select pg_temp.ok((select payroll_anchor = '2026-10-02' and extract(isodow from payroll_anchor) = 5 from public.settings), 'pay periods start Friday Oct 2');
+select pg_temp.ok((select (period_start, period_end) = ('2026-10-02'::date, '2026-10-15'::date) from public.payroll_period('2026-10-15')), 'Oct 2 – Thu Oct 15');
+select pg_temp.ok((select (period_start, period_end) = ('2026-10-16'::date, '2026-10-29'::date) from public.payroll_period('2026-10-16')), 'the next starts Fri Oct 16');
+select pg_temp.ok((select (period_start, period_end) = ('2026-09-18'::date, '2026-10-01'::date) from public.payroll_period('2026-09-30')), 'periods before the start date too');
+select pg_temp.ok(not exists (select 1 from generate_series(0, 25) n, public.payroll_period('2026-10-02'::date + 14 * n) p
+                               where p.period_start <> '2026-10-02'::date + 14 * n or p.period_end <> p.period_start + 13
+                                  or extract(isodow from p.period_start) <> 5
+                                  or ((p.period_end + 1) - 4 - '2026-10-05'::date) % 14 <> 7),
+                  'all school year: Friday–Thursday periods, and the Friday after each is in a week between tuition Mondays');
+-- Earlier copies of 008 defaulted to Oct 5, then Oct 12. Re-running 008 moves such an install once, and never again.
+alter table public.settings alter column payroll_anchor set default '2026-10-05';
+update public.settings set payroll_anchor = '2026-10-05';
 \ir ../supabase/migrations/008_payroll_timeclock.sql
-select pg_temp.ok((select payroll_anchor = '2026-10-12' from public.settings), 'running 008 again moves an Oct 5 start to Oct 12');
-select pg_temp.ok(public.payroll_week_start('2026-10-15') = '2026-10-12' and public.payroll_week_start('2026-10-12') = '2026-10-12', 'workweeks start Monday');
+select pg_temp.ok((select payroll_anchor = '2026-10-02' from public.settings), 'running 008 again moves an old Oct 5 start to Fri Oct 2');
+select pg_temp.ok((select column_default like '%2026-10-02%' from information_schema.columns
+                    where table_schema = 'public' and table_name = 'settings' and column_name = 'payroll_anchor'), '… and fixes the default');
+alter table public.settings alter column payroll_anchor set default '2026-10-12';
+update public.settings set payroll_anchor = '2026-10-12';
+\ir ../supabase/migrations/008_payroll_timeclock.sql
+select pg_temp.ok((select payroll_anchor = '2026-10-02' from public.settings), 'an old Oct 12 start moves too');
+update public.settings set payroll_anchor = '2026-10-12';   -- later chosen on Payroll → Time clock → Pay schedule
+\ir ../supabase/migrations/008_payroll_timeclock.sql
+select pg_temp.ok((select payroll_anchor = '2026-10-12' from public.settings), 'a pay schedule set later is never overwritten by re-running 008');
+update public.settings set payroll_anchor = '2026-10-02';
+select pg_temp.ok(public.payroll_week_start('2026-10-15') = '2026-10-09' and public.payroll_week_start('2026-10-09') = '2026-10-09'
+                  and public.payroll_week_start('2026-10-12') = '2026-10-09', 'workweeks run Friday to Thursday');
 update public.settings set payroll_frequency = 'weekly';
-select pg_temp.ok((select (period_start, period_end) = ('2026-10-12'::date, '2026-10-18'::date) from public.payroll_period('2026-10-15')), 'weekly');
+select pg_temp.ok((select (period_start, period_end) = ('2026-10-09'::date, '2026-10-15'::date) from public.payroll_period('2026-10-15')), 'weekly');
 update public.settings set payroll_frequency = 'semimonthly';
 select pg_temp.ok((select (period_start, period_end) = ('2026-10-01'::date, '2026-10-15'::date) from public.payroll_period('2026-10-15'))
               and (select (period_start, period_end) = ('2026-10-16'::date, '2026-10-31'::date) from public.payroll_period('2026-10-16'))
@@ -103,7 +119,7 @@ update public.settings set payroll_frequency = 'monthly';
 select pg_temp.ok((select (period_start, period_end) = ('2026-10-01'::date, '2026-10-31'::date) from public.payroll_period('2026-10-15')), 'monthly');
 update public.settings set payroll_frequency = 'biweekly', payroll_anchor = '2026-10-04';   -- Sunday
 select pg_temp.ok(public.payroll_week_start('2026-10-15') = '2026-10-11', 'workweek follows the start day (Sunday)');
-update public.settings set payroll_anchor = '2026-10-12';
+update public.settings set payroll_anchor = '2026-10-02';
 
 -- ═════════════ payroll access ═════════════
 insert into public.employees (first_name, last_name, position, pay_rate, lunch_minutes, schedule) values
@@ -236,61 +252,61 @@ do 'begin insert into public.time_entries (employee_id, clock_in, clock_out) sel
 delete from public.time_entries where note = 'forgot to clock';
 
 -- ═════════════ hours, overtime ═════════════
--- Ana, week of Mon Sep 28: five 9-hour days = 45 hours → 40 regular, 5 overtime (all on Friday).
+-- Ana, workweek Fri Sep 25 – Thu Oct 1: five 9-hour days = 45 hours → 40 regular, 5 overtime (on Thursday).
 insert into public.time_entries (employee_id, clock_in, clock_out, out_reason)
-  select (select v::uuid from t where k = 'ana'), (d::date + time '08:00') at time zone 'America/New_York', (d::date + time '17:00') at time zone 'America/New_York', 'out'
-    from generate_series('2026-09-28'::date, '2026-10-02', '1 day') d;
--- the next week: 8:00–12:00 and 12:30–4:30 on Monday (8 hours, lunch not paid)
+  select (select v::uuid from t where k = 'ana'), (d + time '08:00') at time zone 'America/New_York', (d + time '17:00') at time zone 'America/New_York', 'out'
+    from unnest(array['2026-09-25', '2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01']::date[]) d;
+-- the next workweek (and pay period): 8:00–12:00 and 12:30–4:30 on Friday Oct 2 (8 hours, lunch not paid)
 insert into public.time_entries (employee_id, clock_in, clock_out, out_reason)
   select (select v::uuid from t where k = 'ana'), x.i::timestamptz, x.o::timestamptz, x.r
-    from (values ('2026-10-05 08:00-04', '2026-10-05 12:00-04', 'lunch'), ('2026-10-05 12:30-04', '2026-10-05 16:30-04', 'out')) as x(i, o, r);
-select pg_temp.ok((select to_char(clock_in at time zone 'America/New_York', 'HH24:MI') = '08:00' and work_date = '2026-09-28' from public.time_entries
+    from (values ('2026-10-02 08:00-04', '2026-10-02 12:00-04', 'lunch'), ('2026-10-02 12:30-04', '2026-10-02 16:30-04', 'out')) as x(i, o, r);
+select pg_temp.ok((select to_char(clock_in at time zone 'America/New_York', 'HH24:MI') = '08:00' and work_date = '2026-09-25' from public.time_entries
                     where employee_id = (select v::uuid from t where k = 'ana') order by clock_in limit 1), 'times are the school''s time');
-select pg_temp.ok((select sum(regular) = 2400 and sum(overtime) = 300 from public.payroll_hours('2026-09-21', '2026-10-04') where employee_id = (select v::uuid from t where k = 'ana')),
+select pg_temp.ok((select sum(regular) = 2400 and sum(overtime) = 300 from public.payroll_hours('2026-09-18', '2026-10-01') where employee_id = (select v::uuid from t where k = 'ana')),
                   '45 hours in a week: 40 regular + 5 overtime');
-select pg_temp.ok((select regular = 240 and overtime = 300 from public.payroll_hours('2026-09-21', '2026-10-04')
-                    where employee_id = (select v::uuid from t where k = 'ana') and work_date = '2026-10-02'), 'overtime falls on the day hour 40 is passed');
-select pg_temp.ok((select minutes = 480 and overtime = 0 from public.payroll_hours('2026-10-05', '2026-10-18')
-                    where employee_id = (select v::uuid from t where k = 'ana') and work_date = '2026-10-05'), 'a new workweek starts over; lunch is unpaid');
--- Twice-a-month pay: the period Oct 1–15 starts mid-week, so Mon–Wed before it count toward that week's 40.
+select pg_temp.ok((select regular = 240 and overtime = 300 from public.payroll_hours('2026-09-18', '2026-10-01')
+                    where employee_id = (select v::uuid from t where k = 'ana') and work_date = '2026-10-01'), 'overtime falls on the day hour 40 is passed');
+select pg_temp.ok((select minutes = 480 and overtime = 0 from public.payroll_hours('2026-10-02', '2026-10-15')
+                    where employee_id = (select v::uuid from t where k = 'ana') and work_date = '2026-10-02'), 'a new workweek starts over on Friday; lunch is unpaid');
+-- Twice-a-month pay: the period Oct 1–15 starts mid-week, so Sep 25–30 count toward that week's 40.
 update public.settings set payroll_frequency = 'semimonthly';
-select pg_temp.ok((select sum(regular) = 13 * 60 and sum(overtime) = 5 * 60 from public.payroll_hours('2026-10-01', '2026-10-15')
+select pg_temp.ok((select sum(regular) = 12 * 60 and sum(overtime) = 5 * 60 from public.payroll_hours('2026-10-01', '2026-10-15')
                     where employee_id = (select v::uuid from t where k = 'ana') and work_date < '2026-10-03'),
-                  'twice a month: Sep 28–30 (27 h) count toward the week, so Oct 1–2 are 13 regular + 5 overtime');
+                  'twice a month: Sep 25–30 (36 h) count toward the week, so Oct 1 is 4 regular + 5 overtime, and Oct 2 starts a new week');
 update public.settings set payroll_frequency = 'biweekly';
 select pg_temp.as_user('00000000-0000-0000-0000-00000000000b');   -- staff without payroll see no hours
-select pg_temp.ok((select count(*) = 0 from public.payroll_hours('2026-09-21', '2026-10-18')), 'no payroll access, no hours');
+select pg_temp.ok((select count(*) = 0 from public.payroll_hours('2026-09-18', '2026-10-15')), 'no payroll access, no hours');
 
 -- ═════════════ entered in Patriot: lock the period ═════════════
 select pg_temp.as_user('00000000-0000-0000-0000-00000000000b');
-do 'begin perform public.payroll_close_period(''2026-09-21'', ''2026-10-04''); raise exception ''FAIL: non-payroll closed a period'';
+do 'begin perform public.payroll_close_period(''2026-09-18'', ''2026-10-01''); raise exception ''FAIL: non-payroll closed a period'';
 exception when others then if sqlerrm like ''FAIL:%'' then raise; end if; end';
 select pg_temp.as_user('00000000-0000-0000-0000-00000000000d');
-do 'begin perform public.payroll_close_period(''2026-10-05'', (now() at time zone ''America/New_York'')::date + 3); raise exception ''FAIL: closed a period not over'';
+do 'begin perform public.payroll_close_period(''2026-10-02'', (now() at time zone ''America/New_York'')::date + 3); raise exception ''FAIL: closed a period not over'';
 exception when others then if sqlerrm like ''FAIL:%'' then raise; end if; end';
-insert into public.time_entries (employee_id, clock_in) values ((select v::uuid from t where k = 'bea'), '2026-10-01 09:00-04');
-do 'begin perform public.payroll_close_period(''2026-09-21'', ''2026-10-04''); raise exception ''FAIL: closed with a missing clock-out'';
+insert into public.time_entries (employee_id, clock_in) values ((select v::uuid from t where k = 'bea'), '2026-09-30 09:00-04');
+do 'begin perform public.payroll_close_period(''2026-09-18'', ''2026-10-01''); raise exception ''FAIL: closed with a missing clock-out'';
 exception when others then if sqlerrm like ''FAIL:%'' then raise; end if; end';
-delete from public.time_entries where employee_id = (select v::uuid from t where k = 'bea') and clock_in = '2026-10-01 09:00-04';
-select pg_temp.ok((select public.payroll_close_period('2026-09-21', '2026-10-04')
+delete from public.time_entries where employee_id = (select v::uuid from t where k = 'bea') and clock_in = '2026-09-30 09:00-04';
+select pg_temp.ok((select public.payroll_close_period('2026-09-18', '2026-10-01')
                    = jsonb_build_array(jsonb_build_object('employee_id', v::uuid, 'name', 'Ana Clock', 'rate', 16.50, 'regular', 40.00, 'overtime', 5.00))
                      from t where k = 'ana'), 'closing keeps the hours sent to Patriot');
-do 'begin perform public.payroll_close_period(''2026-09-28'', ''2026-10-04''); raise exception ''FAIL: closed twice'';
+do 'begin perform public.payroll_close_period(''2026-09-25'', ''2026-10-01''); raise exception ''FAIL: closed twice'';
 exception when others then if sqlerrm like ''FAIL:%'' then raise; end if; end';
-do 'begin update public.time_entries set clock_out = clock_out + interval ''1 hour'' where work_date = ''2026-10-02''; raise exception ''FAIL: edited a closed period'';
+do 'begin update public.time_entries set clock_out = clock_out + interval ''1 hour'' where work_date = ''2026-10-01''; raise exception ''FAIL: edited a closed period'';
 exception when check_violation then null; end';
-do 'begin delete from public.time_entries where work_date = ''2026-10-02''; raise exception ''FAIL: deleted from a closed period'';
+do 'begin delete from public.time_entries where work_date = ''2026-10-01''; raise exception ''FAIL: deleted from a closed period'';
 exception when check_violation then null; end';
-do 'begin insert into public.time_entries (employee_id, clock_in, clock_out) select v::uuid, ''2026-10-03 08:00-04'', ''2026-10-03 09:00-04'' from t where k = ''bea'';
+do 'begin insert into public.time_entries (employee_id, clock_in, clock_out) select v::uuid, ''2026-09-30 08:00-04'', ''2026-09-30 09:00-04'' from t where k = ''bea'';
   raise exception ''FAIL: added to a closed period''; exception when check_violation then null; end';
-do 'begin update public.time_entries set clock_in = ''2026-10-02 07:00-04'' where work_date = ''2026-10-05'' and out_reason = ''lunch'';
+do 'begin update public.time_entries set clock_in = ''2026-10-01 07:00-04'' where work_date = ''2026-10-02'' and out_reason = ''lunch'';
   raise exception ''FAIL: moved time into a closed period''; exception when check_violation then null; end';
 do 'begin insert into public.payroll_periods (period_start, period_end) values (''2026-08-01'', ''2026-08-14''); raise exception ''FAIL: inserted a period'';
 exception when insufficient_privilege then null; end';
 -- reopen
-delete from public.payroll_periods where period_start = '2026-09-21';
-update public.time_entries set note = 'reopened' where work_date = '2026-10-02';
-select pg_temp.ok((select note = 'reopened' from public.time_entries where work_date = '2026-10-02'), 'reopened period can be changed again');
+delete from public.payroll_periods where period_start = '2026-09-18';
+update public.time_entries set note = 'reopened' where work_date = '2026-10-01';
+select pg_temp.ok((select note = 'reopened' from public.time_entries where work_date = '2026-10-01'), 'reopened period can be changed again');
 do 'begin delete from public.employees where first_name = ''Ana''; raise exception ''FAIL: deleted someone with time'';
 exception when foreign_key_violation then null; end';
 reset role;

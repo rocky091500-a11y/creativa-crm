@@ -23,8 +23,9 @@
 --   profiles.payroll   who opens the Payroll page (admins always do).
 --   settings           pay schedule: payroll_frequency and payroll_anchor (the first day of any pay
 --                      period). Workweeks, for overtime after 40 hours, start on that weekday.
---                      Staff are paid every two weeks, alternating with tuition: tuition is billed the
---                      weeks of Oct 5, Oct 19…, pay periods start the weeks between (Oct 12, Oct 26…).
+--                      Staff are paid every two weeks for Friday to Thursday (10 workdays: Oct 2–15,
+--                      Oct 16–29…), alternating with tuition: the Friday after each period falls in the
+--                      week between tuition billing Mondays (Oct 5, Oct 19…). Workweeks run Friday–Thursday.
 --
 -- No dollar-quoting or backslashes in this file, so it survives copy-paste intact.
 
@@ -115,10 +116,20 @@ end';
 alter table public.settings
   add column if not exists payroll_frequency text not null default 'biweekly'
     check (payroll_frequency in ('weekly','biweekly','semimonthly','monthly')),
-  add column if not exists payroll_anchor date not null default '2026-10-12';
--- An earlier copy of this file started pay periods on Oct 5, a tuition week; move them to the week between.
-update public.settings set payroll_anchor = '2026-10-12'
- where id = 1 and payroll_frequency = 'biweekly' and payroll_anchor = '2026-10-05';
+  add column if not exists payroll_anchor date not null default '2026-10-02';
+-- Earlier copies of this file started pay periods on Monday Oct 5, then Monday Oct 12. Move an install still on
+-- one of those to Friday Oct 2, once: only while the column default is still the old one (it is then corrected),
+-- so a pay schedule an admin sets later on the Payroll page is never overwritten by running this file again.
+do '
+begin
+  if exists (select 1 from information_schema.columns
+              where table_schema = ''public'' and table_name = ''settings'' and column_name = ''payroll_anchor''
+                and (column_default like ''%2026-10-05%'' or column_default like ''%2026-10-12%'')) then
+    update public.settings set payroll_anchor = ''2026-10-02''
+     where id = 1 and payroll_frequency = ''biweekly'' and payroll_anchor in (''2026-10-05'', ''2026-10-12'');
+    alter table public.settings alter column payroll_anchor set default ''2026-10-02'';
+  end if;
+end';
 
 -- The pay period a day falls in. Weekly and every-two-weeks periods count from payroll_anchor;
 -- twice a month is the 1st–15th and the 16th–end of the month.

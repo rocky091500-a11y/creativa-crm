@@ -550,8 +550,8 @@ try {
   await login(kiosk, 'owner@creativaacademy.com', 'owner-pass-1');
   await kiosk.click('header nav button[data-view=payroll]');
   await kiosk.click('[data-ptab=setup]');
-  assert.equal(await kiosk.locator('#pay-sched input[name=payroll_anchor]').inputValue(), '2026-10-12', 'pay periods start the week after tuition');
-  assert.match(await kiosk.locator('#pay-weeks').textContent(), /Pay periods:[\s\S]*Tuition is billed/);
+  assert.equal(await kiosk.locator('#pay-sched input[name=payroll_anchor]').inputValue(), '2026-10-02', 'pay periods start Friday Oct 2');
+  assert.match(await kiosk.locator('#pay-weeks').textContent(), /Pay periods \(Friday to Thursday\):[\s\S]*Tuition is billed/);
   assert.equal(await kiosk.locator('#pay-clash').count(), 0, 'pay weeks alternate with tuition weeks');
   await kiosk.click('#dev-add');   // confirm() accepted
   await kiosk.waitForURL(/\/clock\/$/);

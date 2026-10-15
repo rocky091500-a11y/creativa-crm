@@ -1797,9 +1797,9 @@
   const dayLabel = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   const weekdayName = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' });
 
-  const paySched = () => ({ freq: state.settings?.payroll_frequency || 'biweekly', anchor: state.settings?.payroll_anchor || '2026-10-12' });
-  function payPeriodOf(day) {   // same rules as payroll_period() in the database
-    const { freq, anchor } = paySched();
+  const paySched = () => ({ freq: state.settings?.payroll_frequency || 'biweekly', anchor: state.settings?.payroll_anchor || '2026-10-02' });
+  function payPeriodOf(day, sched = paySched()) {   // same rules as payroll_period() in the database
+    const { freq, anchor } = sched;
     if (freq === 'weekly' || freq === 'biweekly') {
       const n = freq === 'weekly' ? 7 : 14;
       const start = addDays(anchor, Math.floor(daysBetween(anchor, day) / n) * n);
@@ -2268,7 +2268,8 @@
       <section class="panel"><h2>Pay schedule</h2>
         <p class="muted small">Match the pay schedule in Patriot, so each pay period here is the one you run there.
           Overtime is counted per workweek, starting on the weekday of the date below.${admin ? '' : ' Only admins can change this.'}</p>
-        <p class="muted small" id="pay-weeks">Pay periods: ${pays.map((pp) => `<b>${esc(fmtPayPeriod(pp))}</b>`).join(', ')}.
+        <p class="muted small" id="pay-weeks">Pay periods${['weekly', 'biweekly'].includes(paySched().freq)
+          ? ` (${esc(weekdayName(pays[0].start))} to ${esc(weekdayName(pays[0].end))})` : ''}: ${pays.map((pp) => `<b>${esc(fmtPayPeriod(pp))}</b>`).join(', ')}.
           ${bills.length ? `Tuition is billed ${bills.map((t) => esc(fmtDate(t))).join(', ')}.` : ''}</p>
         ${sameWeeks ? `<p class="check-warn small" id="pay-clash">These pay periods start the same weeks tuition is billed. Staff pay alternates
           with tuition, so start them a week later (or earlier).</p>` : ''}
@@ -2295,12 +2296,19 @@
     $('#pay-sched', body).addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const f = ev.target;
-      const { data, error } = await sb.from('settings').update({ payroll_frequency: f.payroll_frequency.value, payroll_anchor: f.payroll_anchor.value })
+      const next = { freq: f.payroll_frequency.value, anchor: f.payroll_anchor.value };
+      // Pay periods already entered in Patriot that the new schedule would cut across.
+      const off = P.closed.filter((c) => { const pp = payPeriodOf(c.period_start, next); return pp.start !== c.period_start || pp.end !== c.period_end; });
+      if (off.length && !confirm(`${off.length === 1 ? 'A pay period' : `${off.length} pay periods`} already entered in Patriot (${off.slice(0, 3)
+        .map((c) => fmtPayPeriod({ start: c.period_start, end: c.period_end })).join(', ')}${off.length > 3 ? ', …' : ''}) won’t line up with this schedule. `
+        + 'Their hours stay saved and locked, but new periods that overlap them will show as entered. Save anyway?')) return;
+      const { data, error } = await sb.from('settings').update({ payroll_frequency: next.freq, payroll_anchor: next.anchor })
         .eq('id', 1).select().single();
       if (error) return fail(error, 'Could not save');
       state.settings = data;
       state.payPeriod = null;
       toast('Pay schedule saved');
+      reloadPayroll();   // redraw the pay periods, the tuition dates and the clash warning
     });
   }
 

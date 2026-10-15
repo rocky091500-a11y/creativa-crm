@@ -31,3 +31,12 @@ insert into public.student_contacts (student_id, role, relationship, first_name,
 insert into public.student_finance (student_id, funding, tuition_amount, tuition_frequency)
   select id, '{sr,vpk}', 80, 'biweekly' from public.students where name = 'Test Kid Beta';
 update public.settings set receipt_header = '123 Test Street, Miami FL', receipt_signer = 'Emily Owner, Director';
+
+-- Payroll (008): someone with a 45-hour week in the previous pay period (5 hours overtime) and a missed clock-out.
+insert into public.employees (first_name, last_name, position, pay_rate, lunch_minutes) values ('Cora', 'Seed', 'Teacher', 15, 0);
+insert into public.time_entries (employee_id, clock_in, clock_out, out_reason)
+  select e.id, (d::date + time '08:00') at time zone 'America/New_York', (d::date + time '17:00') at time zone 'America/New_York', 'out'
+    from public.employees e,
+         generate_series((public.payroll_period(current_date - 14)).period_start, (public.payroll_period(current_date - 14)).period_start + 4, interval '1 day') d
+   where e.first_name = 'Cora';
+insert into public.time_entries (employee_id, clock_in) select id, now() - interval '30 hours' from public.employees where first_name = 'Cora';

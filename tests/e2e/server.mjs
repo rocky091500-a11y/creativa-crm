@@ -74,7 +74,8 @@ http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/javascript' });
     return res.end(`window.CRM_CONFIG = { supabaseUrl: 'http://localhost:${PORT}', supabaseAnonKey: '${process.env.ANON_KEY_PLACEHOLDER}' };`);
   }
-  const file = path.join(ROOT, url.pathname === '/' ? 'index.html' : url.pathname);
+  // Like Netlify: / → index.html, /clock/ → clock/index.html
+  const file = path.join(ROOT, url.pathname.endsWith('/') ? url.pathname + 'index.html' : url.pathname);
   if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); return res.end('not found'); }
   res.writeHead(200, { 'content-type': TYPES[path.extname(file)] || 'application/octet-stream', 'content-security-policy': CSP });
   fs.createReadStream(file).pipe(res);

@@ -15,8 +15,12 @@ contact form from creativaacademy.com lands here, and staff move each family fro
   print receipts (one at a time, or every FES-UA receipt for the period at once for reimbursement uploads)
 - **Reports** (finance access) — money received per month, by who paid / method / class, the school year at a
   glance, and who is on School Readiness, SR – BPIECE, FES-UA (with award IDs), FES-EO, VPK or private pay
-- **Settings** (admins) — staff access and finance access, classes and teachers, receipt address line, tour email
-  wording, Telegram alerts, spam protection (blocked senders), and the tour calendar link
+- **Payroll** (payroll access) — a time clock for the front-desk tablet (`/clock/`: tap your name, type a PIN, clock
+  in / lunch / back / out), each pay period's regular and overtime hours per person, timesheets the office can fix,
+  missed clock-outs flagged, and a sheet of hours to type into Patriot Software
+- **Settings** (admins) — staff, finance and payroll access, classes and teachers, receipts (signer, license number,
+  signature, address line), tour email wording, Telegram alerts, spam protection (blocked senders), and the tour
+  calendar link
 - **Telegram alerts** — each new website request is sent to a Telegram chat the moment it arrives
 - **Tour calendar** — every scheduled tour as a private calendar feed for Google Calendar or phones
 - **Tour emails** — a reminder the day before each tour, and a “how was your visit?” email a week later if
@@ -49,7 +53,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql` and `007_billing_contacts.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql` and `008_payroll_timeclock.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -203,6 +207,40 @@ children already billed, with no rate, marked *not billed to the family* (e.g. F
   family account, so siblings billed together are easy to find.
 - Master data (students, contacts, invoices, credits, open A/R) is loaded with `imports/build_master_import.py`; see
   `data/README.md`. The data files never go in this repository.
+- **Late fees** (`008_payroll_timeclock.sql`): tuition not fully paid by the Friday grace day gets one late fee
+  (`settings.late_fee_amount`, $30; 0 turns them off). After that Friday, **Add $30 late fees** on Tuition adds it to
+  every unpaid invoice of the period (`create_late_fees`); a fee shows under the child's status and in *Owed*, and
+  **Waive** voids it for good. Receipts for it read “Late fee — tuition (period)”.
+
+## Receipts
+
+Every receipt shows the school's license number (`settings.receipt_license`, C11MD1517) under the title, and, once an
+admin uploads one on **Settings → Receipts**, the signature of the person in *Signed by* over the signature line. The
+CRM crops the photo to the ink and makes the paper transparent. The image is kept in `receipt_signature`, readable
+only by finance staff (for printing) and changed only by admins; it is never in this repository.
+
+## Payroll and the time clock (008)
+
+Everyone is paid by the hour. Staff clock in and out on the **time clock** (`/clock/`) on a tablet at the front desk;
+the office checks each pay period on **Payroll** and types the hours into **Patriot Software**, which runs payroll
+and paystubs. (Patriot has no file import for hours from other systems, so the CRM gives a sheet to copy from.)
+
+- **Who sees it**: admins, and anyone given **Payroll: Yes** on Settings. Finance access alone doesn't show pay rates.
+- **Staff & PINs**: each person's position, hourly rate, scheduled lunch and schedule. **Make PINs for everyone**
+  gives each a random 4-digit PIN and a sheet of slips to hand out; PINs are stored hashed and can only be replaced,
+  never looked up. Five wrong PINs lock that person out of the clock for 15 minutes.
+- **Setting up the clock**: sign in to the CRM on the tablet, **Payroll → Time clock → Use this device as the time
+  clock**. The tablet keeps a device key (only its hash is stored) and is signed out of the CRM. Remove a lost tablet
+  there and it stops working. Times always come from the server.
+- **Hours**: per pay period (Settings in **Payroll → Time clock → Pay schedule**: weekly, every two weeks, twice a
+  month or monthly; match Patriot). Lunch clocked out is unpaid; overtime is time over 40 hours in a workweek
+  (starting on the pay schedule's weekday), worked out per day by `payroll_hours()`. Estimated gross is
+  rate × regular + 1.5 × rate × overtime, before taxes.
+- **Fixing time**: tap a name for the timesheet, tap a time to change it, or **+ Add time**. Changed times are marked
+  and the clock's original is kept. A stretch open more than 16 hours is a **missed clock-out**, listed at the top.
+- **Hours for Patriot**: the sheet (and CSV) of regular and overtime hours by last name. After entering them in
+  Patriot, **Mark as entered in Patriot** keeps the hours sent and locks that period's time (**Reopen** to change it).
+- Staff names and pay rates were loaded with a one-time SQL file kept outside this repository; never commit them.
 
 ## Telegram alerts
 
@@ -232,7 +270,8 @@ email. Moving them back to *Tour scheduled* asks for the new date and time.
 ```bash
 # Database rules (intake mapping, spam handling, who can see/change what, calendar feed,
 # roster/finance access, receipts, which tour emails and texts are due, opt-outs, Turnstile, reschedule,
-# Telegram alerts, blocked senders and the per-device limit, billing periods and invoices)
+# Telegram alerts, blocked senders and the per-device limit, billing periods and invoices,
+# late fees, receipt signature, payroll access, PINs, the time clock, overtime, locked pay periods)
 PGHOST=... PGPORT=... PGUSER=postgres tests/run-db-tests.sh
 
 # Tour email and text jobs, incoming texts (fake Supabase, Resend and Twilio)

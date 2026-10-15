@@ -358,3 +358,67 @@ code { font-size: 12px; background: var(--cream); padding: 1px 5px; border-radiu
 .pay-pill.ps-not_billed, .pay-pill.ps-void { color: var(--ink-soft); }
 .tag.f-stepup_pending { background: #DDE9EE; color: #3E6373; }
 .panel h2 .muted { font-family: var(--body); font-weight: 500; margin-left: 6px; }
+
+/* receipts (008): license number, signature */
+.receipt .r-license { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); margin-top: 4px; }
+.receipt .r-line { position: relative; }
+.receipt .r-sign { margin-top: 44px; }   /* room for the signature above the line */
+.receipt .r-sig { position: absolute; left: 18px; bottom: -8px; max-height: 84px; max-width: 250px; }
+.sig-box { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 4px; }
+.sig-box p { margin: 0 0 10px; }
+.sig-preview { min-height: 64px; display: flex; align-items: center; margin: 4px 0 8px; }
+.sig-preview img { max-height: 80px; max-width: 280px; }
+label.btn { display: inline-flex; color: var(--ink); font-size: 14px; }
+
+/* payroll (008) */
+.seg { display: inline-flex; flex-wrap: wrap; gap: 4px; background: var(--cream-deep); border-radius: 999px; padding: 4px; margin-bottom: 16px; }
+.seg button { border: 0; background: transparent; border-radius: 999px; padding: 6px 14px; cursor: pointer; font-weight: 500; color: var(--ink-soft); }
+.seg button[aria-selected="true"] { background: var(--white); color: var(--ink); box-shadow: var(--shadow); }
+.here-now, .warn-panel { margin-bottom: 16px; }
+.warn-panel { border-left: 4px solid var(--warn); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { border-radius: 999px; padding: 4px 12px; font-size: 14px; background: var(--cream); }
+.chip.in { background: #DCE6C9; }
+.chip.lunch { background: #F6E7C8; }
+ul.plain { list-style: none; margin: 0; padding: 0; }
+ul.plain li { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--line); }
+ul.plain li:first-child { border-top: 0; }
+ul.plain li .btn { margin-left: auto; padding: 3px 12px; font-size: 13px; }
+.check-warn { color: var(--danger); }
+.check-info { color: var(--ink-soft); }
+table.people tr.inactive td { color: var(--ink-soft); }
+table.ts { margin-bottom: 14px; border: 1px solid var(--line); border-radius: 8px; }
+table.ts tbody tr { cursor: default; }
+table.ts tbody tr:hover { background: none; }
+table.ts td { padding: 6px 8px; vertical-align: middle; }
+table.ts thead th, table.ts tfoot th { padding: 6px 8px; background: var(--cream); }
+table.ts tfoot th { text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--ink); }
+.ts-span { display: inline-flex; gap: 4px; align-items: center; border: 1px solid var(--line); background: var(--white); border-radius: 8px;
+  padding: 3px 8px; margin: 2px 4px 2px 0; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.ts-span:hover { border-color: var(--sage); }
+.ts-span:disabled { cursor: default; border-color: var(--line); }
+.ts-span.open { border-color: var(--warn); color: var(--warn); }
+.ts-edited { color: var(--warn); }
+.ts-total { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 4px 0 12px; }
+.ts-total div { background: var(--cream); border-radius: 8px; padding: 8px 10px; }
+.ts-total dt { font-size: 12px; color: var(--ink-soft); }
+.ts-total dd { margin: 0; font-family: var(--display); font-size: 20px; font-weight: 600; }
+.pin-show { background: #DCE6C9; border-radius: 8px; padding: 10px 12px; margin: 10px 0 0; font-size: 15px; }
+.pin-show b { font-size: 22px; letter-spacing: .15em; }
+.pay-sheet .steps { margin: 0 0 18px; color: var(--ink-soft); }
+.pay-sheet .check-warn { margin: 0 0 12px; }
+.pin-slips { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; max-width: 816px; margin: 0 auto 20px; }
+.pin-slip { display: flex; flex-direction: column; gap: 4px; background: var(--white); border: 1px dashed var(--ink-soft); border-radius: 8px;
+  padding: 14px 16px; break-inside: avoid; }
+.pin-slip .slip-name { font-family: var(--display); font-size: 20px; }
+.pin-slip .slip-pin b { font-size: 28px; letter-spacing: .25em; }
+@media print {
+  .pay-sheet { min-height: 0; }
+  .pin-slips { max-width: none; }
+}
+@media (max-width: 720px) {
+  .ts-total { grid-template-columns: repeat(2, 1fr); }
+  .pin-slips { grid-template-columns: 1fr; }
+  .pay-sheet { padding: 20px 14px; }
+  .pay-sheet .r-table { display: block; overflow-x: auto; }
+}

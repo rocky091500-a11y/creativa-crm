@@ -40,6 +40,10 @@
   const PER_MONTH = { monthly: 1, biweekly: 2, weekly: 4 };
   const PAYER = { parent: 'Parent', sr: 'School Readiness', fes: 'FES / Step Up', vpk: 'VPK', other: 'Other' };
   const METHOD = { cash: 'Cash', check: 'Check', zelle: 'Zelle', card: 'Card', ach: 'Bank transfer', other: 'Other' };
+  // Payroll time clock (008_payroll_timeclock.sql). Times are the school's (Miami) time.
+  const TZ = 'America/New_York';
+  const PAY_FREQ = { weekly: 'Every week', biweekly: 'Every two weeks', semimonthly: 'Twice a month (1st–15th and 16th–end)', monthly: 'Once a month' };
+  const LUNCH = [[0, 'None'], [15, '15 minutes'], [30, '30 minutes'], [45, '45 minutes'], [60, '1 hour']];
   const STUDENT_FIELDS = ['name', 'dob', 'classroom_id', 'status', 'start_date', 'withdrawn_on', 'withdraw_reason',
     'parent_name', 'parent_phone', 'parent_email', 'rbt', 'therapy', 'reg_fee', 'notes', ...DOCS.map((d) => d[0])];
 
@@ -147,6 +151,11 @@
     hasEnrollment: false, // false until 003_enrollment_finance.sql has been run
     hasV5: false,         // false until 006_reschedule_telegram_spam.sql has been run
     hasV6: false,         // false until 007_billing_contacts.sql has been run
+    hasV7: false,         // false until 008_payroll_timeclock.sql has been run
+    signature: null,      // receipt signature image (data: URL), finance only
+    pay: null,            // Payroll page data for payPeriod
+    payPeriod: null,
+    payTab: store.get('payTab', 'hours'),
     invoices: [],
     contacts: [],
     period: null,         // billing Monday shown on the Tuition page
@@ -162,6 +171,7 @@
   const isAdmin = () => state.me?.role === 'admin';
   const canViewFinance = () => isAdmin() || ['view', 'edit'].includes(state.me?.finance);
   const canEditFinance = () => isAdmin() || state.me?.finance === 'edit';
+  const canPayroll = () => state.hasV7 && (isAdmin() || state.me?.payroll === true);
   const classroomName = (id) => state.classrooms.find((c) => c.id === id)?.name || '';
   // The Reschedule stage exists once 006_reschedule_telegram_spam.sql has been run.
   const stages = () => (state.hasV5 ? STAGES : STAGES.filter((s) => s !== 'reschedule'));
@@ -195,7 +205,13 @@
   const invoiceBalance = (inv) => (inv.void ? 0 : Math.max(round2(Number(inv.amount) - invoicePaid(inv)), 0));
   const openInvoices = (sid) => state.invoices.filter((i) => i.student_id === sid && !i.void && invoiceBalance(i) > 0)
     .sort((a, b) => a.invoice_date.localeCompare(b.invoice_date));
-  const invoiceLabel = (inv) => (inv.kind === 'tuition' ? `${inv.description} · ${fmtPeriod(inv.period_start)}` : `${inv.description} · ${fmtDate(inv.invoice_date)}`);
+  const lateFeeFor = (inv) => (inv.late_fee_for && state.invoices.find((i) => i.id === inv.late_fee_for)) || null;   // the tuition it's for
+  const lateFeeOf = (inv) => state.invoices.find((i) => i.late_fee_for === inv.id && !i.void) || null;
+  function invoiceLabel(inv) {
+    if (inv.kind === 'tuition') return `${inv.description} · ${fmtPeriod(inv.period_start)}`;
+    const t = lateFeeFor(inv);
+    return t ? `${inv.description} · ${fmtPeriod(t.period_start)}` : `${inv.description} · ${fmtDate(inv.invoice_date)}`;
+  }
   const contactName = (c) => [c.first_name, c.last_name].filter(Boolean).join(' ');
 
   // ───────────── auth ─────────────
@@ -296,7 +312,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -307,6 +323,7 @@
       fin ? selectAll('invoices', 'invoice_date', false) : none,
       selectAll('student_contacts', 'created_at'),
       sb.from('text_opt_outs').select('phone'), // missing until 005_text_reminders.sql is run
+      fin ? sb.from('receipt_signature').select('image').maybeSingle() : none, // missing until 008
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -322,6 +339,8 @@
       state.settings = set.data || null;
       state.hasV5 = !!state.settings && 'telegram_forms' in state.settings;
       state.hasV6 = !!state.settings && 'billing_anchor' in state.settings;
+      state.hasV7 = !!state.settings && 'payroll_frequency' in state.settings;
+      state.signature = (state.hasV7 && !sig.error && sig.data?.image) || null;
       if (state.hasV6) {
         for (const [res, what] of [[inv, 'invoices'], [con, 'contacts']]) if (res.error) fail(res.error, `Could not load ${what}`);
         state.invoices = inv.data || [];
@@ -362,6 +381,7 @@
     const views = { ...VIEWS,
       ...(state.hasEnrollment ? { roster: 'Enrollment' } : {}),
       ...(state.hasEnrollment && canViewFinance() ? { tuition: 'Tuition', reports: 'Reports' } : {}),
+      ...(canPayroll() ? { payroll: 'Payroll' } : {}),
       ...(isAdmin() ? { staff: 'Settings' } : {}) };
     if (!views[state.view]) state.view = 'today';
     app.innerHTML = `
@@ -388,7 +408,7 @@
     const el = $('#view');
     if (!el) return;
     ({ today: renderToday, board: renderBoard, list: renderList, staff: renderStaff,
-      roster: renderRoster, tuition: renderTuition, reports: renderReports })[state.view](el);
+      roster: renderRoster, tuition: renderTuition, reports: renderReports, payroll: renderPayroll })[state.view](el);
   }
 
   // ───────────── filters ─────────────
@@ -673,8 +693,10 @@
         Once they accept the invite and set a password they appear below — switch <b>Active</b> on to let them in.
         Turning Active off removes their access immediately.</p>
         ${state.hasEnrollment ? `<p class="muted small"><b>Finances</b> opens the Tuition and Reports pages: <b>View only</b> sees tuition,
-        payments and totals; <b>View &amp; record</b> can also record payments, print receipts and set tuition. Admins always have both.</p>` : ''}</div>
-      <div class="table-wrap"><table class="staff-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th>${state.hasEnrollment ? '<th>Finances</th>' : ''}<th>Active</th><th>Joined</th></tr></thead>
+        payments and totals; <b>View &amp; record</b> can also record payments, print receipts and set tuition. Admins always have both.</p>` : ''}
+        ${state.hasV7 ? `<p class="muted small"><b>Payroll</b> opens the Payroll page: everyone’s hours, pay rates and time clock PINs.
+        Admins always have it.</p>` : ''}</div>
+      <div class="table-wrap"><table class="staff-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th>${state.hasEnrollment ? '<th>Finances</th>' : ''}${state.hasV7 ? '<th>Payroll</th>' : ''}<th>Active</th><th>Joined</th></tr></thead>
       <tbody>${state.staff.map((s) => {
         const self = s.id === state.me.id;
         return `<tr data-id="${s.id}">
@@ -685,6 +707,8 @@
             <option value="admin" ${s.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>
           ${state.hasEnrollment ? `<td>${s.role === 'admin' ? '<span class="muted small">Full (admin)</span>' : `<select data-k="finance" ${self ? 'disabled' : ''}
             aria-label="Finance access">${optionsHtml([['none', 'No access'], ['view', 'View only'], ['edit', 'View & record']], s.finance)}</select>`}</td>` : ''}
+          ${state.hasV7 ? `<td>${s.role === 'admin' ? '<span class="muted small">Yes (admin)</span>' : `<select data-k="payroll" ${self ? 'disabled' : ''}
+            aria-label="Payroll access">${optionsHtml([['no', 'No access'], ['yes', 'Yes']], s.payroll ? 'yes' : 'no')}</select>`}</td>` : ''}
           <td><input type="checkbox" data-k="active" ${s.active ? 'checked' : ''} ${self ? 'disabled' : ''} class="check"></td>
           <td>${esc(fmtDate(s.created_at))}</td></tr>`;
       }).join('')}</tbody></table></div>
@@ -705,7 +729,7 @@
     bindSettingsPanels(el);
     $$('.staff-table [data-k]', el).forEach((input) => input.addEventListener('change', async () => {
       const id = input.closest('tr').dataset.id;
-      const patch = { [input.dataset.k]: input.type === 'checkbox' ? input.checked : input.value };
+      const patch = { [input.dataset.k]: input.type === 'checkbox' ? input.checked : input.dataset.k === 'payroll' ? input.value === 'yes' : input.value };
       const { data, error } = await sb.from('profiles').update(patch).eq('id', id).select().single();
       if (error) { fail(error, 'Could not update staff member'); return renderStaff(el); }
       state.staff = state.staff.map((s) => (s.id === id ? data : s));
@@ -1303,6 +1327,8 @@
 
   function receiptLine(p) {
     const inv = p.invoice_id && state.invoices.find((i) => i.id === p.invoice_id);
+    const t = inv && lateFeeFor(inv);
+    if (t) return `${inv.description} — tuition ${longPeriod(t.period_start)}`;
     if (inv) return inv.kind === 'tuition' ? `Tuition (${inv.description}) — ${longPeriod(inv.period_start)}` : inv.description;
     return state.hasV6 ? 'Payment on account' : `Tuition — ${fmtMonth(p.covers_month.slice(0, 7))}`;
   }
@@ -1318,7 +1344,8 @@
     const programLabel = programs.map((k) => (k === 'fes_ua' ? 'FES-UA (Unique Abilities)' : FUNDING[k])).join(' · ');
     return `<article class="receipt">
       <header class="r-band"><img src="/assets/logo.png" alt="${esc(set.school_name || 'Creativa Academy')}">
-        <div class="r-title"><h1>Payment Receipt</h1><span class="r-year">School year ${esc(schoolYear(p.covers_month.slice(0, 7)))}</span></div></header>
+        <div class="r-title"><h1>Payment Receipt</h1><span class="r-year">School year ${esc(schoolYear(p.covers_month.slice(0, 7)))}</span>
+          ${set.receipt_license ? `<span class="r-license">License No. ${esc(set.receipt_license)}</span>` : ''}</div></header>
       <p class="r-intro"><span>Receipt No. <b>${esc(p.receipt_no)}</b></span><span>Date <b>${esc(longDate(p.paid_on))}</b></span></p>
       <h2 class="r-h">Student</h2>
       <table class="r-table"><thead><tr><th>Student</th><th>Date of birth</th><th>Class</th><th>Received from</th></tr></thead>
@@ -1332,7 +1359,8 @@
         <tfoot><tr><th colspan="3">Total received</th><th class="num">${money(p.amount)}</th></tr></tfoot></table>
       ${programs.length || f.award_id ? `<div class="r-box"><h3>${esc(programLabel || 'Scholarship')}</h3>
         ${f.award_id ? `<p>Scholarship / award ID <b>${esc(f.award_id)}</b></p>` : ''}</div>` : ''}
-      <div class="r-sign"><span class="r-line"></span><span>${esc(set.receipt_signer || 'Authorized signature')}</span></div>
+      <div class="r-sign"><span class="r-line">${state.signature ? `<img class="r-sig" src="${esc(state.signature)}" alt="Signature">` : ''}</span>
+        <span>${esc(set.receipt_signer || 'Authorized signature')}</span></div>
       <footer class="r-foot"><b>${esc(set.school_name || 'Creativa Academy')}</b>${set.receipt_header ? `\n${esc(set.receipt_header)}` : ''}</footer>
     </article>`;
   }
@@ -1508,6 +1536,10 @@
     const owedAll = round2(open.reduce((t, i) => t + invoiceBalance(i), 0));
     const creditAll = round2(credits.reduce((t, x) => t + Number(x.amount), 0));
     const toBill = rows.filter((r) => r.status === 'not_invoiced').length;
+    // Late fee: tuition still not fully paid after the Friday grace day (008).
+    const lateAmt = state.hasV7 ? Number(state.settings?.late_fee_amount) || 0 : 0;
+    const lateDue = lateAmt ? rows.filter((r) => r.inv && r.balance > 0 && todayStr() > addDays(r.inv.due_date, 4)
+      && !state.invoices.some((i) => i.late_fee_for === r.inv.id)) : [];   // a waived (voided) fee stays waived
     const periodPays = state.payments.filter((x) => x.paid_on >= p && x.paid_on < addDays(p, billing().days))
       .sort((a, b) => a.paid_on.localeCompare(b.paid_on) || a.receipt_no - b.receipt_no);
     const nameOf = (sid) => state.students.find((s) => s.id === sid)?.name || '';
@@ -1531,6 +1563,7 @@
         <select id="t-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding)).join('')}</select>
         <span class="spacer"></span>
         ${edit && toBill ? `<button class="btn small primary" id="t-bill" type="button">Bill this period (${toBill})</button>` : ''}
+        ${edit && lateDue.length ? `<button class="btn small" id="t-late" type="button">Add ${money(lateAmt)} late fees (${lateDue.length})</button>` : ''}
         <button class="btn small" id="t-fes" type="button">Print FES-UA receipts</button>
         <button class="btn small" id="t-csv" type="button">Download CSV</button>
         ${edit ? '<button class="btn small" id="t-add" type="button">+ Record payment</button>' : ''}
@@ -1539,13 +1572,15 @@
         <th>Student</th><th>Funding</th><th class="num">Rate</th><th class="num">Billed</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th>${edit ? '<th></th>' : ''}
       </tr></thead><tbody id="t-rows"></tbody></table></div>
       <p class="muted small">Each child is billed their biweekly rate on the billing Monday. Step Up (pending) children aren’t billed and
-        aren’t late. Set the rate, billing item and funding on each child’s page.</p>
+        aren’t late. Set the rate, billing item and funding on each child’s page.${lateAmt ? ` Tuition not paid by Friday gets a
+        ${money(lateAmt)} late fee once you tap “Add late fees”; waive one from the list below.` : ''}</p>
       <section class="panel"><h2>Owed from all periods <span class="muted small">${money(owedAll)}</span></h2>
-        <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Student</th><th>For</th><th>Due</th><th class="num">Balance</th><th>Late</th></tr></thead>
+        <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Student</th><th>For</th><th>Due</th><th class="num">Balance</th><th>Late</th>${edit ? '<th></th>' : ''}</tr></thead>
         <tbody id="t-open">${open.map((i) => `<tr data-inv="${i.id}" data-sid="${i.student_id}"><td>${esc(familyOf(i.student_id))}</td><td>${esc(nameOf(i.student_id))}</td>
           <td>${esc(invoiceLabel(i))}</td><td>${esc(fmtDate(i.due_date))}</td><td class="num">${money(invoiceBalance(i))}</td>
-          <td>${hasFunding(i.student_id, 'stepup_pending') ? '<span class="pay-pill ps-stepup">Step Up pending</span>' : `<span class="pay-pill ${late(i) === 'current' ? 'ps-open' : 'ps-overdue'}">${late(i)}</span>`}</td></tr>`).join('')
-          || '<tr><td colspan="6" class="muted">Nobody owes anything.</td></tr>'}</tbody></table></div>
+          <td>${i.late_fee_for ? '<span class="pay-pill ps-overdue">Late fee</span>' : hasFunding(i.student_id, 'stepup_pending') ? '<span class="pay-pill ps-stepup">Step Up pending</span>' : `<span class="pay-pill ${late(i) === 'current' ? 'ps-open' : 'ps-overdue'}">${late(i)}</span>`}</td>
+          ${edit ? `<td>${i.late_fee_for && !invoicePaid(i) ? `<button class="btn small ghost" type="button" data-waive="${i.id}">Waive</button>` : ''}</td>` : ''}</tr>`).join('')
+          || `<tr><td colspan="${edit ? 7 : 6}" class="muted">Nobody owes anything.</td></tr>`}</tbody></table></div>
       </section>
       <section class="panel"><h2>Credits: money not applied to an invoice <span class="muted small">${money(creditAll)}</span></h2>
         <div class="table-wrap flat"><table><thead><tr><th>Received</th><th>Student</th><th>Method</th><th class="num">Amount</th><th>Note</th>${edit ? '<th></th>' : ''}</tr></thead>
@@ -1578,6 +1613,27 @@
       toast(`${data} invoice${data === 1 ? '' : 's'} created for ${fmtPeriod(p)}`);
       renderTuition(el);
     });
+    $('#t-late', el)?.addEventListener('click', async () => {
+      const n = lateDue.length;
+      if (!confirm(`Add a ${money(lateAmt)} late fee for ${n} ${n === 1 ? 'child' : 'children'} whose tuition for ${fmtPeriod(p)} wasn’t paid by Friday ${fmtDate(addDays(p, 4))}?`)) return;
+      const { data, error } = await sb.rpc('create_late_fees', { p_period: p });
+      if (error) return fail(error, 'Could not add the late fees');
+      const r = await selectAll('invoices', 'invoice_date', false);
+      if (!r.error) state.invoices = r.data;
+      toast(`${data} late fee${data === 1 ? '' : 's'} added`);
+      renderTuition(el);
+    });
+    $$('[data-waive]', el).forEach((b) => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const inv = state.invoices.find((i) => i.id === b.dataset.waive);
+      if (!confirm(`Waive the ${money(inv.amount)} late fee for ${nameOf(inv.student_id)}?`)) return;
+      const { data, error } = await sb.from('invoices').update({ void: true, note: [inv.note, `Waived ${fmtDate(todayStr())}`].filter(Boolean).join(' · ') })
+        .eq('id', inv.id).select().single();
+      if (error) return fail(error, 'Could not waive the late fee');
+      state.invoices = state.invoices.map((i) => (i.id === data.id ? data : i));
+      toast('Late fee waived');
+      renderTuition(el);
+    }));
     $('#t-fes', el).addEventListener('click', () => {
       const fes = periodPays.filter((x) => hasFunding(x.student_id, 'fes_ua'));
       const family = fes.filter((x) => x.payer === 'parent');
@@ -1615,7 +1671,8 @@
           <td class="num">${r.inv ? money(r.inv.amount) : ''}</td>
           <td class="num">${r.paid ? money(r.paid) : ''}</td>
           <td class="num">${r.balance ? money(r.balance) : ''}</td>
-          <td><span class="pay-pill ps-${r.status}">${INV_STATUS[r.status]}</span></td>
+          <td><span class="pay-pill ps-${r.status}">${INV_STATUS[r.status]}</span>${r.inv && lateFeeOf(r.inv)
+            ? `<div class="muted small">+ ${money(lateFeeOf(r.inv).amount)} late fee${invoiceBalance(lateFeeOf(r.inv)) ? '' : ' (paid)'}</div>` : ''}</td>
           ${edit ? `<td>${r.inv && r.balance > 0 ? `<button class="btn small" type="button" data-pay-inv="${r.inv.id}">Record payment</button>`
             : r.status === 'not_invoiced' ? `<button class="btn small" type="button" data-bill-one="${r.s.id}">Bill ${money(periodAmount(r.fr))}</button>`
               : r.inv ? `<button class="btn small" type="button" data-pay-for="${r.s.id}">+ Payment</button>` : ''}</td>` : ''}</tr>`).join('')
@@ -1715,6 +1772,527 @@
       })));
   }
 
+  // ───────────── Payroll ─────────────
+  // Staff clock in and out on the time clock page (/clock/) on the front-desk tablet. Here the office
+  // checks each pay period, fixes mistakes, and copies everyone's regular and overtime hours into
+  // Patriot Software, which runs payroll and the paystubs.
+  const empName = (e) => [e.first_name, e.last_name].filter(Boolean).join(' ');
+  const empLastFirst = (e) => (e.last_name ? `${e.last_name}, ${e.first_name}` : e.first_name);
+  const empSort = (a, b) => (a.last_name || a.first_name).localeCompare(b.last_name || b.first_name) || a.first_name.localeCompare(b.first_name);
+  const hrs = (min) => (Math.round((Number(min) || 0) / 60 * 100) / 100).toFixed(2);   // decimal hours, as Patriot takes them
+  const hm = (min) => { const m = Math.round(Number(min) || 0); return `${Math.floor(m / 60)}h ${pad(m % 60)}m`; };
+  const nyFmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  function nyParts(when) {   // the school's date (YYYY-MM-DD) and time (HH:MM) at a moment
+    const p = Object.fromEntries(nyFmt.formatToParts(new Date(when)).map((x) => [x.type, x.value]));
+    return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour === '24' ? '00' : p.hour}:${p.minute}` };
+  }
+  function nyIso(date, time) {   // a date and time at the school → ISO timestamp
+    const want = Date.parse(`${date}T${time}:00Z`);
+    let t = want;
+    for (let i = 0; i < 2; i++) { const p = nyParts(t); t += want - Date.parse(`${p.date}T${p.time}:00Z`); }
+    return new Date(t).toISOString();
+  }
+  const nyToday = () => nyParts(Date.now()).date;
+  const clockTime = (iso) => new Date(iso).toLocaleTimeString('en-US', { timeZone: TZ, hour: 'numeric', minute: '2-digit' });
+  const dayLabel = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const weekdayName = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' });
+
+  const paySched = () => ({ freq: state.settings?.payroll_frequency || 'biweekly', anchor: state.settings?.payroll_anchor || '2026-10-05' });
+  function payPeriodOf(day) {   // same rules as payroll_period() in the database
+    const { freq, anchor } = paySched();
+    if (freq === 'weekly' || freq === 'biweekly') {
+      const n = freq === 'weekly' ? 7 : 14;
+      const start = addDays(anchor, Math.floor(daysBetween(anchor, day) / n) * n);
+      return { start, end: addDays(start, n - 1) };
+    }
+    const ym = day.slice(0, 7);
+    if (freq === 'semimonthly') return Number(day.slice(8)) > 15 ? { start: ym + '-16', end: monthEnd(ym) } : { start: ym + '-01', end: ym + '-15' };
+    return { start: ym + '-01', end: monthEnd(ym) };
+  }
+  const fmtPayPeriod = (pp) => `${fmtDate(pp.start)} – ${fmtDate(pp.end)}`;
+  const longPayPeriod = (pp) => `${new Date(pp.start + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${longDate(pp.end)}`;
+  function weekStartOf(day) {
+    const a = new Date(paySched().anchor + 'T00:00:00').getDay(), d = new Date(day + 'T00:00:00').getDay();
+    return addDays(day, -((d - a + 7) % 7));
+  }
+  const STALE_MS = 16 * 3600e3;   // a stretch open longer than this is a missed clock-out
+  const isStale = (x) => !x.clock_out && Date.now() - new Date(x.clock_in) > STALE_MS;
+
+  async function loadPayroll(pp) {
+    const entries = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await sb.from('time_entries').select('*').gte('work_date', pp.start).lte('work_date', pp.end)
+        .order('clock_in').order('id').range(from, from + 999);
+      if (error) { fail(error, 'Could not load the time clock'); return false; }
+      entries.push(...data);
+      if (data.length < 1000) break;
+    }
+    const [emp, open, hours, closed, devices] = await Promise.all([
+      sb.from('employees').select('*').order('first_name'),
+      sb.from('time_entries').select('*').is('clock_out', null).order('clock_in'),
+      sb.rpc('payroll_hours', { p_start: pp.start, p_end: pp.end }),
+      sb.from('payroll_periods').select('*').order('period_start', { ascending: false }),
+      sb.from('timeclock_devices').select('id, name, created_at, last_seen_at').order('created_at'),
+    ]);
+    for (const [r, what] of [[emp, 'staff'], [open, 'the time clock'], [hours, 'hours'], [closed, 'pay periods'], [devices, 'time clocks']]) {
+      if (r.error) { fail(r.error, `Could not load ${what}`); return false; }
+    }
+    state.pay = { pp, entries, employees: emp.data, open: open.data, hours: hours.data, closed: closed.data, devices: devices.data };
+    return true;
+  }
+  const closedFor = (pp) => state.pay.closed.find((c) => c.period_start <= pp.end && c.period_end >= pp.start) || null;
+
+  // Minutes per person for the period (regular / overtime split by the database, per workweek).
+  function payTotals() {
+    const by = {};
+    for (const h of state.pay.hours) {
+      const t = by[h.employee_id] || (by[h.employee_id] = { minutes: 0, regular: 0, overtime: 0, open: 0 });
+      t.minutes += Number(h.minutes); t.regular += Number(h.regular); t.overtime += Number(h.overtime); t.open += h.open_entries;
+    }
+    return by;
+  }
+  const ZERO = { minutes: 0, regular: 0, overtime: 0, open: 0 };
+  const grossOf = (e, t) => round2((Number(e.pay_rate) || 0) * (Number(hrs(t.regular)) + 1.5 * Number(hrs(t.overtime))));
+  // Things to look at before sending hours to Patriot.
+  function payChecks(e) {
+    const mine = state.pay.entries.filter((x) => x.employee_id === e.id);
+    const out = [];
+    const missed = state.pay.open.filter((x) => x.employee_id === e.id && isStale(x) && x.work_date >= state.pay.pp.start && x.work_date <= state.pay.pp.end);
+    if (missed.length) out.push(['warn', `${missed.length} missing clock-out${missed.length === 1 ? '' : 's'}`]);
+    if (e.lunch_minutes > 0) {
+      const days = {};
+      mine.filter((x) => x.clock_out).forEach((x) => { (days[x.work_date] = days[x.work_date] || []).push(x); });
+      const noLunch = Object.values(days).filter((list) => list.length === 1
+        && (new Date(list[0].clock_out) - new Date(list[0].clock_in)) / 60000 > 6 * 60).length;
+      if (noLunch) out.push(['info', `no lunch clocked on ${noLunch} day${noLunch === 1 ? '' : 's'}`]);
+    }
+    const edited = mine.filter((x) => x.edited_at || x.source === 'office').length;
+    if (edited) out.push(['info', `${edited} changed or added by the office`]);
+    return out;
+  }
+
+  function renderPayroll(el) {
+    if (!state.payPeriod) state.payPeriod = payPeriodOf(nyToday());
+    const tab = ['hours', 'people', 'setup'].includes(state.payTab) ? state.payTab : 'hours';
+    el.innerHTML = `<div class="seg" role="tablist" aria-label="Payroll">${[['hours', 'Hours'], ['people', 'Staff & PINs'], ['setup', 'Time clock']]
+        .map(([k, v]) => `<button type="button" role="tab" data-ptab="${k}" aria-selected="${tab === k}">${v}</button>`).join('')}</div>
+      <div id="pay-body"><p class="muted">Loading…</p></div>`;
+    $$('[data-ptab]', el).forEach((b) => b.addEventListener('click', () => {
+      state.payTab = b.dataset.ptab;
+      store.set('payTab', state.payTab);
+      renderPayroll(el);
+    }));
+    const pp = state.payPeriod;
+    return loadPayroll(pp).then((loaded) => {
+      const body = $('#pay-body', el);
+      if (!loaded || !body || state.view !== 'payroll' || state.payPeriod !== pp) return;
+      ({ hours: drawPayHours, people: drawPayPeople, setup: drawPaySetup })[tab](body, el);
+    });
+  }
+  const reloadPayroll = () => renderPayroll($('#view'));
+
+  function drawPayHours(body, el) {
+    const P = state.pay, pp = P.pp, T = payTotals(), closed = closedFor(pp);
+    const people = P.employees.filter((e) => e.active || (T[e.id]?.minutes || T[e.id]?.open)).sort(empSort);
+    const sum = (k) => people.reduce((t, e) => t + (T[e.id]?.[k] || 0), 0);
+    const gross = round2(people.reduce((t, e) => t + grossOf(e, T[e.id] || ZERO), 0));
+    const nameOf = (id) => { const e = P.employees.find((x) => x.id === id); return e ? empName(e) : ''; };
+    const here = P.open.filter((x) => !isStale(x));
+    const lastOut = {};
+    P.entries.filter((x) => x.clock_out).forEach((x) => { if (!lastOut[x.employee_id] || x.clock_out > lastOut[x.employee_id].clock_out) lastOut[x.employee_id] = x; });
+    const atLunch = Object.values(lastOut).filter((x) => x.out_reason === 'lunch' && Date.now() - new Date(x.clock_out) < 3 * 3600e3
+      && !P.open.some((o) => o.employee_id === x.employee_id && o.clock_in > x.clock_out));
+    const missed = P.open.filter(isStale);
+    const thisPeriod = pp.start === payPeriodOf(nyToday()).start;
+    body.innerHTML = `<div class="month-bar"><button class="btn small" id="pp-prev" type="button" aria-label="Previous pay period">‹</button>
+        <b>${esc(fmtPayPeriod(pp))}, ${pp.end.slice(0, 4)}</b>
+        <button class="btn small" id="pp-next" type="button" aria-label="Next pay period">›</button>
+        ${thisPeriod ? '' : '<button class="btn small ghost" id="pp-now" type="button">This pay period</button>'}
+        <span class="muted small">Pay period · ${esc(PAY_FREQ[paySched().freq].toLowerCase())}</span>
+        ${closed ? `<span class="pay-pill ps-paid">Entered in Patriot ${esc(fmtDate(closed.closed_at))}${closed.closed_by ? ' · ' + esc(staffName(closed.closed_by)) : ''}</span>` : ''}</div>
+      <div class="stats">
+        <div class="stat"><b>${hrs(sum('minutes'))}</b><span>Hours worked</span></div>
+        <div class="stat"><b>${hrs(sum('overtime'))}</b><span>Overtime hours</span></div>
+        <div class="stat"><b>${money(gross)}</b><span>Estimated gross pay</span></div>
+        <div class="stat"><b>${people.filter((e) => (T[e.id]?.minutes || 0) > 0).length}</b><span>People who worked</span></div>
+      </div>
+      ${missed.length ? `<section class="panel warn-panel" id="pp-missed"><h2>Missing clock-outs <span class="muted small">${missed.length}</span></h2>
+        <p class="muted small">These people clocked in and never clocked out. Put in the time they left so their hours count.</p>
+        <ul class="plain">${missed.map((x) => `<li><b>${esc(nameOf(x.employee_id))}</b> clocked in ${esc(dayLabel(x.work_date))} at ${esc(clockTime(x.clock_in))}
+          <button class="btn small" type="button" data-fix="${x.id}">Fix</button></li>`).join('')}</ul></section>` : ''}
+      ${thisPeriod ? `<section class="panel here-now"><h2>At work now <span class="muted small">${here.length}</span></h2>
+        <div class="chips">${here.map((x) => `<span class="chip in">${esc(nameOf(x.employee_id))} <span class="muted">since ${esc(clockTime(x.clock_in))}</span></span>`).join('')}
+        ${atLunch.map((x) => `<span class="chip lunch">${esc(nameOf(x.employee_id))} <span class="muted">at lunch since ${esc(clockTime(x.clock_out))}</span></span>`).join('')}
+        ${here.length || atLunch.length ? '' : '<span class="muted small">Nobody is clocked in.</span>'}</div></section>` : ''}
+      <div class="toolbar">
+        <span class="spacer"></span>
+        <button class="btn small primary" id="pp-patriot" type="button">Hours for Patriot</button>
+        <button class="btn small" id="pp-csv" type="button">Download punches (CSV)</button>
+        ${closed ? '' : '<button class="btn small" id="pp-add" type="button">+ Add time</button>'}
+        ${closed ? '<button class="btn small" id="pp-reopen" type="button">Reopen</button>'
+          : '<button class="btn small" id="pp-close" type="button">Mark as entered in Patriot</button>'}
+      </div>
+      <div class="table-wrap"><table class="payroll"><thead><tr><th>Name</th><th class="num">Rate</th><th class="num">Regular</th>
+        <th class="num">Overtime</th><th class="num">Total hours</th><th class="num">Est. gross</th><th>Check</th></tr></thead>
+        <tbody id="pp-rows">${people.map((e) => {
+          const t = T[e.id] || ZERO;
+          return `<tr data-emp="${e.id}"><td><b>${esc(empName(e))}</b><div class="muted small">${esc(e.position || '')}${e.active ? '' : ' · not active'}</div></td>
+            <td class="num">${e.pay_rate != null ? money(e.pay_rate) : '<span class="muted small">no rate</span>'}</td>
+            <td class="num">${t.minutes ? hrs(t.regular) : ''}</td><td class="num">${t.overtime ? hrs(t.overtime) : ''}</td>
+            <td class="num"><b>${t.minutes ? hrs(t.minutes) : ''}</b></td><td class="num">${t.minutes ? money(grossOf(e, t)) : ''}</td>
+            <td>${payChecks(e).map(([k, v]) => `<div class="check-${k} small">${esc(v)}</div>`).join('')}</td></tr>`;
+        }).join('') || '<tr><td colspan="7" class="muted">Add your staff on the “Staff &amp; PINs” tab.</td></tr>'}</tbody>
+        <tfoot><tr><th>Total</th><th></th><th class="num">${hrs(sum('regular'))}</th><th class="num">${hrs(sum('overtime'))}</th>
+          <th class="num">${hrs(sum('minutes'))}</th><th class="num">${money(gross)}</th><th></th></tr></tfoot></table></div>
+      <p class="muted small">Tap a name for their day-by-day timesheet. Lunch clocked out is unpaid. Overtime is time over 40 hours in a workweek
+        (${esc(weekdayName(paySched().anchor))} to ${esc(weekdayName(addDays(paySched().anchor, 6)))}), paid at 1½ times the rate.
+        Estimated gross is before taxes; Patriot works out the paychecks.</p>`;
+
+    const go = (np) => { state.payPeriod = np; renderPayroll(el); };
+    $('#pp-prev', body).addEventListener('click', () => go(payPeriodOf(addDays(pp.start, -1))));
+    $('#pp-next', body).addEventListener('click', () => go(payPeriodOf(addDays(pp.end, 1))));
+    $('#pp-now', body)?.addEventListener('click', () => go(payPeriodOf(nyToday())));
+    $$('#pp-rows tr[data-emp]', body).forEach((tr) => tr.addEventListener('click', () => openTimesheet(tr.dataset.emp)));
+    $$('[data-fix]', body).forEach((b) => b.addEventListener('click', () => openTimeEntry({ entryId: b.dataset.fix })));
+    $('#pp-add', body)?.addEventListener('click', () => openTimeEntry({}));
+    $('#pp-patriot', body).addEventListener('click', () => showPatriotSheet());
+    $('#pp-csv', body).addEventListener('click', () => {
+      const byId = Object.fromEntries(P.employees.map((e) => [e.id, e]));
+      csvDownload(`creativa-time-${pp.start}.csv`,
+        ['Last name', 'First name', 'Date', 'Clock in', 'Clock out', 'Left for', 'Hours', 'Recorded by', 'Changed by the office', 'Note'],
+        P.entries.slice().sort((a, b) => empSort(byId[a.employee_id], byId[b.employee_id]) || a.clock_in.localeCompare(b.clock_in)).map((x) => {
+          const e = byId[x.employee_id] || {};
+          return [e.last_name, e.first_name, x.work_date, clockTime(x.clock_in), x.clock_out ? clockTime(x.clock_out) : 'not clocked out',
+            x.clock_out ? (x.out_reason === 'lunch' ? 'Lunch' : 'Day') : '', x.clock_out ? hrs((new Date(x.clock_out) - new Date(x.clock_in)) / 60000) : '',
+            x.source === 'clock' ? 'Time clock' : 'Office', x.edited_at ? fmtDateTime(x.edited_at) : '', x.note];
+        }));
+    });
+    $('#pp-close', body)?.addEventListener('click', async () => {
+      if (!confirm(`Mark ${fmtPayPeriod(pp)} as entered in Patriot? Its hours are saved as sent, and its time can’t be changed unless you reopen it.`)) return;
+      const { error } = await sb.rpc('payroll_close_period', { p_start: pp.start, p_end: pp.end });
+      if (error) return fail(error, 'Could not mark the pay period');
+      toast('Pay period marked as entered in Patriot');
+      reloadPayroll();
+    });
+    $('#pp-reopen', body)?.addEventListener('click', async () => {
+      if (!confirm('Reopen this pay period so its time can be changed? If you change hours, fix them in Patriot too.')) return;
+      const { error } = await sb.from('payroll_periods').delete().eq('period_start', closed.period_start);
+      if (error) return fail(error, 'Could not reopen the pay period');
+      toast('Pay period reopened');
+      reloadPayroll();
+    });
+  }
+
+  function openTimesheet(empId) {
+    const P = state.pay, e = P.employees.find((x) => x.id === empId);
+    if (!e) return;
+    const closed = closedFor(P.pp), t = payTotals()[empId] || ZERO;
+    const days = P.hours.filter((h) => h.employee_id === empId);
+    const entries = P.entries.filter((x) => x.employee_id === empId);
+    const weeks = [];
+    days.forEach((d) => {
+      const w = weekStartOf(d.work_date);
+      if (!weeks.length || weeks[weeks.length - 1].start !== w) weeks.push({ start: w, days: [] });
+      weeks[weeks.length - 1].days.push(d);
+    });
+    const span = (x) => `<button type="button" class="ts-span${x.clock_out ? '' : ' open'}" data-entry="${x.id}" ${closed ? 'disabled' : ''}>
+        ${esc(clockTime(x.clock_in))} – ${x.clock_out ? esc(clockTime(x.clock_out)) : '<b>no clock-out</b>'}${x.out_reason === 'lunch' ? ' <span class="muted">lunch</span>' : ''}
+        ${x.edited_at || x.source === 'office' ? '<span class="ts-edited" title="Changed or added by the office">✎</span>' : ''}</button>`;
+    const ctl = mountDrawer({
+      title: esc(empName(e)),
+      sub: esc([e.position, e.pay_rate != null ? `${money(e.pay_rate)}/hour` : 'no pay rate', e.lunch_minutes ? `lunch ${e.lunch_minutes} min` : 'no lunch',
+        e.schedule].filter(Boolean).join(' · ')),
+      body: `<div class="section"><h3 class="sub-h">${esc(longPayPeriod(P.pp))}</h3>
+        ${weeks.map((w) => {
+          const reg = w.days.reduce((s, d) => s + Number(d.regular), 0), ot = w.days.reduce((s, d) => s + Number(d.overtime), 0);
+          return `<table class="ts"><thead><tr><th colspan="3">Week of ${esc(dayLabel(w.start))}</th></tr></thead><tbody>
+            ${w.days.map((d) => `<tr><td class="nowrap">${esc(dayLabel(d.work_date))}</td>
+              <td>${entries.filter((x) => x.work_date === d.work_date).map(span).join('')}</td>
+              <td class="num">${hrs(d.minutes)}${Number(d.overtime) ? `<div class="muted small">${hrs(d.overtime)} OT</div>` : ''}</td></tr>`).join('')}
+            </tbody><tfoot><tr><th colspan="2">Week total${ot ? ` · ${hrs(ot)} overtime` : ''}</th><th class="num">${hrs(reg + ot)}</th></tr></tfoot></table>`;
+        }).join('') || '<p class="muted">No time in this pay period.</p>'}
+        <dl class="ts-total"><div><dt>Regular</dt><dd>${hrs(t.regular)}</dd></div><div><dt>Overtime</dt><dd>${hrs(t.overtime)}</dd></div>
+          <div><dt>Total hours</dt><dd>${hrs(t.minutes)}</dd></div><div><dt>Est. gross</dt><dd>${money(grossOf(e, t))}</dd></div></dl>
+        ${closed ? '<p class="muted small">This pay period was entered in Patriot, so its time is locked. Reopen it on the Hours tab to change it.</p>'
+          : '<p class="muted small">Tap a time to change it. ✎ = changed or added by the office (the time clock’s original is kept).</p>'}</div>`,
+      foot: `<span class="spacer"></span><button class="btn" data-close type="button">Close</button>
+        ${closed ? '' : '<button class="btn primary" id="ts-add" type="button">+ Add time</button>'}`,
+    });
+    const back = () => openTimesheet(empId);
+    $$('[data-entry]', ctl.drawer).forEach((b) => b.addEventListener('click', () => openTimeEntry({ entryId: b.dataset.entry, back })));
+    $('#ts-add', ctl.drawer)?.addEventListener('click', () => openTimeEntry({ employeeId: empId, back }));
+  }
+
+  function openTimeEntry({ entryId, employeeId, back }) {
+    const P = state.pay;
+    const x = entryId ? P.entries.concat(P.open).find((r) => r.id === entryId) : null;
+    const empId = x ? x.employee_id : employeeId;
+    const emp = P.employees.find((e) => e.id === empId);
+    const inP = x ? nyParts(x.clock_in) : null, outP = x?.clock_out ? nyParts(x.clock_out) : null;
+    const today = nyToday();
+    const defDay = P.pp.start <= today && today <= P.pp.end ? today : P.pp.end;
+    const ctl = mountDrawer({
+      title: x ? 'Change time' : 'Add time',
+      sub: emp ? esc(empName(emp)) : '',
+      body: `<div class="section"><div class="grid2">
+          ${emp ? '' : `<label class="full">Who<select name="employee_id" required><option value="">Choose…</option>
+            ${optionsHtml(P.employees.filter((e) => e.active).sort(empSort).map((e) => [e.id, empName(e)]), '')}</select></label>`}
+          ${fInput('day', 'Day', inP ? inP.date : defDay, 'date', `required max="${today}"`)}
+          <span></span>
+          ${fInput('t_in', 'Clocked in', inP?.time || '', 'time', 'required')}
+          ${fInput('t_out', 'Clocked out', outP?.time || '', 'time')}
+          ${fSelect('out_reason', 'Left for', [['out', 'The day'], ['lunch', 'Lunch (unpaid)']], x?.out_reason || 'out')}
+          <label class="full">Note<input name="note" value="${esc(x?.note)}" maxlength="300" placeholder="e.g. Forgot to clock out, left at 4:30"></label>
+        </div>
+        ${x?.source === 'clock' ? `<p class="muted small">From the time clock${x.original_in ? `. The clock had ${esc(clockTime(x.original_in))} – ${x.original_out ? esc(clockTime(x.original_out)) : 'no clock-out'};
+          changed by ${esc(staffName(x.edited_by) || 'the office')} ${esc(fmtDateTime(x.edited_at))}` : ''}.</p>`
+          : x ? `<p class="muted small">Added by ${esc(staffName(x.created_by) || 'the office')}${x.edited_at ? `, changed ${esc(fmtDateTime(x.edited_at))}` : ''}.</p>` : ''}
+        <p class="muted small">Leave “Clocked out” empty only if they are still here.</p></div>`,
+      foot: `${x ? '<button class="btn danger" id="te-del" type="button">Delete</button>' : ''}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="te-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    const done = async () => { ctl.dirty = false; closeDrawer(); await reloadPayroll(); if (back) back(); };
+    $('#te-save', drawer).addEventListener('click', async () => {
+      const who = emp ? emp.id : form.employee_id.value;
+      const day = form.day.value, tin = form.t_in.value, tout = form.t_out.value;
+      if (!who) return toast('Choose who this time is for', true);
+      if (!day || !tin) return toast('Enter the day and the time they clocked in', true);
+      if (tout && tout <= tin) return toast('Clocked out must be later than clocked in, on the same day', true);
+      const row = { clock_in: nyIso(day, tin), clock_out: tout ? nyIso(day, tout) : null, out_reason: tout ? form.out_reason.value : null, note: formVal(form, 'note') };
+      const btn = $('#te-save', drawer);
+      btn.disabled = true;
+      const { error } = x ? await sb.from('time_entries').update(row).eq('id', x.id) : await sb.from('time_entries').insert({ ...row, employee_id: who });
+      btn.disabled = false;
+      if (error) return fail(error, 'Could not save the time');
+      toast('Saved');
+      done();
+    });
+    $('#te-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm('Delete this time?')) return;
+      const { error } = await sb.from('time_entries').delete().eq('id', x.id);
+      if (error) return fail(error, 'Could not delete the time');
+      toast('Deleted');
+      done();
+    });
+  }
+
+  // What to type into Patriot: Payroll → Run Payroll, one line per person.
+  function showPatriotSheet() {
+    const P = state.pay, T = payTotals();
+    const list = P.employees.filter((e) => (T[e.id]?.minutes || 0) > 0).sort(empSort);
+    const missed = P.open.filter((x) => isStale(x) && x.work_date >= P.pp.start && x.work_date <= P.pp.end).length;
+    const tot = (k) => list.reduce((s, e) => s + T[e.id][k], 0);
+    const sheet = document.createElement('div');
+    sheet.className = 'print-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.innerHTML = `<div class="print-bar no-print"><b>Hours for Patriot</b><span class="spacer"></span>
+        <button class="btn" type="button" id="ps-csv">Download CSV</button>
+        <button class="btn primary" type="button" id="ps-print">Print / Save as PDF</button>
+        <button class="btn" type="button" id="ps-close">Close</button></div>
+      <article class="receipt pay-sheet">
+        <header class="r-band"><img src="/assets/logo.png" alt="${esc(state.settings?.school_name || 'Creativa Academy')}">
+          <div class="r-title"><h1>Hours for Patriot</h1><span class="r-year">Pay period ${esc(longPayPeriod(P.pp))}</span></div></header>
+        ${missed ? `<p class="check-warn"><b>${missed} missing clock-out${missed === 1 ? '' : 's'}</b>: fix ${missed === 1 ? 'it' : 'them'} on the Hours tab first, or those hours are left out.</p>` : ''}
+        <ol class="steps no-print">
+          <li>In Patriot, open <b>Payroll → Run Payroll</b> and pick the pay period <b>${esc(longPayPeriod(P.pp))}</b>.</li>
+          <li>For each person below, type the <b>Regular</b> and <b>Overtime</b> hours.</li>
+          <li>Preview, approve, then come back here and tap <b>Mark as entered in Patriot</b>.</li>
+        </ol>
+        <table class="r-table"><thead><tr><th>Employee</th><th class="num">Regular hours</th><th class="num">Overtime hours</th><th class="num">Total hours</th>
+          <th class="num">Rate</th><th class="num">Est. gross</th></tr></thead>
+          <tbody>${list.map((e) => `<tr><td><b>${esc(empLastFirst(e))}</b></td><td class="num"><b>${hrs(T[e.id].regular)}</b></td>
+            <td class="num"><b>${T[e.id].overtime ? hrs(T[e.id].overtime) : '0.00'}</b></td><td class="num">${hrs(T[e.id].minutes)}</td>
+            <td class="num">${e.pay_rate != null ? money(e.pay_rate) : ''}</td><td class="num">${money(grossOf(e, T[e.id]))}</td></tr>`).join('')
+            || '<tr><td colspan="6">No hours in this pay period.</td></tr>'}</tbody>
+          <tfoot><tr><th>Total</th><th class="num">${hrs(tot('regular'))}</th><th class="num">${hrs(tot('overtime'))}</th><th class="num">${hrs(tot('minutes'))}</th>
+            <th></th><th class="num">${money(round2(list.reduce((s, e) => s + grossOf(e, T[e.id]), 0)))}</th></tr></tfoot></table>
+        <p class="r-note">Overtime: time over 40 hours in a workweek, at 1½ times the rate. Estimated gross is before taxes and deductions.
+          Printed ${esc(fmtDateTime(new Date().toISOString()))}.</p>
+      </article>`;
+    document.body.append(sheet);
+    document.body.classList.add('printing');
+    const close = () => { sheet.remove(); document.body.classList.remove('printing'); };
+    $('#ps-print', sheet).addEventListener('click', () => window.print());
+    $('#ps-close', sheet).addEventListener('click', close);
+    $('#ps-csv', sheet).addEventListener('click', () => csvDownload(`creativa-patriot-hours-${P.pp.start}.csv`,
+      ['Last name', 'First name', 'Regular hours', 'Overtime hours', 'Total hours', 'Pay rate', 'Estimated gross'],
+      list.map((e) => [e.last_name, e.first_name, hrs(T[e.id].regular), hrs(T[e.id].overtime), hrs(T[e.id].minutes), e.pay_rate, grossOf(e, T[e.id])])));
+    sheet.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') close(); });
+    $('#ps-close', sheet).focus();
+  }
+
+  function drawPayPeople(body, el) {
+    const P = state.pay;
+    const list = P.employees.slice().sort((a, b) => (b.active - a.active) || empSort(a, b));
+    const noPin = list.filter((e) => e.active && !e.pin_set_at);
+    body.innerHTML = `<div class="toolbar"><span class="muted small">${list.filter((e) => e.active).length} active ·
+        ${noPin.length ? `${noPin.length} without a time clock PIN` : 'everyone has a PIN'}</span><span class="spacer"></span>
+        ${noPin.length ? `<button class="btn small" id="pe-pins" type="button">Make PINs for everyone without one (${noPin.length})</button>` : ''}
+        <button class="btn small" id="pe-csv" type="button">Download CSV</button>
+        <button class="btn small primary" id="pe-add" type="button">+ Add person</button></div>
+      <div class="table-wrap"><table class="people"><thead><tr><th>Name</th><th>Position</th><th class="num">Rate</th><th>Lunch</th><th>Schedule</th><th>Time clock PIN</th></tr></thead>
+        <tbody id="pe-rows">${list.map((e) => `<tr data-emp="${e.id}" class="${e.active ? '' : 'inactive'}"><td><b>${esc(empName(e))}</b>${e.active ? '' : ' <span class="muted small">(not active)</span>'}</td>
+          <td>${esc(e.position || '')}</td><td class="num">${e.pay_rate != null ? money(e.pay_rate) : ''}</td>
+          <td>${e.lunch_minutes ? `${e.lunch_minutes} min` : '<span class="muted">none</span>'}</td><td>${esc(e.schedule || '')}</td>
+          <td>${e.pin_set_at ? `<span class="pay-pill ps-paid">Set ${esc(fmtDate(e.pin_set_at))}</span>` : '<span class="pay-pill ps-open">No PIN</span>'}</td></tr>`).join('')
+          || '<tr><td colspan="6" class="muted">Nobody yet. Tap “+ Add person”.</td></tr>'}</tbody></table></div>
+      <p class="muted small">Pay rates are per hour. The scheduled lunch is only a reminder: staff clock out for lunch, and the Hours tab flags a
+        long day with no lunch clocked. People who leave: open them and turn “Active” off; their past hours stay.</p>`;
+    $$('#pe-rows tr[data-emp]', body).forEach((tr) => tr.addEventListener('click', () => openEmployee(tr.dataset.emp)));
+    $('#pe-add', body).addEventListener('click', () => openEmployee(null));
+    $('#pe-csv', body).addEventListener('click', () => csvDownload('creativa-staff.csv',
+      ['Last name', 'First name', 'Position', 'Hourly rate', 'Lunch (minutes)', 'Schedule', 'Active', 'PIN set'],
+      list.map((e) => [e.last_name, e.first_name, e.position, e.pay_rate, e.lunch_minutes, e.schedule, e.active ? 'yes' : 'no', e.pin_set_at ? 'yes' : 'no'])));
+    $('#pe-pins', body)?.addEventListener('click', async () => {
+      if (!confirm(`Make a 4-digit PIN for ${noPin.length} ${noPin.length === 1 ? 'person' : 'people'}? You’ll get a sheet to print and cut into slips.`)) return;
+      const slips = [];
+      for (const e of noPin) {
+        const { data, error } = await sb.rpc('payroll_set_pin', { p_employee: e.id, p_pin: null });
+        if (error) { fail(error, `Could not make a PIN for ${empName(e)}`); break; }
+        slips.push({ name: empName(e), pin: data });
+      }
+      if (slips.length) showPinSlips(slips);
+      reloadPayroll();
+    });
+  }
+
+  // Slips to cut out and hand to each person. PINs are shown only now; later they can only be replaced.
+  function showPinSlips(slips) {
+    const sheet = document.createElement('div');
+    sheet.className = 'print-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.innerHTML = `<div class="print-bar no-print"><b>${slips.length} PIN${slips.length === 1 ? '' : 's'}</b>
+        <span class="muted small">Print this now: the PINs can’t be shown again.</span><span class="spacer"></span>
+        <button class="btn primary" type="button" id="sl-print">Print</button><button class="btn" type="button" id="sl-close">Close</button></div>
+      <div class="pin-slips">${slips.map((x) => `<div class="pin-slip"><span class="muted small">${esc(state.settings?.school_name || 'Creativa Academy')} · time clock</span>
+        <b class="slip-name">${esc(x.name)}</b><span class="slip-pin">PIN <b>${esc(x.pin)}</b></span>
+        <span class="small">Tap your name on the time clock, type your PIN, then tap Clock in. Keep your PIN private.</span>
+        <span class="small muted">Toque su nombre, escriba su PIN y toque Marcar entrada. No comparta su PIN.</span></div>`).join('')}</div>`;
+    document.body.append(sheet);
+    document.body.classList.add('printing');
+    const close = () => { if (!confirm('Close? The PINs won’t be shown again (you can always make new ones).')) return; sheet.remove(); document.body.classList.remove('printing'); };
+    $('#sl-print', sheet).addEventListener('click', () => window.print());
+    $('#sl-close', sheet).addEventListener('click', close);
+    $('#sl-close', sheet).focus();
+  }
+
+  function openEmployee(id) {
+    const e = id ? state.pay.employees.find((x) => x.id === id) : { active: true, lunch_minutes: 30 };
+    const ctl = mountDrawer({
+      title: id ? esc(empName(e)) : 'Add person',
+      sub: id ? esc(e.position || '') : 'Someone on payroll',
+      body: `<div class="section"><div class="grid2">
+          ${fInput('first_name', 'First name', e.first_name, 'text', 'required maxlength="60"')}
+          ${fInput('last_name', 'Last name', e.last_name, 'text', 'maxlength="60"')}
+          ${fInput('position', 'Position', e.position, 'text', 'maxlength="60" placeholder="e.g. Assistant teacher"')}
+          ${fInput('pay_rate', 'Pay rate ($ per hour)', e.pay_rate, 'number', 'min="0" step="0.01" inputmode="decimal"')}
+          ${fSelect('lunch_minutes', 'Scheduled lunch (unpaid)', LUNCH, e.lunch_minutes)}
+          ${fInput('schedule', 'Schedule', e.schedule, 'text', 'maxlength="60" placeholder="e.g. 8:00 – 4:30"')}
+          <label class="full">Notes<input name="notes" value="${esc(e.notes)}" maxlength="500"></label>
+          <label class="full pill-check"><input type="checkbox" class="check" name="active" ${e.active ? 'checked' : ''}> Active (shows on the time clock)</label>
+        </div></div>
+        ${id ? `<div class="section" id="pin-sec"><h3 class="sub-h">Time clock PIN</h3>
+          <p class="muted small">${e.pin_set_at ? `Set ${esc(fmtDate(e.pin_set_at))}. PINs can’t be looked up; type a new one to replace it.` : 'No PIN yet: they don’t appear on the time clock until they have one.'}</p>
+          <div class="feed-row"><input name="pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" placeholder="4 digits" aria-label="New PIN">
+            <button class="btn small" id="pin-set" type="button">Save PIN</button><button class="btn small" id="pin-make" type="button">Make one up</button></div>
+          <p class="pin-show" id="pin-show" hidden></p></div>` : ''}`,
+      foot: `${id ? '<button class="btn danger" id="em-del" type="button">Delete</button>' : ''}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="em-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    $('#em-save', drawer).addEventListener('click', async () => {
+      const row = { first_name: formVal(form, 'first_name'), last_name: formVal(form, 'last_name') || '', position: formVal(form, 'position'),
+        pay_rate: form.pay_rate.value === '' ? null : Number(form.pay_rate.value), lunch_minutes: Number(form.lunch_minutes.value),
+        schedule: formVal(form, 'schedule'), notes: formVal(form, 'notes'), active: form.active.checked };
+      if (!row.first_name) return toast('Enter their first name', true);
+      const { error } = id ? await sb.from('employees').update(row).eq('id', id) : await sb.from('employees').insert(row);
+      if (error) return fail(error, 'Could not save');
+      ctl.dirty = false;
+      closeDrawer();
+      toast(id ? 'Saved' : `${row.first_name} added. Next: give them a time clock PIN.`);
+      reloadPayroll();
+    });
+    const setPin = async (pin) => {
+      if (pin !== null && !/^\d{4}$/.test(pin)) return toast('A PIN is 4 digits', true);
+      const { data, error } = await sb.rpc('payroll_set_pin', { p_employee: id, p_pin: pin });
+      if (error) return fail(error, 'Could not set the PIN');
+      form.pin.value = '';
+      const show = $('#pin-show', drawer);
+      show.hidden = false;
+      show.innerHTML = `${esc(e.first_name)}’s PIN is <b>${esc(data)}</b>. Give it to them privately; it won’t be shown again.`;
+      e.pin_set_at = new Date().toISOString();
+    };
+    $('#pin-set', drawer)?.addEventListener('click', () => setPin(form.pin.value.trim()));
+    $('#pin-make', drawer)?.addEventListener('click', () => setPin(null));
+    $('#em-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Delete ${empName(e)}? (People with recorded time can’t be deleted: turn Active off instead.)`)) return;
+      const { error } = await sb.from('employees').delete().eq('id', id);
+      if (error) return toast(error.code === '23503' ? `${empName(e)} has time recorded. Turn Active off instead.` : error.message, true);
+      ctl.dirty = false;
+      closeDrawer();
+      toast('Deleted');
+      reloadPayroll();
+    });
+  }
+
+  function drawPaySetup(body, el) {
+    const P = state.pay, admin = isAdmin(), set = state.settings || {};
+    const mine = store.get('clockToken', null);
+    body.innerHTML = `<section class="panel"><h2>Set up the time clock</h2>
+        <ol class="steps">
+          <li>On the tablet or computer staff will clock in on (for example the front-desk iPad), open this CRM and sign in.</li>
+          <li>Come to <b>Payroll → Time clock</b> and tap <b>Use this device as the time clock</b>.</li>
+          <li>The time clock opens, and the CRM signs out on that device, so nobody at the front desk can open it.
+            On an iPad, tap <b>Share → Add to Home Screen</b> so the clock opens full screen.</li>
+          <li>Staff tap their name, type their 4-digit PIN, and tap <b>Clock in</b>, <b>Lunch</b>, <b>Back from lunch</b> or <b>Clock out</b>.
+            Times come from the server, not the tablet’s clock.</li>
+        </ol>
+        ${mine ? '<p class="ok-text small">This device is already a time clock. <a href="/clock/">Open the time clock</a></p>' : ''}
+        <div class="feed-row"><input id="dev-name" value="Front desk tablet" maxlength="60" aria-label="Name for this device">
+          <button class="btn primary small" id="dev-add" type="button">Use this device as the time clock</button></div>
+        <h3 class="sub-h">Time clocks</h3>
+        <div class="table-wrap flat"><table><thead><tr><th>Device</th><th>Set up</th><th>Last used</th><th></th></tr></thead>
+          <tbody id="dev-rows">${P.devices.map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(fmtDate(d.created_at))}</td>
+            <td>${d.last_seen_at ? esc(relDays(d.last_seen_at)) : '<span class="muted">never</span>'}</td>
+            <td><button class="btn small ghost danger" type="button" data-dev-del="${d.id}">Remove</button></td></tr>`).join('')
+            || '<tr><td colspan="4" class="muted">None yet.</td></tr>'}</tbody></table></div>
+        <p class="muted small">Lost a tablet? Remove it here and it stops working at once.</p></section>
+      <section class="panel"><h2>Pay schedule</h2>
+        <p class="muted small">Match the pay schedule in Patriot, so each pay period here is the one you run there.
+          Overtime is counted per workweek, starting on the weekday of the date below.${admin ? '' : ' Only admins can change this.'}</p>
+        <form id="pay-sched" class="grid2">
+          ${fSelect('payroll_frequency', 'How often you run payroll', Object.entries(PAY_FREQ), set.payroll_frequency, admin ? '' : 'disabled')}
+          ${fInput('payroll_anchor', 'A pay period started on', set.payroll_anchor, 'date', `required ${admin ? '' : 'disabled'}`)}
+          ${admin ? '<div class="full"><button class="btn small primary" type="submit">Save pay schedule</button></div>' : ''}
+        </form></section>`;
+    $('#dev-add', body).addEventListener('click', async () => {
+      if (!confirm('Make this device the time clock? You’ll be signed out of the CRM here, and the clock will open.')) return;
+      const { data, error } = await sb.rpc('timeclock_add_device', { p_name: $('#dev-name', body).value.trim() || 'Time clock' });
+      if (error) return fail(error, 'Could not set up the time clock');
+      store.set('clockToken', data);
+      await sb.auth.signOut({ scope: 'local' });   // only this device; the admin stays signed in elsewhere
+      location.assign('/clock/');
+    });
+    $$('[data-dev-del]', body).forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('Remove this time clock? It stops working right away.')) return;
+      const { error } = await sb.from('timeclock_devices').delete().eq('id', b.dataset.devDel);
+      if (error) return fail(error, 'Could not remove it');
+      toast('Time clock removed');
+      reloadPayroll();
+    }));
+    $('#pay-sched', body).addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const f = ev.target;
+      const { data, error } = await sb.from('settings').update({ payroll_frequency: f.payroll_frequency.value, payroll_anchor: f.payroll_anchor.value })
+        .eq('id', 1).select().single();
+      if (error) return fail(error, 'Could not save');
+      state.settings = data;
+      state.payPeriod = null;
+      toast('Pay schedule saved');
+    });
+  }
+
   // ───────────── Settings panels (admin) ─────────────
   function settingsPanelsHtml() {
     if (!state.hasEnrollment) return '';
@@ -1733,10 +2311,17 @@
       <section class="panel settings-panel"><h2>Receipts</h2>
         <form id="set-receipt" class="grid2">
           ${fInput('school_name', 'School name', set.school_name)}
-          ${fInput('receipt_signer', 'Signed by', set.receipt_signer, 'text', 'placeholder="Name, Director"')}
+          ${fInput('receipt_signer', 'Signed by', set.receipt_signer, 'text', 'placeholder="Name, Administrator"')}
+          ${state.hasV7 ? fInput('receipt_license', 'School license number', set.receipt_license, 'text', 'placeholder="C11MD1517"') : ''}
           <label class="full">Address line at the bottom (address · phone · email)<textarea name="receipt_header" rows="2">${esc(set.receipt_header)}</textarea></label>
           <div class="full"><button class="btn small primary" type="submit">Save receipt details</button></div>
         </form>
+        ${state.hasV7 ? `<div class="sig-box" id="sig-box"><h3 class="sub-h">Signature printed on receipts</h3>
+          <div class="sig-preview">${state.signature ? `<img src="${esc(state.signature)}" alt="Signature on receipts">` : '<span class="muted small">No signature yet: receipts have a blank line to sign by hand.</span>'}</div>
+          <p class="muted small">Sign on white paper with a dark pen and take a photo, or use a scan. The CRM crops it and removes the paper.
+            Only finance staff see it (on receipts); only admins change it.</p>
+          <div class="feed-row"><label class="btn small" id="sig-pick">Choose a picture…<input type="file" accept="image/png,image/jpeg" id="sig-file" hidden></label>
+            ${state.signature ? '<button class="btn small danger" id="sig-del" type="button">Remove</button>' : ''}</div></div>` : ''}
       </section>
       <section class="panel settings-panel"><h2>Automatic tour emails</h2>
         <p class="muted small">Sent by the hourly email job: a reminder the day before each tour (from 9am), and a
@@ -1999,11 +2584,76 @@
       state.settings = data;
       toast('Saved');
     });
-    saveSettings($('#set-receipt', el), ['school_name', 'receipt_signer', 'receipt_header']);
+    saveSettings($('#set-receipt', el), ['school_name', 'receipt_signer', 'receipt_header', ...(state.hasV7 ? ['receipt_license'] : [])]);
+    bindSignature(el);
     saveSettings($('#set-emails', el), ['emails_enabled', 'tour_reminder_subject', 'tour_reminder_body', 'followup_subject', 'followup_body']);
     if ($('#set-texts', el)) saveSettings($('#set-texts', el), ['texts_enabled', 'tour_reminder_text', 'followup_text']);
     bindTelegramPanel(el);
     bindSpamPanel(el);
+  }
+
+  // A photo or scan of a signature becomes a see-through PNG: cropped to the ink, at most 900×300
+  // (sharp when printed), the paper made transparent so it prints cleanly over the signature line.
+  function signatureFromFile(file) {
+    return new Promise((resolve, reject) => {
+      if (!/^image\/(png|jpeg)$/.test(file.type)) return reject(new Error('Choose a PNG or JPG picture'));
+      const reader = new FileReader();   // a data: URL; the page's security policy blocks blob: images
+      reader.onerror = () => reject(new Error('Could not read that file'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('That file isn’t a picture'));
+        img.onload = () => {
+          const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+          const c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
+          const g = c.getContext('2d', { willReadFrequently: true });
+          g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+          g.drawImage(img, 0, 0, c.width, c.height);
+          const px = g.getImageData(0, 0, c.width, c.height), d = px.data;
+          let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
+          for (let y = 0; y < c.height; y++) {
+            for (let x = 0; x < c.width; x++) {
+              const i = (y * c.width + x) * 4;
+              const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+              const a = lum >= 190 ? 0 : Math.min(255, Math.round((190 - lum) * 2.4));
+              d[i + 3] = a;
+              if (a > 60) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+            }
+          }
+          if (x1 < 0) return reject(new Error('No signature found in that picture'));
+          g.putImageData(px, 0, 0);
+          const padPx = 6;
+          x0 = Math.max(0, x0 - padPx); y0 = Math.max(0, y0 - padPx);
+          x1 = Math.min(c.width - 1, x1 + padPx); y1 = Math.min(c.height - 1, y1 + padPx);
+          const w = x1 - x0 + 1, h = y1 - y0 + 1, s = Math.min(1, 900 / w, 300 / h);
+          const out = document.createElement('canvas');
+          out.width = Math.max(1, Math.round(w * s)); out.height = Math.max(1, Math.round(h * s));
+          out.getContext('2d').drawImage(c, x0, y0, w, h, 0, 0, out.width, out.height);
+          resolve(out.toDataURL('image/png'));
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function bindSignature(el) {
+    const box = $('#sig-box', el);
+    if (!box) return;
+    const save = async (image, msg) => {
+      const { data, error } = await sb.from('receipt_signature').update({ image }).eq('id', 1).select('image').maybeSingle();
+      if (error) return fail(error, 'Could not save the signature');
+      if (!data) return toast('Only admins can change the signature', true);
+      state.signature = data.image || null;
+      toast(msg);
+      renderStaff(el);
+    };
+    $('#sig-file', box).addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try { await save(await signatureFromFile(file), 'Signature saved: it prints on every receipt'); } catch (err) { toast(err.message, true); }
+    });
+    $('#sig-del', box)?.addEventListener('click', () => { if (confirm('Remove the signature from receipts?')) save(null, 'Signature removed'); });
   }
 
   // ───────────── Inquiry drawer ─────────────

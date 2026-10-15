@@ -315,6 +315,7 @@ try {
   assert.match(await sheet.locator('.receipt .r-year').textContent(), /^School year \d{4} – \d{4}$/);
   assert.match(await sheet.locator('.receipt .r-box').textContent(), /FES-UA \(Unique Abilities\)[\s\S]*TEST-123/);
   assert.match(await sheet.locator('.receipt .r-foot').textContent(), /123 Test Street/);
+  assert.equal((await sheet.locator('.receipt .r-license').textContent()).trim(), 'License No. C11MD1517');
   await shot(page, '11-receipt');
   await page.pdf({ path: path.join(SHOTS, '11-receipt-print.pdf'), format: 'Letter', printBackground: true });   // what Print / Save as PDF gives
   await sheet.locator('#rc-close').click();
@@ -352,6 +353,28 @@ try {
   await page.click('#p-now');
   await shot(page, '12-tuition');
   ok('credits: keep a payment as a credit, apply it to an invoice; owed list; FES-UA receipts; next period');
+
+  // ── late fee: tuition still unpaid after the Friday grace day ──
+  {
+    const t = new Date();
+    const sinceMonday = ((Math.round((Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) - Date.UTC(2026, 9, 5)) / 864e5) % 14) + 14) % 14;
+    if (sinceMonday > 4) {
+      await page.click('#t-late');   // confirm() accepted
+      await page.waitForSelector('#toast:has-text("1 late fee added")');
+      const feeRow = page.locator('#t-open tr', { hasText: 'Late fee' });
+      assert.match(await feeRow.textContent(), /Test Kid Alpha[\s\S]*\$30\.00/);
+      await tRow('Test Kid Alpha').locator('text=+ $30.00 late fee').waitFor();
+      assert.equal(await page.locator('#t-late').count(), 0, 'no second late fee');
+      await feeRow.locator('[data-waive]').click();
+      await page.waitForSelector('#toast:has-text("Late fee waived")');
+      assert.equal(await page.locator('#t-open tr', { hasText: 'Late fee' }).count(), 0);
+      assert.equal(await page.locator('#t-late').count(), 0, 'a waived fee stays waived');
+      ok('late fee: $30 on tuition unpaid after Friday, shown on the child, waived in one tap');
+    } else {
+      assert.equal(await page.locator('#t-late').count(), 0, 'no late fees before Friday has passed');
+      ok('late fee: none offered while the period is in its grace days');
+    }
+  }
 
   // ── reports ──
   await page.click('header nav button[data-view=reports]');
@@ -406,6 +429,29 @@ try {
   await page.click('header nav button[data-view=roster]');
   assert.equal((await page.locator('.class-card', { hasText: 'Early 3s' }).locator('.c-count').textContent()).trim(), '1 / 12');
   ok('Settings: class capacity, email wording and finance access save');
+
+  // ── receipts: license number and signature ──
+  await page.click('header nav button[data-view=staff]');
+  assert.equal(await page.locator('#set-receipt input[name=receipt_license]').inputValue(), 'C11MD1517');
+  const payrollAccess = page.locator('tr', { hasText: 'teacher@creativaacademy.com' }).locator('select[data-k=payroll]');
+  assert.equal(await payrollAccess.inputValue(), 'no');
+  const savedAccess = page.waitForResponse((r) => r.url().includes('/profiles') && r.request().method() === 'PATCH');
+  await payrollAccess.selectOption('yes');
+  assert.equal((await savedAccess).request().postDataJSON().payroll, true, 'Payroll: Yes saves as true');
+  await payrollAccess.selectOption('no');
+  await page.waitForSelector('#toast:has-text("Saved")');
+  const sigPng = await page.locator('.settings-panel h2', { hasText: 'Receipts' }).screenshot();   // any dark-on-light picture
+  await page.locator('#sig-file').setInputFiles({ name: 'signature.png', mimeType: 'image/png', buffer: sigPng });
+  await page.waitForSelector('#toast:has-text("Signature saved")');
+  assert.match(await page.locator('#sig-box .sig-preview img').getAttribute('src'), /^data:image\/png;base64,/);
+  await page.click('header nav button[data-view=tuition]');
+  await page.locator('[data-receipt]').first().click();
+  await page.locator('.print-sheet .receipt .r-sig').waitFor();
+  assert.ok(await page.locator('.print-sheet .r-sig').evaluate((img) => img.complete && img.naturalWidth > 0), 'the signature shows on the receipt');
+  await shot(page, '17-receipt-signature');
+  await page.pdf({ path: path.join(SHOTS, '17-receipt-signature.pdf'), format: 'Letter', printBackground: true });
+  await page.locator('#rc-close').click();
+  ok('Receipts: license number and the uploaded signature print on every receipt');
 
   // ── Telegram alerts ──
   await page.click('header nav button[data-view=staff]');
@@ -463,6 +509,147 @@ try {
   await shot(page, '16-settings-telegram-spam');
   ok('Spam: one tap deletes and blocks email + phone; blocked senders are refused; Settings lists, adds and unblocks');
 
+  // ── payroll: staff and PINs ──
+  const pr = await newPage();
+  await login(pr, 'owner@creativaacademy.com', 'owner-pass-1');
+  await pr.click('header nav button[data-view=payroll]');
+  await pr.click('[data-ptab=people]');
+  await pr.locator('#pe-rows tr', { hasText: 'Cora Seed' }).waitFor();
+  for (const [first, last, rate] of [['Ana', 'Clock', '16.50'], ['Bea', 'Office', '15']]) {
+    await pr.click('#pe-add');
+    await pr.locator('.drawer input[name=first_name]').fill(first);
+    await pr.locator('.drawer input[name=last_name]').fill(last);
+    await pr.locator('.drawer input[name=position]').fill('Teacher');
+    await pr.locator('.drawer input[name=pay_rate]').fill(rate);
+    await pr.locator('.drawer #em-save').click();
+    await pr.locator('#pe-rows tr', { hasText: `${first} ${last}` }).waitFor();
+  }
+  await pr.click('#pe-pins');   // confirm() accepted
+  const slips = pr.locator('.pin-slip');
+  await slips.first().waitFor();
+  assert.equal(await slips.count(), 3, 'a PIN slip for each person without a PIN');
+  assert.ok((await slips.locator('.slip-pin b').allTextContents()).every((x) => /^\d{4}$/.test(x)));
+  await shot(pr, '18-pin-slips');
+  await pr.click('#sl-close');
+  await pr.locator('#pe-rows tr', { hasText: 'Ana Clock' }).locator('.pay-pill', { hasText: 'Set' }).waitFor();
+  await pr.locator('#pe-rows tr', { hasText: 'Ana Clock' }).click();
+  await pr.locator('.drawer input[name=pin]').fill('1234');
+  await pr.locator('.drawer #pin-set').click();
+  await pr.waitForSelector('#toast:has-text("too easy to guess")');
+  await pr.locator('.drawer input[name=pin]').fill('4826');
+  await pr.locator('.drawer #pin-set').click();
+  await pr.locator('#pin-show', { hasText: '4826' }).waitFor();
+  await pr.locator('.drawer [data-close]').first().click();
+  await shot(pr, '19-payroll-staff');
+  ok('Payroll: add staff with hourly rates; printable PIN slips; set a PIN (easy ones refused)');
+
+  // ── the time clock on a tablet ──
+  const kiosk = await newPage({ width: 1024, height: 768 }, true);
+  await kiosk.goto(BASE + '/clock/');
+  await kiosk.locator('text=This device isn’t a time clock yet').waitFor();
+  await login(kiosk, 'owner@creativaacademy.com', 'owner-pass-1');
+  await kiosk.click('header nav button[data-view=payroll]');
+  await kiosk.click('[data-ptab=setup]');
+  assert.equal(await kiosk.locator('#pay-sched input[name=payroll_anchor]').inputValue(), '2026-10-02', 'pay periods start Friday Oct 2');
+  assert.match(await kiosk.locator('#pay-weeks').textContent(), /Pay periods \(Friday to Thursday\):[\s\S]*Tuition is billed/);
+  assert.equal(await kiosk.locator('#pay-clash').count(), 0, 'pay weeks alternate with tuition weeks');
+  await kiosk.click('#dev-add');   // confirm() accepted
+  await kiosk.waitForURL(/\/clock\/$/);
+  const kname = (n) => kiosk.locator('.k-name', { hasText: n });
+  const typePin = async (pin) => { for (const c of pin) await kiosk.click(`[data-key="${c}"]`); };
+  await kname('Ana Clock').waitFor();
+  assert.deepEqual(await kiosk.locator('.k-name > span:first-child').allTextContents(), ['Ana Clock', 'Bea Office', 'Cora Seed']);
+  await shot(kiosk, '20-clock-names');
+  await kname('Ana Clock').click();
+  await typePin('4826');
+  await kiosk.locator('.k-state', { hasText: 'You’re clocked out' }).waitFor();
+  await shot(kiosk, '21-clock-status');
+  await kiosk.click('[data-act=in]');
+  await kiosk.locator('.k-done h1', { hasText: /^Clocked in at \d/ }).waitFor();
+  await shot(kiosk, '22-clock-done');
+  await kiosk.click('#k-ok');
+  await kname('Ana Clock').locator('.k-in').waitFor();
+  await kname('Ana Clock').click();
+  await typePin('0000');
+  await kiosk.locator('#k-msg', { hasText: 'Wrong PIN' }).waitFor();
+  await typePin('4826');
+  await kiosk.locator('.k-state', { hasText: 'clocked in since' }).waitFor();
+  await kiosk.click('[data-act=lunch]');
+  await kiosk.locator('.k-done h1', { hasText: /^Out for lunch at/ }).waitFor();
+  await kiosk.click('#k-ok');
+  await kname('Ana Clock').click();
+  await typePin('4826');
+  await kiosk.locator('.k-state', { hasText: 'at lunch since' }).waitFor();
+  await kiosk.click('[data-act=in]');
+  await kiosk.locator('.k-done h1', { hasText: /^Back from lunch at/ }).waitFor();
+  await kiosk.click('#k-ok');
+  await kname('Ana Clock').click();
+  await typePin('4826');
+  await kiosk.click('[data-act=out]');
+  await kiosk.locator('.k-done h1', { hasText: /^Clocked out at/ }).waitFor();
+  assert.ok(await kiosk.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'no sideways scroll on the tablet');
+  await kiosk.goto(BASE + '/');
+  await kiosk.waitForSelector('text=Staff sign in');
+  ok('time clock: set up from Payroll (signs the CRM out there); name + PIN; in, wrong PIN refused, lunch, back, out');
+
+  // ── payroll: hours, fixes, Patriot ──
+  await pr.click('[data-ptab=hours]');
+  const prow = (n) => pr.locator('#pp-rows tr', { hasText: n });
+  await prow('Ana Clock').waitFor();
+  await pr.locator('.here-now', { hasText: 'Nobody is clocked in' }).waitFor();
+  const missed = pr.locator('#pp-missed');
+  await missed.locator('li', { hasText: 'Cora Seed' }).locator('[data-fix]').click();
+  await pr.locator('.drawer input[name=t_in]').fill('07:00');
+  await pr.locator('.drawer input[name=t_out]').fill('08:00');
+  await pr.locator('.drawer #te-save').click();
+  await pr.waitForSelector('#toast:has-text("Saved")');
+  await missed.waitFor({ state: 'detached' });
+  ok('Payroll: a missed clock-out is flagged and fixed');
+
+  await pr.click('#pp-prev');
+  await prow('Cora Seed').locator('td.num', { hasText: '45.00' }).waitFor();
+  assert.deepEqual((await prow('Cora Seed').locator('td.num').allTextContents()).map((x) => x.trim()), ['$15.00', '40.00', '5.00', '45.00', '$712.50']);
+  await shot(pr, '23-payroll-hours');
+  ok('Payroll: 45 hours in a workweek = 40 regular + 5 overtime; estimated gross pays overtime at 1½×');
+  await prow('Cora Seed').click();
+  await pr.locator('.drawer table.ts').first().waitFor();
+  await pr.locator('.drawer .ts-span').first().click();
+  await pr.locator('.drawer input[name=t_out]').fill('16:00');
+  await pr.locator('.drawer #te-save').click();
+  await pr.locator('.drawer .ts-total', { hasText: '44.00' }).waitFor();
+  assert.ok(await pr.locator('.drawer .ts-edited').count() >= 1, 'a changed time is marked');
+  await shot(pr, '24-timesheet');
+  await pr.locator('.drawer [data-close]').first().click();
+  await pr.click('#pp-add');
+  await pr.locator('.drawer select[name=employee_id]').selectOption({ label: 'Bea Office' });
+  await pr.locator('.drawer input[name=t_in]').fill('08:00');
+  await pr.locator('.drawer input[name=t_out]').fill('12:00');
+  await pr.locator('.drawer #te-save').click();
+  await prow('Bea Office').locator('td.num', { hasText: '4.00' }).first().waitFor();
+  await pr.click('#pp-patriot');
+  const ps = pr.locator('.pay-sheet');
+  await ps.waitFor();
+  const lines = await ps.locator('tbody tr').allTextContents();
+  assert.equal(lines.length, 2, 'only people with hours');
+  assert.match(lines[0], /Office, Bea\s*4\.00\s*0\.00\s*4\.00/);
+  assert.match(lines[1], /Seed, Cora\s*40\.00\s*4\.00\s*44\.00/);
+  const patriotCsv = pr.waitForEvent('download');
+  await pr.click('#ps-csv');
+  assert.match((await patriotCsv).suggestedFilename(), /^creativa-patriot-hours-\d{4}-\d{2}-\d{2}\.csv$/);
+  await shot(pr, '25-patriot-sheet');
+  await pr.pdf({ path: path.join(SHOTS, '25-patriot-sheet.pdf'), format: 'Letter', printBackground: true });
+  await pr.click('#ps-close');
+  await pr.click('#pp-close');   // confirm() accepted
+  await pr.waitForSelector('#toast:has-text("marked as entered in Patriot")');
+  await pr.locator('.month-bar .pay-pill', { hasText: 'Entered in Patriot' }).waitFor();
+  await prow('Cora Seed').click();
+  assert.ok(await pr.locator('.drawer .ts-span').first().isDisabled(), 'time is locked once entered in Patriot');
+  assert.equal(await pr.locator('.drawer #ts-add').count(), 0);
+  await pr.locator('.drawer [data-close]').first().click();
+  await pr.click('#pp-reopen');
+  await pr.waitForSelector('#toast:has-text("Pay period reopened")');
+  ok('Payroll: change a time (kept as changed), add time, hours for Patriot (+ CSV), mark as entered (locks), reopen');
+
   // ── activated staff, as a non-admin ──
   const p2 = await newPage();
   await login(p2, 'newhire@creativaacademy.com', 'newhire-pass-1');
@@ -488,7 +675,8 @@ try {
   await p3.locator('#t-rows tr', { hasText: 'Test Kid Alpha' }).waitFor();
   assert.equal(await p3.locator('#t-add').count(), 0);
   assert.equal(await p3.locator('[data-pay-for], [data-pay-inv], [data-bill-one], #t-bill').count(), 0);
-  ok('view-only finance: sees Tuition, cannot record payments');
+  assert.equal(await p3.locator('header nav button[data-view=payroll]').count(), 0, 'no Payroll without payroll access');
+  ok('view-only finance: sees Tuition, cannot record payments; no Payroll');
 
   // ── phone ──
   const m = await newPage({ width: 390, height: 844 }, true);
@@ -531,6 +719,8 @@ try {
 } catch (e) {
   console.error('\nE2E FAILED at step', step + 1, '\n', e);
   if (errors.length) console.error('page errors:', errors);
+  let n = 0;   // what every open page looked like when it failed
+  for (const ctx of browser.contexts()) for (const pg of ctx.pages()) await pg.screenshot({ path: path.join(SHOTS, `failed-${++n}.png`) }).catch(() => {});
   process.exitCode = 1;
 } finally {
   await browser.close();

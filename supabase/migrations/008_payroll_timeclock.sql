@@ -23,6 +23,8 @@
 --   profiles.payroll   who opens the Payroll page (admins always do).
 --   settings           pay schedule: payroll_frequency and payroll_anchor (the first day of any pay
 --                      period). Workweeks, for overtime after 40 hours, start on that weekday.
+--                      Staff are paid every two weeks, alternating with tuition: tuition is billed the
+--                      weeks of Oct 5, Oct 19…, pay periods start the weeks between (Oct 12, Oct 26…).
 --
 -- No dollar-quoting or backslashes in this file, so it survives copy-paste intact.
 
@@ -113,7 +115,10 @@ end';
 alter table public.settings
   add column if not exists payroll_frequency text not null default 'biweekly'
     check (payroll_frequency in ('weekly','biweekly','semimonthly','monthly')),
-  add column if not exists payroll_anchor date not null default '2026-10-05';
+  add column if not exists payroll_anchor date not null default '2026-10-12';
+-- An earlier copy of this file started pay periods on Oct 5, a tuition week; move them to the week between.
+update public.settings set payroll_anchor = '2026-10-12'
+ where id = 1 and payroll_frequency = 'biweekly' and payroll_anchor = '2026-10-05';
 
 -- The pay period a day falls in. Weekly and every-two-weeks periods count from payroll_anchor;
 -- twice a month is the 1st–15th and the 16th–end of the month.

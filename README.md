@@ -233,7 +233,9 @@ and paystubs. (Patriot has no file import for hours from other systems, so the C
   clock**. The tablet keeps a device key (only its hash is stored) and is signed out of the CRM. Remove a lost tablet
   there and it stops working. Times always come from the server.
 - **Hours**: per pay period (Settings in **Payroll → Time clock → Pay schedule**: weekly, every two weeks, twice a
-  month or monthly; match Patriot). Lunch clocked out is unpaid; overtime is time over 40 hours in a workweek
+  month or monthly; match Patriot). Staff are paid every two weeks, alternating with tuition: tuition is billed the
+  weeks of Oct 5, Oct 19…, and pay periods start the weeks between (Mon Oct 12, Oct 26…). The panel lists both and
+  warns if they ever land on the same weeks. Lunch clocked out is unpaid; overtime is time over 40 hours in a workweek
   (starting on the pay schedule's weekday), worked out per day by `payroll_hours()`. Estimated gross is
   rate × regular + 1.5 × rate × overtime, before taxes.
 - **Fixing time**: tap a name for the timesheet, tap a time to change it, or **+ Add time**. Changed times are marked

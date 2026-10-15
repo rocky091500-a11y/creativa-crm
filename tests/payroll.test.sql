@@ -82,8 +82,16 @@ exception when insufficient_privilege then null; end';
 reset role;
 
 -- ═════════════ pay schedule ═════════════
-select pg_temp.ok((select (period_start, period_end) = ('2026-10-05'::date, '2026-10-18'::date) from public.payroll_period('2026-10-15')), 'every two weeks from Mon Oct 5');
-select pg_temp.ok((select (period_start, period_end) = ('2026-09-21'::date, '2026-10-04'::date) from public.payroll_period('2026-09-30')), 'periods before the start date too');
+select pg_temp.ok((select payroll_anchor = '2026-10-12' and (payroll_anchor - billing_anchor) % 14 = 7 from public.settings),
+                  'pay periods start the weeks between tuition Mondays (Oct 12 vs Oct 5)');
+select pg_temp.ok((select (period_start, period_end) = ('2026-10-12'::date, '2026-10-25'::date) from public.payroll_period('2026-10-15')), 'every two weeks from Mon Oct 12');
+select pg_temp.ok((select (period_start, period_end) = ('2026-09-28'::date, '2026-10-11'::date) from public.payroll_period('2026-10-05')), 'periods before the start date too');
+select pg_temp.ok(not exists (select 1 from generate_series(0, 25) n
+                               where (public.payroll_period('2026-10-05'::date + 14 * n)).period_start = '2026-10-05'::date + 14 * n),
+                  'no pay period starts on a tuition billing Monday, all school year');
+update public.settings set payroll_anchor = '2026-10-05';   -- what the first copy of 008 set
+\ir ../supabase/migrations/008_payroll_timeclock.sql
+select pg_temp.ok((select payroll_anchor = '2026-10-12' from public.settings), 'running 008 again moves an Oct 5 start to Oct 12');
 select pg_temp.ok(public.payroll_week_start('2026-10-15') = '2026-10-12' and public.payroll_week_start('2026-10-12') = '2026-10-12', 'workweeks start Monday');
 update public.settings set payroll_frequency = 'weekly';
 select pg_temp.ok((select (period_start, period_end) = ('2026-10-12'::date, '2026-10-18'::date) from public.payroll_period('2026-10-15')), 'weekly');
@@ -95,7 +103,7 @@ update public.settings set payroll_frequency = 'monthly';
 select pg_temp.ok((select (period_start, period_end) = ('2026-10-01'::date, '2026-10-31'::date) from public.payroll_period('2026-10-15')), 'monthly');
 update public.settings set payroll_frequency = 'biweekly', payroll_anchor = '2026-10-04';   -- Sunday
 select pg_temp.ok(public.payroll_week_start('2026-10-15') = '2026-10-11', 'workweek follows the start day (Sunday)');
-update public.settings set payroll_anchor = '2026-10-05';
+update public.settings set payroll_anchor = '2026-10-12';
 
 -- ═════════════ payroll access ═════════════
 insert into public.employees (first_name, last_name, position, pay_rate, lunch_minutes, schedule) values

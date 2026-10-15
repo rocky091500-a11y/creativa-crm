@@ -1797,7 +1797,7 @@
   const dayLabel = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   const weekdayName = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' });
 
-  const paySched = () => ({ freq: state.settings?.payroll_frequency || 'biweekly', anchor: state.settings?.payroll_anchor || '2026-10-05' });
+  const paySched = () => ({ freq: state.settings?.payroll_frequency || 'biweekly', anchor: state.settings?.payroll_anchor || '2026-10-12' });
   function payPeriodOf(day) {   // same rules as payroll_period() in the database
     const { freq, anchor } = paySched();
     if (freq === 'weekly' || freq === 'biweekly') {
@@ -2239,6 +2239,13 @@
   function drawPaySetup(body, el) {
     const P = state.pay, admin = isAdmin(), set = state.settings || {};
     const mine = store.get('clockToken', null);
+    // Staff pay alternates with tuition: show both side by side, and warn if they land on the same weeks.
+    const pays = [], bills = [];
+    for (let pp = payPeriodOf(nyToday()), i = 0; i < 3; i++, pp = payPeriodOf(addDays(pp.end, 1))) pays.push(pp);
+    if (state.hasV6) for (let t = periodOf(todayStr()), i = 0; i < 3; i++, t = addDays(t, billing().days)) bills.push(t);
+    const sundayOf = (d) => addDays(d, -new Date(d + 'T00:00:00').getDay());
+    const sameWeeks = state.hasV6 && paySched().freq === 'biweekly' && billing().days === 14
+      && ((daysBetween(sundayOf(billing().anchor), sundayOf(paySched().anchor)) % 14) + 14) % 14 === 0;
     body.innerHTML = `<section class="panel"><h2>Set up the time clock</h2>
         <ol class="steps">
           <li>On the tablet or computer staff will clock in on (for example the front-desk iPad), open this CRM and sign in.</li>
@@ -2261,6 +2268,10 @@
       <section class="panel"><h2>Pay schedule</h2>
         <p class="muted small">Match the pay schedule in Patriot, so each pay period here is the one you run there.
           Overtime is counted per workweek, starting on the weekday of the date below.${admin ? '' : ' Only admins can change this.'}</p>
+        <p class="muted small" id="pay-weeks">Pay periods: ${pays.map((pp) => `<b>${esc(fmtPayPeriod(pp))}</b>`).join(', ')}.
+          ${bills.length ? `Tuition is billed ${bills.map((t) => esc(fmtDate(t))).join(', ')}.` : ''}</p>
+        ${sameWeeks ? `<p class="check-warn small" id="pay-clash">These pay periods start the same weeks tuition is billed. Staff pay alternates
+          with tuition, so start them a week later (or earlier).</p>` : ''}
         <form id="pay-sched" class="grid2">
           ${fSelect('payroll_frequency', 'How often you run payroll', Object.entries(PAY_FREQ), set.payroll_frequency, admin ? '' : 'disabled')}
           ${fInput('payroll_anchor', 'A pay period started on', set.payroll_anchor, 'date', `required ${admin ? '' : 'disabled'}`)}

@@ -21,7 +21,8 @@
     'desired_start', 'heard_from', 'message', 'stage', 'assigned_to', 'tour_at', 'next_follow_up', 'lost_reason'];
 
   // Enrollment & finance (supabase/migrations/003_enrollment_finance.sql)
-  const STUDENT_STATUS = { enrolled: 'Enrolled', waitlist: 'Waiting list', withdrawn: 'Withdrawn' };
+  const STUDENT_STATUS = { enrolled: 'Enrolled', waitlist: 'Waiting list', withdrawn: 'Withdrawn', graduated: 'Graduated' };
+  const LEFT = new Set(['withdrawn', 'graduated']);   // no longer at the school; withdrawn_on is their last day
   const DOCS = [['doc_registration', 'Registration packet', 'Packet'], ['doc_blue_form', 'Blue form', 'Blue'],
     ['doc_yellow_form', 'Yellow form', 'Yellow'], ['doc_birth_cert', 'Birth certificate', 'Birth cert.']];
   const REG_FEE = { paid: 'Paid', not_paid: 'Not paid', na: 'N/A' };
@@ -976,9 +977,9 @@
           ${fSelect('status', 'Status', Object.entries(STUDENT_STATUS), s.status)}
           ${fInput('start_date', 'Start date', s.start_date, 'date')}
           <span></span>
-          <div class="full grid2" id="withdraw-wrap" ${s.status === 'withdrawn' ? '' : 'hidden'}>
-            ${fInput('withdrawn_on', 'Withdrawn on', s.withdrawn_on, 'date')}
-            ${fInput('withdraw_reason', 'Reason', s.withdraw_reason)}
+          <div class="full grid2" id="withdraw-wrap" ${LEFT.has(s.status) ? '' : 'hidden'}>
+            ${fInput('withdrawn_on', 'Last day at school', s.withdrawn_on, 'date')}
+            ${fInput('withdraw_reason', 'Reason / notes', s.withdraw_reason, 'text', 'placeholder="e.g. Moved, went to kindergarten"')}
           </div>
         </div></div>
         <div class="section"><h3>Documents</h3><div class="docs-grid">
@@ -1040,8 +1041,8 @@
               || '<li class="muted">No payments recorded yet.</li>'}</ul></div>` : ''}
           ${id && historyFor(s0).length ? `<div class="section"><h3>Earlier billing (billing system, paid)</h3>
             <ul class="pay-list">${historyFor(s0).map((h) => `<li><span class="p-date">${esc(fmtDate(h.as_of))}</span>
-              <span class="p-what">Billed for tuition ${esc(fmtDate(h.period_start))} – ${esc(fmtDate(h.period_end))}${h.note ? ` · ${esc(h.note)}` : ''}</span>
-              <b>${money(h.balance)}</b></li>`).join('')}</ul>
+              <span class="p-what">Tuition ${esc(fmtDate(h.period_start))} – ${esc(fmtDate(h.period_end))} · sheet ${money(h.balance)}${h.needs_check ? ' · to check' : ''}${h.note ? ` · ${esc(h.note)}` : ''}</span>
+              <b>${money(earlierPaid(h))}</b></li>`).join('')}</ul>
             <p class="muted small">From the Balance Summary sheets before the CRM, all paid there (a minus is a credit). For reference only.</p></div>` : ''}` : ''}
         ${inq ? `<p class="small"><a href="#" id="open-inq">Open the original inquiry (${esc(inq.parent_name || 'family')})</a></p>` : ''}`,
       foot: `${id && isAdmin() ? '<button class="btn danger" id="st-del" type="button">Delete</button>' : ''}
@@ -1052,8 +1053,8 @@
     if (Object.keys(preset).length) ctl.dirty = !id || Object.keys(preset).some((k) => preset[k] !== s0[k]);
     if (!id) form.name.focus();
     form.status.addEventListener('change', () => {
-      $('#withdraw-wrap', drawer).hidden = form.status.value !== 'withdrawn';
-      if (form.status.value === 'withdrawn' && !form.withdrawn_on.value) form.withdrawn_on.value = todayStr();
+      $('#withdraw-wrap', drawer).hidden = !LEFT.has(form.status.value);
+      if (LEFT.has(form.status.value) && !form.withdrawn_on.value) form.withdrawn_on.value = todayStr();
     });
     $$('[data-doc]', drawer).forEach((box) => box.addEventListener('change', () => {
       form[box.dataset.doc].value = box.checked ? (form[box.dataset.doc].value || todayStr()) : '';
@@ -1089,7 +1090,7 @@
       STUDENT_FIELDS.forEach((k) => { patch[k] = formVal(form, k); });
       if (state.hasV6) patch.family_account = formVal(form, 'family_account');
       if (!patch.name) { form.name.focus(); return toast('Add the student’s name', true); }
-      if (patch.status === 'withdrawn') patch.withdrawn_on = patch.withdrawn_on || todayStr();
+      if (LEFT.has(patch.status)) patch.withdrawn_on = patch.withdrawn_on || todayStr();
       else { patch.withdrawn_on = null; patch.withdraw_reason = null; }
       if (preset.inquiry_id && !id) patch.inquiry_id = preset.inquiry_id;
       let finPatch = null;
@@ -1157,7 +1158,7 @@
   function activeInMonth(s, m) {
     if (s.status === 'waitlist') return false;
     if (s.start_date && s.start_date > monthEnd(m)) return false;
-    if (s.status === 'withdrawn') return !!s.withdrawn_on && s.withdrawn_on >= monthStart(m);
+    if (LEFT.has(s.status)) return !!s.withdrawn_on && s.withdrawn_on >= monthStart(m);
     return true;
   }
 
@@ -1416,19 +1417,34 @@
     const p = students.find((s) => s.parent_name);
     return p ? p.parent_name : `Family of ${students.map((s) => s.name).join(' & ')}`;
   }
+  // The school year began Aug 10, before the CRM: those periods were billed and paid in the old billing system, and
+  // statements include what each family paid for them (billing_history.paid, 011). Until 011 is run they're left out.
+  const histReady = () => state.history.length > 0 && 'needs_check' in state.history[0];
+  const earlierFor = (year) => (histReady() ? state.history.filter((h) => h.period_start && h.period_start < billing().anchor
+    && h.period_start.startsWith(`${year}-`) && earlierPaid(h) > 0) : []);
+  const histFamilyKey = (h) => 'f:' + (h.family_account || h.customer).trim().toLowerCase();
   function statementGroups(year) {
     const groups = new Map();
+    const group = (k) => { if (!groups.has(k)) groups.set(k, { key: k, students: [], payments: [], earlier: [] }); return groups.get(k); };
     state.payments.filter((p) => FAMILY_PAYERS.has(p.payer) && p.paid_on.startsWith(`${year}-`)).forEach((p) => {
       const s = state.students.find((x) => x.id === p.student_id);
       if (!s) return;
-      const k = familyKey(s);
-      if (!groups.has(k)) groups.set(k, { key: k, students: [], payments: [] });
-      const g = groups.get(k);
+      const g = group(familyKey(s));
       if (!g.students.includes(s)) g.students.push(s);
       g.payments.push(p);
     });
-    return [...groups.values()].map((g) => ({ ...g, name: familyName(g.students), students: g.students.sort((a, b) => a.name.localeCompare(b.name)),
-      total: round2(g.payments.reduce((t, p) => t + Number(p.amount), 0)),
+    earlierFor(year).forEach((h) => {
+      const g = group(histFamilyKey(h));
+      state.students.filter((s) => familyKey(s) === g.key).forEach((s) => { if (!g.students.includes(s)) g.students.push(s); });
+      g.customer = g.customer || h.customer;
+      g.earlier.push(h);
+    });
+    return [...groups.values()].map((g) => ({ ...g, name: g.students.length ? familyName(g.students) : g.customer,
+      students: g.students.sort((a, b) => a.name.localeCompare(b.name)),
+      total: round2(g.payments.reduce((t, p) => t + Number(p.amount), 0) + g.earlier.reduce((t, h) => t + earlierPaid(h), 0)),
+      count: g.payments.length + g.earlier.length,
+      needsCheck: g.earlier.some((h) => h.needs_check),
+      earlier: g.earlier.sort((a, b) => a.period_start.localeCompare(b.period_start)),
       payments: g.payments.sort((a, b) => a.paid_on.localeCompare(b.paid_on) || a.receipt_no - b.receipt_no) }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -1450,15 +1466,19 @@
       <h2 class="r-h">Child${many ? 'ren' : ''}</h2>
       <table class="r-table"><thead><tr><th>Name</th><th>Date of birth</th><th>Class</th></tr></thead>
         <tbody>${g.students.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td>${esc(s.dob ? longDate(s.dob) : '')}</td>
-          <td>${esc(classroomName(s.classroom_id))}</td></tr>`).join('')}</tbody></table>
-      <h2 class="r-h">Payments received in ${year}${partial ? ` (through ${esc(longDate(todayStr()))})` : ''}</h2>
+          <td>${esc(classroomName(s.classroom_id))}</td></tr>`).join('') || `<tr><td colspan="3"><b>${esc(g.customer || '')}</b></td></tr>`}</tbody></table>
+      <h2 class="r-h">Payments in ${year}${partial ? ` (through ${esc(longDate(todayStr()))})` : ''}</h2>
       <table class="r-table"><thead><tr><th>Date</th><th>Receipt</th>${many ? '<th>Child</th>' : ''}<th>For</th><th>Method</th><th class="num">Amount</th></tr></thead>
-        <tbody>${g.payments.map((p) => `<tr><td>${esc(fmtDate(p.paid_on))}</td><td>#${esc(p.receipt_no)}</td>
+        <tbody>${g.earlier.map((h) => `<tr><td>${esc(fmtDate(h.period_start))} – ${esc(fmtDate(h.period_end))}</td><td>—</td>${many ? '<td>—</td>' : ''}
+          <td>Tuition ${esc(longPeriod(h.period_start))}</td><td>Billing system</td><td class="num">${money(earlierPaid(h))}</td></tr>`).join('')}
+        ${g.payments.map((p) => `<tr><td>${esc(fmtDate(p.paid_on))}</td><td>#${esc(p.receipt_no)}</td>
           ${many ? `<td>${esc(nameOf(p.student_id))}</td>` : ''}<td>${esc(receiptLine(p))}</td><td>${esc(METHOD[p.method])}</td>
           <td class="num">${money(p.amount)}</td></tr>`).join('')}</tbody>
         <tfoot><tr><th colspan="${many ? 5 : 4}">Total paid in ${year}</th><th class="num">${money(g.total)}</th></tr></tfoot></table>
       <p class="r-note">${esc(school)} received the payments above from this family for child care between January 1 and
-        ${partial ? esc(longDate(todayStr())) : `December 31, ${year}`}. Payments made by School Readiness, Step Up For Students or VPK are not included.</p>
+        ${partial ? esc(longDate(todayStr())) : `December 31, ${year}`}.${g.earlier.length ? ` Tuition for ${esc(fmtDate(g.earlier[0].period_start))} –
+        ${esc(longDate(g.earlier[g.earlier.length - 1].period_end))} was billed and paid through the school’s previous billing system; those lines show
+        the amount paid for each billing period.` : ''} Payments made by School Readiness, Step Up For Students or VPK are not included.</p>
       <div class="r-sign"><span class="r-line">${state.signature ? `<img class="r-sig" src="${esc(state.signature)}" alt="Signature">` : ''}</span>
         <span>${esc(set.receipt_signer || 'Authorized signature')}</span></div>
       <footer class="r-foot"><b>${esc(school)}</b>${set.receipt_header ? `\n${esc(set.receipt_header)}` : ''}</footer>
@@ -1466,6 +1486,9 @@
   }
   function showStatements(groups, year) {
     if (!groups.length) return toast(`No family payments in ${year}`, true);
+    const unchecked = groups.filter((g) => g.needsCheck);
+    if (unchecked.length && !confirm(`${unchecked.length === 1 ? `${unchecked[0].name}’s` : `${unchecked.length} families’`} Aug–Sep amounts are still a best guess `
+      + '(check them on Reports → Annual statements). Print anyway?')) return;
     if (!state.settings?.receipt_tax_id) toast('Tip: add the school’s tax ID on Settings → Receipts so it prints on statements');
     showSheet(`${groups.length} annual statement${groups.length === 1 ? '' : 's'} · ${year}`, groups.map((g) => statementHtml(g, year)));
   }
@@ -1589,7 +1612,7 @@
   function activeInPeriod(s, p) {
     if (s.status === 'waitlist') return false;
     if (s.start_date && s.start_date > periodEnd(p)) return false;
-    if (s.status === 'withdrawn') return !!s.withdrawn_on && s.withdrawn_on >= p;
+    if (LEFT.has(s.status)) return !!s.withdrawn_on && s.withdrawn_on >= p;
     return true;
   }
   function billRows(p) {
@@ -1783,53 +1806,105 @@
     }
   }
 
-  // A billing period before the CRM's first billing Monday was billed in the old billing system: show what its
-  // Balance Summary sheet said (010), and nothing to bill or pay here.
+  // A billing period before the CRM's first billing Monday was billed and paid in the old billing system. Show it like a
+  // CRM period, one row per child with class and funding, using its Balance Summary sheet (010/011): what each family
+  // was billed (and paid) for it. Nothing to bill or record here.
+  const earlierPaid = (h) => (h.paid != null ? Number(h.paid) : Math.max(Number(h.balance), 0));
+  const PRE_STATUS = { paid: 'Paid (billing system)', check: 'Check amount', stepup: 'Step Up pending', not_billed: 'Not billed to family',
+    none: 'Nothing due', credit: 'Credit', missing: 'Not on the sheet' };
+  function preRows(p) {
+    const sheet = state.history.filter((h) => h.period_start === p);
+    const kids = state.students.filter((s) => activeInPeriod(s, p)).sort(sortStudents);
+    const share = new Map();
+    const used = new Set();
+    for (const h of sheet) {
+      const k = histKey(h.family_account || h.customer);
+      const sibs = kids.filter((s) => histKey(s.family_account) === k);
+      if (!sibs.length) continue;
+      used.add(h.id);
+      const amt = earlierPaid(h);
+      const rates = sibs.map((s) => (state.finance[s.id]?.tuition_amount != null ? periodAmount(state.finance[s.id]) : null));
+      if (sibs.length > 1 && rates.every((r) => r != null) && round2(rates.reduce((t, r) => t + r, 0)) === round2(amt)) {
+        sibs.forEach((s, i) => share.set(s.id, { h, amount: rates[i] }));
+      } else {
+        share.set(sibs[0].id, { h, amount: amt, family: sibs.length > 1 ? sibs.map((x) => x.name.split(' ')[0]) : null });
+        sibs.slice(1).forEach((s) => share.set(s.id, { h, amount: null, with: sibs[0].name }));
+      }
+    }
+    const rows = kids.map((s) => {
+      const fr = state.finance[s.id] || {};
+      const sh = share.get(s.id);
+      let status;
+      if (sh?.h.needs_check) status = 'check';
+      else if (sh && sh.amount == null) status = 'paid';
+      else if (sh && sh.amount > 0) status = 'paid';
+      else if (sh && Number(sh.h.balance) < 0) status = 'credit';
+      else if (hasFunding(s.id, 'stepup_pending')) status = 'stepup';
+      else if (fr.bill_family === false) status = 'not_billed';
+      else if (sh) status = 'none';
+      else status = 'missing';
+      return { s, fr, sh, status };
+    });
+    // Families on the sheet who aren't in the CRM any more.
+    sheet.filter((h) => !used.has(h.id)).forEach((h) => rows.push({ s: null, fr: {}, sh: { h, amount: earlierPaid(h) }, status: earlierPaid(h) > 0 ? (h.needs_check ? 'check' : 'paid') : 'none' }));
+    return { rows, sheet };
+  }
   function renderTuitionBefore(el, p) {
-    const rows = state.history.filter((h) => h.period_start === p).sort((a, b) => (a.family_account || a.customer).localeCompare(b.family_account || b.customer));
+    const { rows, sheet } = preRows(p);
+    const f = state.tuitionFilters;
     const earliest = state.history.reduce((m, h) => (h.period_start && h.period_start < m ? h.period_start : m), p);
-    const total = round2(rows.reduce((t, h) => t + Number(h.balance), 0));
-    const credits = round2(rows.filter((h) => Number(h.balance) < 0).reduce((t, h) => t - Number(h.balance), 0));
-    const kidsOf = (h) => state.students.filter((s) => histKey(s.family_account) === histKey(h.family_account || h.customer));
+    const paidTotal = round2(rows.reduce((t, r) => t + (r.sh?.amount || 0), 0));
+    const sheetTotal = round2(sheet.reduce((t, h) => t + Number(h.balance), 0));
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
     el.innerHTML = `<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period" ${p <= earliest ? 'disabled' : ''}>‹</button>
         <b>${esc(fmtPeriod(p))}, ${p.slice(0, 4)}</b>
         <button class="btn small" id="p-next" type="button" aria-label="Next billing period">›</button>
         <button class="btn small ghost" id="p-now" type="button">This period</button>
-        <span class="muted small">Before the CRM: billed and paid in the billing system.</span></div>
-      <section class="panel before-crm"><h2>Tuition ${esc(fmtPeriod(p))} · billed and paid in the billing system</h2>
-        ${rows.length ? `<p class="muted small">This period was billed and paid before the CRM. Below is each family’s balance on the Balance Summary
-          printed ${esc(longDate(rows[0].as_of))} for it, which is what they were billed (a minus is a credit). Nothing to bill or collect here.</p>
-        <div class="stats">
-          <div class="stat"><b>${money(total)}</b><span>Billed (sheet total)</span></div>
-          <div class="stat"><b>${rows.filter((h) => Number(h.balance) > 0).length}</b><span>Families billed</span></div>
-          <div class="stat"><b>${money(credits)}</b><span>Credits</span></div>
-          <div class="stat"><b>${rows.length}</b><span>Families on the sheet</span></div>
-        </div>
-        <div class="toolbar"><input type="search" id="tb-q" placeholder="Search family or child…"></div>
-        <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Children</th><th class="num">Billed (sheet)</th><th>Status</th><th>Note</th></tr></thead>
-          <tbody id="tb-rows"></tbody></table></div>`
-          : `<p class="muted">There’s no billing system sheet for this period in the CRM.</p>`}</section>`;
+        <span class="muted small">Before the CRM: billed and paid in the billing system${sheet.length ? ` (sheet printed ${esc(fmtDate(sheet[0].as_of))})` : ''}.</span></div>
+      <div class="stats">
+        <div class="stat"><b>${money(paidTotal)}</b><span>Billed and paid (billing system)</span></div>
+        <div class="stat"><b>${rows.filter((r) => r.status === 'paid' || r.status === 'check').length}</b><span>Children billed</span></div>
+        <div class="stat"><b>${rows.filter((r) => r.status === 'stepup').length}</b><span>Step Up pending</span></div>
+        <div class="stat"><b>${money(sheetTotal)}</b><span>Total on the sheet</span></div>
+      </div>
+      <div class="toolbar">
+        <input type="search" id="t-q" placeholder="Search student or family…" value="${esc(f.q)}">
+        <select id="t-status">${opt('', 'Everyone', f.status)}${Object.entries(PRE_STATUS).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
+        <select id="t-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding)).join('')}</select>
+      </div>
+      <div class="table-wrap before-crm"><table class="tuition"><thead><tr>
+        <th>Student</th><th>Funding</th><th class="num">Billed &amp; paid</th><th class="num">Sheet balance</th><th>Status</th></tr></thead>
+        <tbody id="t-rows"></tbody></table></div>
+      <p class="muted small">${sheet.length ? `Amounts come from the family’s line on the billing system’s Balance Summary for this period; brothers and sisters billed
+        together share one amount. “Check amount” means the family carried a balance or had a credit; confirm it on Reports → Annual statements.`
+        : 'There’s no billing system sheet for this period in the CRM.'} Step Up (pending) children aren’t billed while Step Up approves them.</p>`;
     const go = (np) => { state.period = np; renderTuition(el); };
     $('#p-prev', el).addEventListener('click', () => go(addDays(p, -billing().days)));
     $('#p-next', el).addEventListener('click', () => go(addDays(p, billing().days)));
     $('#p-now', el).addEventListener('click', () => go(periodOf(todayStr())));
-    const draw = () => {
-      const q = $('#tb-q', el)?.value.trim().toLowerCase() || '';
-      const shown = rows.filter((h) => !q || `${h.customer} ${kidsOf(h).map((s) => s.name).join(' ')}`.toLowerCase().includes(q));
-      const body = $('#tb-rows', el);
-      if (!body) return;
-      body.innerHTML = shown.map((h) => {
-        const kids = kidsOf(h);
-        return `<tr ${kids.length ? `data-sid="${kids[0].id}"` : ''}><td><b>${esc(h.customer)}</b></td>
-          <td>${kids.length ? esc(kids.map((s) => s.name).join(', ')) : '<span class="muted small">not in the CRM</span>'}</td>
-          <td class="num${Number(h.balance) < 0 ? ' ok-text' : ''}">${money(h.balance)}</td>
-          <td>${Number(h.balance) > 0 ? '<span class="pay-pill ps-paid">Paid</span>' : Number(h.balance) < 0 ? '<span class="muted small">Credit</span>' : ''}</td>
-          <td class="small">${esc(h.note || '')}</td></tr>`;
-      }).join('') || '<tr><td colspan="5" class="muted">Nobody matches.</td></tr>';
-      $$('#tb-rows tr[data-sid]', el).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.sid)));
-    };
-    $('#tb-q', el)?.addEventListener('input', draw);
+    [['t-q', 'q', 'input'], ['t-status', 'status', 'change'], ['t-funding', 'funding', 'change']].forEach(([id, k, ev]) =>
+      $('#' + id, el).addEventListener(ev, (e) => { f[k] = e.target.value; draw(); }));
     draw();
+    function draw() {
+      const q = f.q.trim().toLowerCase();
+      const shown = rows.filter((r) => {
+        if (f.status && r.status !== f.status && !(f.status === 'owing')) return false;
+        if (f.funding && (!r.s || !hasFunding(r.s.id, f.funding))) return false;
+        if (q && !`${r.s?.name || ''} ${r.s?.parent_name || ''} ${r.s?.family_account || ''} ${r.sh?.h.customer || ''}`.toLowerCase().includes(q)) return false;
+        return true;
+      });
+      $('#t-rows', el).innerHTML = shown.map((r) => `<tr ${r.s ? `data-id="${r.s.id}"` : ''}>
+          <td>${r.s ? `<b>${esc(r.s.name)}</b><div class="muted small">${esc([classroomName(r.s.classroom_id), r.s.family_account].filter(Boolean).join(' · '))}</div>`
+            : `<b>${esc(r.sh.h.customer)}</b><div class="muted small">not in the CRM</div>`}</td>
+          <td>${r.s ? fundingTags(r.s.id) : ''}</td>
+          <td class="num">${r.sh?.amount != null ? money(r.sh.amount) : r.sh?.with ? `<span class="muted small">with ${esc(r.sh.with.split(' ')[0])}</span>` : ''}
+            ${r.sh?.family ? `<div class="muted small">${esc(r.sh.family.join(' & '))}</div>` : ''}</td>
+          <td class="num">${r.sh && r.sh.amount != null ? `<span class="muted">${money(r.sh.h.balance)}</span>` : ''}</td>
+          <td><span class="pay-pill ps-${({ paid: 'paid', check: 'open', stepup: 'stepup', not_billed: 'not_billed', none: 'none', credit: 'paid', missing: 'none' })[r.status]}">${PRE_STATUS[r.status]}</span>
+            ${r.sh?.h.note ? `<div class="muted small">${esc(r.sh.h.note)}</div>` : ''}</td></tr>`).join('')
+        || '<tr><td colspan="5" class="muted">Nobody matches.</td></tr>';
+      $$('#t-rows tr[data-id]', el).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.id)));
+    }
   }
 
   // ───────────── Reports ─────────────
@@ -2520,7 +2595,29 @@
         <button class="btn small" id="stmt-csv" type="button">Download CSV</button>
         <button class="btn small primary" id="stmt-all" type="button">Print all</button></div>
       <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Children</th><th class="num">Payments</th><th class="num">Total paid</th><th></th></tr></thead>
-        <tbody id="stmt-rows"></tbody></table></div></section>`;
+        <tbody id="stmt-rows"></tbody></table></div>
+      ${checkListHtml()}</section>`;
+  }
+  // Families whose old sheets show a carried balance or a credit: what they paid each period is a best guess until
+  // finance staff confirm it from the billing system.
+  function checkListHtml() {
+    if (!histReady()) return '';
+    const flagged = [...new Set(state.history.filter((h) => h.needs_check).map((h) => h.family_account || h.customer))].sort();
+    if (!flagged.length) return '';
+    const edit = canEditFinance();
+    return `<div class="hist-check" id="hist-check"><h3 class="sub-h">Check these Aug–Sep amounts before printing (${flagged.length})</h3>
+      <p class="muted small">These families carried a balance or had a credit on the old sheets, so what they paid each period can’t be read off the
+        sheet. Each box has a best guess (their regular charge). Correct any that are wrong from the billing system, then tap <b>Confirmed</b>.</p>
+      ${flagged.map((f) => {
+        const rows = state.history.filter((h) => (h.family_account || h.customer) === f && h.period_start && h.period_start < billing().anchor)
+          .sort((a, b) => a.period_start.localeCompare(b.period_start));
+        const kids = state.students.filter((s) => histKey(s.family_account) === histKey(f)).map((s) => s.name);
+        return `<div class="hc-fam" data-fam="${esc(f)}"><div><b>${esc(f)}</b> <span class="muted small">${esc(kids.join(', ') || 'not in the CRM')}</span></div>
+          <div class="hc-rows">${rows.map((h) => `<label>${esc(fmtDate(h.period_start))} – ${esc(fmtDate(h.period_end))}
+            <span class="muted small">sheet ${money(h.balance)}</span>
+            <input type="number" min="0" step="0.01" inputmode="decimal" data-hid="${h.id}" value="${h.paid != null ? Number(h.paid) : ''}" ${edit ? '' : 'disabled'} aria-label="Paid"></label>`).join('')}</div>
+          ${edit ? `<button class="btn small primary" type="button" data-hc-save="${esc(f)}">Confirmed</button>` : ''}</div>`;
+      }).join('')}</div>`;
   }
   function bindStmtPanel(el) {
     const panel = $('#stmt-panel', el);
@@ -2531,14 +2628,29 @@
       return statementGroups(year()).filter((g) => !q || `${g.name} ${g.students.map((s) => s.name).join(' ')} ${g.students[0].family_account || ''}`.toLowerCase().includes(q));
     };
     const draw = () => {
-      $('#stmt-rows', panel).innerHTML = shown().map((g) => `<tr data-stmt="${esc(g.key)}"><td><b>${esc(g.name)}</b></td>
-          <td>${esc(g.students.map((s) => s.name).join(', '))}</td><td class="num">${g.payments.length}</td><td class="num">${money(g.total)}</td>
+      $('#stmt-rows', panel).innerHTML = shown().map((g) => `<tr data-stmt="${esc(g.key)}"><td><b>${esc(g.name)}</b>
+            ${g.needsCheck ? ' <span class="pay-pill ps-open">Check Aug–Sep</span>' : ''}</td>
+          <td>${esc(g.students.map((s) => s.name).join(', ') || g.customer || '')}</td><td class="num">${g.count}</td><td class="num">${money(g.total)}</td>
           <td><button class="btn small" type="button" data-print="${esc(g.key)}">Print</button></td></tr>`).join('')
         || `<tr><td colspan="5" class="muted">No family payments in ${year()}.</td></tr>`;
       $$('[data-stmt]', panel).forEach((tr) => tr.addEventListener('click', () =>
         showStatements(statementGroups(year()).filter((g) => g.key === tr.dataset.stmt), year())));
     };
     $('#stmt-year', panel).addEventListener('change', () => { state.stmtYear = year(); draw(); });
+    $$('[data-hc-save]', panel).forEach((b) => b.addEventListener('click', async () => {
+      const box = b.closest('.hc-fam');
+      const inputs = $$('input[data-hid]', box);
+      if (inputs.some((i) => i.value === '' || Number(i.value) < 0)) return toast('Fill in every period (0 if nothing was paid)', true);
+      b.disabled = true;
+      for (const i of inputs) {
+        const { error } = await sb.from('billing_history').update({ paid: round2(Number(i.value)), needs_check: false }).eq('id', i.dataset.hid);
+        if (error) { b.disabled = false; return fail(error, 'Could not save'); }
+      }
+      const r = await selectAll('billing_history', 'as_of');
+      if (!r.error) state.history = r.data;
+      toast(`${box.dataset.fam} confirmed`);
+      renderReports(el);
+    }));
     $('#stmt-q', panel).addEventListener('input', draw);
     $('#stmt-all', panel).addEventListener('click', () => showStatements(shown(), year()));
     $('#stmt-csv', panel).addEventListener('click', () => csvDownload(`creativa-annual-statements-${year()}.csv`,

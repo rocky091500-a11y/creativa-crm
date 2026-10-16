@@ -53,7 +53,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql` and `010_billing_history.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql` and `011_graduated_earlier_payments.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -236,6 +236,14 @@ The billing system's *Balance Summary (Family)* sheets from before the CRM (Aug 
 They show on **Reports → Balances on the billing system's sheets** (family × sheet, totals that match the printed
 totals) and on each child's page (finance access). Reference only: they change no invoice, payment or annual statement.
 The rows were loaded with a private SQL file; family names never go in this repository.
+
+`011_graduated_earlier_payments.sql`: those periods (Aug 10 – Oct 2) were billed **and paid** in the billing system.
+`billing_history.paid` is what each family paid for each of them, so **annual statements cover the school year from
+August** ("Tuition Aug 10 – Aug 21 · Billing system"). Where a family's sheets show a carried balance or a credit, the
+amount is a best guess (`needs_check`) until finance staff confirm it on Reports → Annual statements. On Tuition, a
+period before Oct 5 looks like a CRM period: one row per child with class and funding, the amount billed and paid
+(siblings share one), Step Up pending children, and nothing to bill. The same migration adds the **Graduated** status:
+like Withdrawn, with the last day at school; graduated children are billed only through that day.
 
 ## Payroll and the time clock (008)
 

@@ -46,7 +46,7 @@ insert into public.time_entries (employee_id, clock_in) select id, now() - inter
 
 -- Billing system sheets kept as history (010). Fake families.
 update public.students set family_account = 'ALPHA, TEST' where name = 'Test Kid Alpha';
-insert into public.billing_history (as_of, period_start, period_end, customer, family_account, balance, note) values
-  ('2026-08-12', '2026-08-10', '2026-08-21', 'ALPHA, TEST', 'ALPHA, TEST', 560, null),
-  ('2026-08-25', '2026-08-24', '2026-09-04', 'ALPHA, TEST', 'ALPHA, TEST', -40, 'Handwritten on the sheet: paid early'),
-  ('2026-08-12', '2026-08-10', '2026-08-21', 'GONE, KID', 'GONE, KID', 100, null);
+insert into public.billing_history (as_of, period_start, period_end, customer, family_account, balance, note, paid, needs_check) values
+  ('2026-08-12', '2026-08-10', '2026-08-21', 'ALPHA, TEST', 'ALPHA, TEST', 560, null, 560, false),
+  ('2026-08-25', '2026-08-24', '2026-09-04', 'ALPHA, TEST', 'ALPHA, TEST', -40, 'Handwritten on the sheet: paid early', 520, true),
+  ('2026-08-12', '2026-08-10', '2026-08-21', 'GONE, KID', 'GONE, KID', 100, null, 100, false);

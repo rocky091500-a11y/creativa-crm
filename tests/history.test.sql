@@ -37,3 +37,26 @@ exception when insufficient_privilege then null; end';
 reset role;
 delete from public.billing_history;
 \echo ALL HISTORY TESTS PASSED
+
+-- ═════════════ 011: graduated, what was paid in Aug–Sep ═════════════
+\ir ../supabase/migrations/011_graduated_earlier_payments.sql
+select pg_temp.as_user(null);
+insert into public.students (name, status, withdrawn_on) values ('Grad Kid', 'graduated', '2026-10-10');
+insert into public.student_finance (student_id, funding, tuition_amount, tuition_frequency)
+  select id, '{}', 500, 'biweekly' from public.students where name = 'Grad Kid';
+do 'begin insert into public.students (name, status) values (''Bad Status'', ''alumni''); raise exception ''FAIL: bad status'';
+exception when check_violation then null; end';
+set role authenticated;
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000d');
+select public.create_period_invoices('2026-10-05');
+select public.create_period_invoices('2026-10-19');
+reset role;
+select pg_temp.as_user(null);
+select pg_temp.ok((select string_agg(i.period_start::text, ',' order by i.period_start) from public.invoices i join public.students s on s.id = i.student_id
+                    where s.name = 'Grad Kid') = '2026-10-05', 'a graduated child is billed only through their last day');
+insert into public.billing_history (as_of, period_start, period_end, customer, family_account, balance, paid, needs_check)
+values ('2026-08-12', '2026-08-10', '2026-08-21', 'DOE, JANE', 'DOE, JANE', 560, 560, false);
+do 'begin update public.billing_history set paid = -1; raise exception ''FAIL: negative paid''; exception when check_violation then null; end';
+select pg_temp.ok((select paid = 560 and not needs_check from public.billing_history), 'paid and needs_check are kept');
+delete from public.billing_history;
+\echo ALL GRADUATED / EARLIER PAYMENT TESTS PASSED

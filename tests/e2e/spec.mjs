@@ -253,6 +253,18 @@ try {
   assert.equal(await page.locator('#roster-rows tr[data-id]').count(), 1);
   await page.selectOption('#r-funding', '');
   ok('add a student with documents; filter by missing documents and by funding');
+  await page.click('#r-add');
+  await drawer.locator('input[name=name]').fill('Grad Kid');
+  await drawer.locator('select[name=status]').selectOption('graduated');
+  await drawer.locator('input[name=withdrawn_on]').waitFor({ state: 'visible' });
+  assert.match(await drawer.locator('input[name=withdrawn_on]').inputValue(), /^\d{4}-\d{2}-\d{2}$/, 'last day defaults to today');
+  await drawer.locator('#st-save').click();
+  await page.waitForSelector('#toast:has-text("Grad Kid added")');
+  await drawer.locator('[data-close]').first().click();
+  await page.selectOption('#r-status', 'graduated');
+  await page.locator('#roster-rows tr', { hasText: 'Grad Kid' }).locator('.stage-pill', { hasText: 'Graduated' }).waitFor();
+  await page.selectOption('#r-status', 'enrolled');
+  ok('a child can be marked Graduated (with their last day at school), like Withdrawn');
   assert.ok(await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('.tag.f-private', { hasText: 'Private pay' }).count());
   await page.selectOption('#r-funding', 'private');
   assert.deepEqual((await page.locator('#roster-rows tr[data-id] td:first-child b').allTextContents()).sort(), ['Walk-in Kid']);
@@ -353,12 +365,14 @@ try {
   await page.click('#p-now');
   // Periods before the CRM's first billing Monday (Oct 5) show the billing system's sheet, with nothing to bill.
   for (let i = 0; i < 40 && !(await page.locator('.month-bar b', { hasText: 'Aug 10 – Aug 21' }).count()); i++) await page.click('#p-prev');
-  await page.locator('.before-crm', { hasText: 'billed and paid in the billing system' }).waitFor();
+  await page.locator('.month-bar', { hasText: 'billed and paid in the billing system' }).waitFor();
   assert.equal(await page.locator('#t-bill, [data-bill-one], #t-add, #t-late').count(), 0, 'nothing to bill before the CRM');
-  assert.match(await page.locator('#tb-rows tr', { hasText: 'ALPHA, TEST' }).textContent(), /Test Kid Alpha[\s\S]*\$560\.00[\s\S]*Paid/);
+  assert.match(await tRow('Test Kid Alpha').textContent(), /FES-UA[\s\S]*\$560\.00[\s\S]*Paid \(billing system\)/, 'one row per child, with funding');
+  assert.match(await tRow('Test Kid Beta').textContent(), /Not on the sheet/);
+  assert.match(await page.locator('#t-rows tr', { hasText: 'GONE, KID' }).textContent(), /not in the CRM[\s\S]*\$100\.00/);
   assert.ok(await page.locator('#p-prev').isDisabled(), 'no earlier sheets');
-  await page.click('#p-next');
-  await page.locator('#tb-rows tr', { hasText: 'ALPHA, TEST' }).locator('td', { hasText: '-$40.00' }).waitFor();   // Aug 24 – Sep 4
+  await page.click('#p-next');   // Aug 24 – Sep 4: a credit on the sheet, paid amount still to check
+  assert.match(await tRow('Test Kid Alpha').textContent(), /\$520\.00[\s\S]*-\$40\.00[\s\S]*Check amount/);
   await page.click('#p-now');
   await tRow('Test Kid Alpha').waitFor();
   await shot(page, '12-tuition');
@@ -485,13 +499,21 @@ try {
   await page.click('header nav button[data-view=reports]');
   const stmtRows = page.locator('#stmt-rows tr');
   await stmtRows.first().waitFor();
-  assert.match(await stmtRows.filter({ hasText: 'Alpha Parent' }).textContent(), /Test Kid Alpha[\s\S]*\$300\.00/);
+  assert.match(await stmtRows.filter({ hasText: 'Alpha Parent' }).textContent(), /Check Aug–Sep[\s\S]*Test Kid Alpha[\s\S]*\$1,380\.00/, 'Oct $300 + Aug–Sep $560 + $520 (guess)');
+  const check = page.locator('#hist-check .hc-fam', { hasText: 'ALPHA, TEST' });
+  await check.locator('input[data-hid]').nth(1).fill('500');
+  await check.locator('[data-hc-save]').click();
+  await page.waitForSelector('#toast:has-text("ALPHA, TEST confirmed")');
+  assert.equal(await page.locator('#hist-check').count(), 0, 'nothing left to check');
+  assert.match(await stmtRows.filter({ hasText: 'Alpha Parent' }).textContent(), /\$1,360\.00/);
+  assert.equal(await stmtRows.filter({ hasText: 'Alpha Parent' }).locator('.pay-pill').count(), 0);
   assert.match(await stmtRows.filter({ hasText: 'Test Kid Beta' }).textContent(), /\$50\.00/, 'program (School Readiness) payments left out');
   await stmtRows.filter({ hasText: 'Alpha Parent' }).locator('[data-print]').click();
   const stmt = page.locator('.print-sheet .statement');
   await stmt.waitFor();
   const stmtText = await stmt.textContent();
-  for (const want of ['Annual Statement', 'Tax ID (EIN)', '12-3456789', 'License No. C11MD1517', 'Test Kid Alpha', 'Total paid in', '$300.00', 'Zelle']) {
+  for (const want of ['Annual Statement', 'Tax ID (EIN)', '12-3456789', 'License No. C11MD1517', 'Test Kid Alpha', 'Total paid in', '$300.00', 'Zelle',
+    'Billing system', 'previous billing system', '$560.00', '$500.00', '$1,360.00']) {
     assert.ok(stmtText.includes(want), `statement shows ${want}`);
   }
   assert.ok(await stmt.locator('.r-sig').count(), 'statement is signed');
@@ -500,7 +522,7 @@ try {
   await page.locator('#rc-close').click();
   await page.click('header nav button[data-view=tuition]');
   await page.click('header nav button[data-view=staff]');
-  ok('Annual statements: tax ID, family total for the year (programs left out), signed, printable');
+  ok('Annual statements: from August (old billing system periods, checked amounts), tax ID, programs left out, signed, printable');
 
   // ── Telegram alerts ──
   await page.click('header nav button[data-view=staff]');

@@ -392,6 +392,15 @@ try {
   assert.equal(await whoPaid.locator('[data-method=cash] li').count(), 2, 'cash: the family and School Readiness');
   assert.match(await whoPaid.locator('[data-method=card]').textContent(), /None/);
   ok('Reports: who paid by cash, Zelle and card this month, by name');
+  await page.locator('#hist-panel summary').click();
+  const histAlpha = page.locator('#hist-rows tr', { hasText: 'ALPHA, TEST' });
+  assert.deepEqual((await histAlpha.locator('td.num').allTextContents()).map((x) => x.trim()), ['$560.00', '-$40.00 *']);
+  assert.ok(await page.locator('#hist-rows tr', { hasText: 'GONE, KID' }).locator('text=(not in the CRM)').count());
+  assert.deepEqual((await page.locator('#hist-panel tfoot th.num').allTextContents()).map((x) => x.trim()), ['$660.00', '-$40.00']);
+  await histAlpha.click();
+  await page.locator('.drawer .section', { hasText: 'Earlier balances (billing system)' }).locator('li', { hasText: 'paid early' }).waitFor();
+  await page.locator('.drawer [data-close]').first().click();
+  ok('Reports: the billing system’s balance sheets by family and date, totals; shown on the child’s page');
 
   // ── enrolled inquiry → enrollment list ──
   await page.click('header nav button[data-view=list]');

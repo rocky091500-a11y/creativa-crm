@@ -153,6 +153,7 @@
     hasV6: false,         // false until 007_billing_contacts.sql has been run
     hasV7: false,         // false until 008_payroll_timeclock.sql has been run
     signature: null,      // receipt signature image (data: URL), finance only
+    history: [],          // balances from the billing system's sheets (010), finance only
     pay: null,            // Payroll page data for payPeriod
     payPeriod: null,
     payTab: store.get('payTab', 'hours'),
@@ -312,7 +313,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -324,6 +325,7 @@
       selectAll('student_contacts', 'created_at'),
       sb.from('text_opt_outs').select('phone'), // missing until 005_text_reminders.sql is run
       fin ? sb.from('receipt_signature').select('image').maybeSingle() : none, // missing until 008
+      fin ? selectAll('billing_history', 'as_of') : none,                      // missing until 010
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -350,6 +352,7 @@
       state.payments = pay.data || [];
     }
     state.optOuts = new Set((oo.error ? [] : oo.data || []).map((r) => r.phone));
+    state.history = hist.error ? [] : hist.data || [];
     state.loadedAt = Date.now();
   }
 
@@ -1034,7 +1037,12 @@
                 <b>${money(p.amount)}</b>
                 <button class="btn ghost small" type="button" data-receipt="${p.id}">Receipt #${p.receipt_no}</button>
                 ${finEdit ? `<button class="btn ghost small" type="button" data-edit-pay="${p.id}">Edit</button>` : ''}</li>`).join('')
-              || '<li class="muted">No payments recorded yet.</li>'}</ul></div>` : ''}` : ''}
+              || '<li class="muted">No payments recorded yet.</li>'}</ul></div>` : ''}
+          ${id && historyFor(s0).length ? `<div class="section"><h3>Earlier balances (billing system)</h3>
+            <ul class="pay-list">${historyFor(s0).map((h) => `<li><span class="p-date">${esc(fmtDate(h.as_of))}</span>
+              <span class="p-what">Owed on the sheet for tuition ${esc(fmtDate(h.period_start))} – ${esc(fmtDate(h.period_end))}${h.note ? ` · ${esc(h.note)}` : ''}</span>
+              <b>${money(h.balance)}</b></li>`).join('')}</ul>
+            <p class="muted small">From the Balance Summary sheets printed before the CRM (a minus is a credit). For reference only.</p></div>` : ''}` : ''}
         ${inq ? `<p class="small"><a href="#" id="open-inq">Open the original inquiry (${esc(inq.parent_name || 'family')})</a></p>` : ''}`,
       foot: `${id && isAdmin() ? '<button class="btn danger" id="st-del" type="button">Delete</button>' : ''}
         <span class="spacer"></span><button class="btn" data-close type="button">Cancel</button>
@@ -1848,8 +1856,10 @@
         }).join('')}
       </section>
       ${stmtPanel()}
+      ${historyPanel()}
       <div class="toolbar"><span class="spacer"></span><button class="btn small" id="rp-csv" type="button">Download ${esc(fmtMonth(m))} payments (CSV)</button></div>`;
     bindStmtPanel(el);
+    bindHistoryPanel(el);
     bindMonthBar(el, renderReports);
     $$('.report-year tr[data-month]', el).forEach((tr) => tr.addEventListener('click', () => { state.month = tr.dataset.month; renderReports(el); }));
     $$('[data-student]', el).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openStudent(a.dataset.student); }));
@@ -2400,6 +2410,49 @@
       toast('Pay schedule saved');
       reloadPayroll();   // redraw the pay periods, the tuition dates and the clash warning
     });
+  }
+
+  // Reports → the billing system's Balance Summary sheets from before the CRM (010): what each family owed on the
+  // day each sheet was printed. Reference only; it changes no invoice, payment or statement.
+  const histKey = (v) => String(v || '').trim().toUpperCase();
+  const historyFor = (s) => (s?.family_account ? state.history.filter((h) => histKey(h.family_account) === histKey(s.family_account)) : []);
+  const historySheets = () => [...new Map(state.history.map((h) => [h.as_of, h])).values()].sort((a, b) => a.as_of.localeCompare(b.as_of));
+  function historyPanel() {
+    if (!state.history.length) return '';
+    const sheets = historySheets();
+    const sum = (d) => round2(state.history.filter((h) => h.as_of === d).reduce((t, h) => t + Number(h.balance), 0));
+    return `<details class="panel history-panel" id="hist-panel"><summary><h2>Balances on the billing system’s sheets
+        <span class="muted small">${sheets.length} sheet${sheets.length === 1 ? '' : 's'}, ${esc(fmtDate(sheets[0].as_of))} – ${esc(fmtDate(sheets[sheets.length - 1].as_of))}</span></h2></summary>
+      <p class="muted small">What each family owed on the day each Balance Summary was printed, for the tuition period written on it
+        (a minus is a credit). Kept for reference: it doesn’t change what anyone owes in the CRM or what goes on annual statements.</p>
+      <div class="toolbar"><input type="search" id="hist-q" placeholder="Search family…"><span class="spacer"></span>
+        <button class="btn small" id="hist-csv" type="button">Download CSV</button></div>
+      <div class="table-wrap flat"><table class="hist"><thead><tr><th>Family</th>${sheets.map((sh) => `<th class="num">${esc(fmtDate(sh.as_of))}
+          <div class="hist-period">${sh.period_start ? `${esc(fmtDate(sh.period_start))} – ${esc(fmtDate(sh.period_end))}` : ''}</div></th>`).join('')}</tr></thead>
+        <tbody id="hist-rows"></tbody>
+        <tfoot><tr><th>Total</th>${sheets.map((sh) => `<th class="num">${money(sum(sh.as_of))}</th>`).join('')}</tr></tfoot></table></div></details>`;
+  }
+  function bindHistoryPanel(el) {
+    const panel = $('#hist-panel', el);
+    if (!panel) return;
+    const sheets = historySheets();
+    const fams = [...new Set(state.history.map((h) => h.family_account || h.customer))].sort((a, b) => a.localeCompare(b));
+    const cell = (f, d) => state.history.find((h) => (h.family_account || h.customer) === f && h.as_of === d);
+    const draw = () => {
+      const q = $('#hist-q', panel).value.trim().toLowerCase();
+      $('#hist-rows', panel).innerHTML = fams.filter((f) => !q || f.toLowerCase().includes(q)).map((f) => {
+        const kid = state.students.find((s) => histKey(s.family_account) === histKey(f));
+        return `<tr ${kid ? `data-sid="${kid.id}"` : ''}><td><b>${esc(f)}</b>${kid ? '' : ' <span class="muted small">(not in the CRM)</span>'}</td>
+          ${sheets.map((sh) => { const h = cell(f, sh.as_of); return `<td class="num${h && Number(h.balance) < 0 ? ' ok-text' : ''}"${h?.note ? ` title="${esc(h.note)}"` : ''}>${h ? money(h.balance) : '—'}${h?.note ? ' *' : ''}</td>`; }).join('')}</tr>`;
+      }).join('') || `<tr><td colspan="${sheets.length + 1}" class="muted">Nobody matches.</td></tr>`;
+      $$('#hist-rows tr[data-sid]', panel).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.sid)));
+    };
+    $('#hist-q', panel).addEventListener('input', draw);
+    $('#hist-csv', panel).addEventListener('click', () => csvDownload('creativa-billing-sheets.csv',
+      ['Family', ...sheets.map((sh) => `${sh.as_of} (tuition ${sh.period_start || ''} – ${sh.period_end || ''})`), 'Notes'],
+      fams.map((f) => [f, ...sheets.map((sh) => cell(f, sh.as_of)?.balance ?? ''),
+        sheets.map((sh) => cell(f, sh.as_of)?.note).filter(Boolean).join(' | ')])));
+    draw();
   }
 
   // Reports → annual statements: every family's total for a tax year, printable one by one or all at once.

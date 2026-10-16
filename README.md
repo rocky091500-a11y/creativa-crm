@@ -53,7 +53,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql` and `009_tax_statements.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql` and `010_billing_history.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -228,6 +228,14 @@ only by finance staff (for printing) and changed only by admins; it is never in 
   family account share one statement. Print one, or all for the year; CSV with totals by method.
 - The tax ID (`settings.receipt_tax_id`, set on Settings → Receipts) also prints on every receipt.
 - **Who paid how** (Reports): each month's cash, Zelle, credit/debit card (and other) payments, by child, with totals.
+
+## Billing system sheets (010)
+
+The billing system's *Balance Summary (Family)* sheets from before the CRM (Aug 12 – Oct 5, 2026) are kept in
+`billing_history`: what each family owed on the day each sheet was printed, for the tuition period written on it.
+They show on **Reports → Balances on the billing system's sheets** (family × sheet, totals that match the printed
+totals) and on each child's page (finance access). Reference only: they change no invoice, payment or annual statement.
+The rows were loaded with a private SQL file; family names never go in this repository.
 
 ## Payroll and the time clock (008)
 

@@ -431,3 +431,12 @@ table.ts tfoot th { text-transform: none; letter-spacing: 0; font-size: 13px; co
 .method-col ul.plain li > .muted { grid-column: 1; }
 .method-col ul.plain li > b { grid-column: 2; grid-row: 1; }
 #stmt-panel .toolbar select { width: auto; }
+
+/* billing system sheets kept as history (010) */
+details.history-panel > summary { cursor: pointer; list-style: none; }
+details.history-panel > summary::-webkit-details-marker { display: none; }
+details.history-panel > summary h2 { display: inline; }
+details.history-panel > summary::before { content: '▸ '; color: var(--ink-soft); }
+details.history-panel[open] > summary::before { content: '▾ '; }
+details.history-panel[open] > summary { margin-bottom: 10px; }
+table.hist .hist-period { font-size: 11px; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--ink-soft); }

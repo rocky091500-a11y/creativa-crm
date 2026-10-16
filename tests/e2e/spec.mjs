@@ -776,20 +776,54 @@ try {
 
   // ── texts to families ──
   await page.click('header nav button[data-view=messages]');
-  await page.click('[data-tpl=payment]');
+  const tpl = (name) => page.locator('#msg-tpls [data-tpl]', { hasText: name });
+  await page.locator('#msg-tpls [data-tpl-new]').waitFor();   // My messages loaded (014 starts with three examples)
+  await tpl('Payment reminder').click();
   const alphaTo = page.locator('#msg-list li', { hasText: 'Test Kid Alpha' });
   await alphaTo.waitFor();
   const owes = (await alphaTo.textContent()).match(/\+13055550101 · owes (\$[\d,.]+)/)[1];
-  assert.equal(await alphaTo.locator('.msg-bubble').textContent(),
-    `Hi Alpha, this is Creativa Academy. A friendly reminder that Test's tuition balance is ${owes}. You can pay by Zelle, card or cash. Thank you! Reply STOP to opt out.`);
+  assert.equal(await alphaTo.locator('.msg-bubble').textContent(), `Hi Alpha, this is Emily from Creativa Academy. A friendly reminder that Test's tuition `
+    + `balance is ${owes}. You can pay by Zelle, card or cash. Thank you!\nReply STOP to opt out.`);
   assert.equal(await page.locator('#msg-list li', { hasText: 'Test Kid Gamma' }).count(), 0, 'only families who owe');
-  await page.click('[data-tpl=activity]');
+  await alphaTo.locator('[data-skip-one]').click();
+  await page.locator('#msg-list', { hasText: 'you took them off' }).locator('[data-unskip]').click();
+  await alphaTo.waitFor();
+  await tpl('Activity reminder').click();
+  assert.equal(await page.evaluate(() => { const t = document.querySelector('#msg-form textarea'); return t.value.slice(t.selectionStart, t.selectionEnd); }),
+    '[activity]', 'the first blank is selected, ready to type over');
   await page.click('#msg-send');
   await page.waitForSelector('#toast:has-text("Fill in the parts in [brackets] first")');
+  ok('Messages: start from a saved message; blocks are filled in for each family (their balance, my name); [blanks] must be filled; take a family off');
+
+  // write one from blocks, save it to My messages, fill in its blank, change it for one family
   await page.selectOption('#msg-form select[name=who]', 'pick');
   await page.fill('#msg-form input[name=q]', 'alpha');
   await page.locator('#msg-pick-list [data-fam]').check();
-  await page.fill('#msg-form textarea[name=body]', 'Hi {parent}, picture day for {child} is Friday.');
+  await page.click('#msg-tpls [data-tpl-new]');
+  const ta = page.locator('#msg-form textarea[name=body]');
+  await ta.fill('Hi');
+  await page.click('[data-block="{parent}"]');
+  await page.keyboard.type(', picture day for');
+  await page.click('[data-block="{child}"]');
+  await page.keyboard.type(' is on');
+  await page.click('[data-block="[ ]"]');
+  await page.keyboard.type('day');
+  await page.keyboard.press('End');
+  await page.keyboard.type('! - ');
+  await page.click('[data-block="{me}"]');
+  assert.equal(await ta.inputValue(), 'Hi {parent}, picture day for {child} is on [day]! - {me}');
+  await page.fill('#msg-form input[name=tplName]', 'Picture day');
+  await page.click('#tpl-new');
+  await page.waitForSelector('#toast:has-text("Saved “Picture day” to My messages")');
+  await page.locator('#msg-tpls [data-tpl].on', { hasText: 'Picture day' }).waitFor();
+  await page.click('#msg-next-blank');
+  await page.keyboard.type('Friday');
+  assert.equal(await ta.inputValue(), 'Hi {parent}, picture day for {child} is on Friday! - {me}');
+  assert.equal(await alphaTo.locator('.msg-bubble').textContent(), 'Hi Alpha, picture day for Test is on Friday! - Emily\nReply STOP to opt out.');
+  await alphaTo.locator('[data-edit-one]').click();
+  await alphaTo.locator('textarea.msg-one').fill('Hi Alpha! Picture day for Test is on Friday, wear something blue. - Emily\nReply STOP to opt out.');
+  await alphaTo.locator('[data-done-one]').click();
+  await alphaTo.locator('text=Changed just for them').waitFor();
   assert.equal(await page.locator('#msg-send').textContent(), 'Send 1 text');
   await shot(page, '28-messages');
   await page.click('#msg-send');
@@ -798,17 +832,21 @@ try {
   await sentRow.locator('text=1 waiting').waitFor();
   assert.match(await sentRow.textContent(), /You[\s\S]*Hi \{parent\}, picture day/);
   await sentRow.click();
-  assert.equal(await page.locator('.drawer .msg-bubble').textContent(), 'Hi {parent}, picture day for {child} is Friday. Reply STOP to opt out.');
-  await page.locator('.drawer li', { hasText: 'Alpha Parent' }).locator('text=Waiting').waitFor();
+  assert.equal(await page.locator('.drawer .msg-bubble').textContent(), 'Hi {parent}, picture day for {child} is on Friday! - {me}\nReply STOP to opt out.');
+  const alphaGot = page.locator('.drawer li', { hasText: 'Alpha Parent' });
+  await alphaGot.locator('text=Waiting').waitFor();
+  assert.match(await alphaGot.locator('.msg-their').textContent(), /^Hi Alpha! Picture day for Test is on Friday, wear something blue\. - Emily\s+Reply STOP/);
   await page.click('#msg-cancel');
   await page.waitForSelector('#toast:has-text("Canceled for 1 family")');
   await sentRow.locator('text=1 canceled').waitFor();
+  await tpl('Picture day').waitFor();
+  assert.equal(await page.locator('#msg-form textarea[name=body]').inputValue(), '', 'a fresh text after sending');
   await page.click('header nav button[data-view=roster]');
   await page.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' }).locator('td').first().click();
-  await page.locator('.drawer #st-texts li', { hasText: 'Hi Alpha, picture day for Test is Friday. Reply STOP to opt out.' }).locator('text=Canceled').waitFor();
+  await page.locator('.drawer #st-texts li', { hasText: /wear something blue\. - Emily\s+Reply STOP to opt out\./ }).locator('text=Canceled').waitFor();
   await page.locator('.drawer [data-close]').first().click();
   assert.equal(await p2.locator('header nav button[data-view=messages]').count(), 0, 'no Messages without finance access');
-  ok('Messages: text families who owe (their balance filled in), a class or families you pick; [blanks] must be filled; cancel before it goes out');
+  ok('Messages: write your own with blocks, save it to My messages, fill in its [blank], change one family’s text; history and cancel');
 
   const p3 = await newPage();
   await login(p3, 'teacher@creativaacademy.com', 'teacher-pass-1');

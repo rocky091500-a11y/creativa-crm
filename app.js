@@ -366,6 +366,7 @@
     state.hasLog = !chg.error;
     state.unseen = chg.error ? [] : chg.data || [];
     state.hasMsgs = (isAdmin() || state.me.finance === 'edit') && !msg.error;
+    state.msgTpls = undefined;   // My messages: loaded when Messages opens
     state.loadedAt = Date.now();
   }
 
@@ -2687,16 +2688,22 @@
   const MSG_STATUS = { queued: 'Waiting', sending: 'Sending', sent: 'Sent', failed: 'Failed', opted_out: 'Opted out', canceled: 'Canceled' };
   const MSG_PILL = { queued: 'open', sending: 'open', sent: 'paid', failed: 'overdue', opted_out: 'none', canceled: 'void' };
   const MSG_WHO = { all: 'All enrolled families', class: 'One class', owe: 'Families who owe money', late: 'Families with a late balance', pick: 'Families I pick' };
+  // Examples shown until 014_message_templates.sql is run; after that the school writes and saves its own ("My messages").
   // Plain characters only: an accent or curly quote makes every text cost more (70 characters a part instead of 160).
-  const MSG_TEMPLATES = {
-    payment: ['Payment reminder', "Hi {parent}, this is Creativa Academy. A friendly reminder that {child}'s tuition balance is {balance}. You can pay by Zelle, card or cash. Thank you!"],
-    activity: ['Activity reminder', 'Hi {parent}! Reminder from Creativa Academy: [activity] is on [day] at [time]. Please [what to bring]. Thank you!'],
-    closed: ['School closed', 'Hi {parent}, Creativa Academy will be closed on [day] for [reason]. We reopen on [day]. Thank you!'],
-  };
+  const MSG_EXAMPLES = [
+    { id: 'ex-1', name: 'Payment reminder', body: "Hi {parent}, this is {me} from Creativa Academy. A friendly reminder that {child}'s tuition balance is {balance}. You can pay by Zelle, card or cash. Thank you!" },
+    { id: 'ex-2', name: 'Activity reminder', body: 'Hi {parent}! This is {me} from Creativa Academy. Just a reminder that [activity] is on [day] at [time]. Please [what to bring]. Thank you!' },
+    { id: 'ex-3', name: 'School closed', body: 'Hi {parent}, this is {me} from Creativa Academy. We will be closed on [day] for [reason] and reopen on [day]. Thank you!' },
+  ];
+  // Blocks: filled in for each family when the text goes out. "[ ]" is a blank the writer fills in before sending.
+  const MSG_BLOCKS = [['{parent}', 'Parent’s first name'], ['{child}', 'Child’s first name'], ['{balance}', 'Balance owed'],
+    ['{class}', 'Class'], ['{me}', 'My first name'], ['[ ]', 'Blank to fill in']];
   const STOP_LINE = 'Reply STOP to opt out.';
+  const HAS_BLANK = /\[[^\]]*\]/;
   const familyOwes = (kids) => round2(kids.reduce((t, s) => t + openInvoices(s.id).reduce((u, i) => u + invoiceBalance(i), 0), 0));
   const familyLate = (kids) => round2(kids.reduce((t, s) => t + openInvoices(s.id).filter((i) => todayStr() > addDays(i.due_date, 4))
     .reduce((u, i) => u + invoiceBalance(i), 0), 0));
+  const andList = (xs) => (xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}` : xs[0] || '');
   function msgFamilies() {   // every family with an enrolled child, or with money owed
     const groups = new Map();
     state.students.filter((s) => s.status === 'enrolled' || openInvoices(s.id).length).forEach((s) => {
@@ -2722,9 +2729,11 @@
   }
   function msgText(body, g, to) {
     const first = String(to.name || '').trim().split(/\s+/)[0];
-    const kids = g.kids.map((s) => s.name.split(' ')[0]);
-    const child = kids.length > 1 ? `${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]}` : kids[0] || 'your child';
-    return body.replace(/ ?\{parent\}/g, first ? ` ${first}` : '').replace(/\{child\}/g, child).replace(/\{balance\}/g, money(g.owes)).trim();
+    const child = andList(g.kids.map((s) => s.name.split(' ')[0])) || 'your child';
+    const cls = andList([...new Set(g.kids.filter((s) => s.classroom_id).map((s) => classroomName(s.classroom_id)).filter(Boolean))]) || 'class';
+    const me = String(state.me.full_name || '').trim().split(/\s+/)[0] || 'the office';
+    return body.replace(/ ?\{parent\}/gi, first ? ` ${first}` : '').replace(/\{child\}/gi, child).replace(/\{balance\}/gi, money(g.owes))
+      .replace(/\{class\}/gi, cls).replace(/\{me\}/gi, me).trim();
   }
   function msgRecipients(d) {
     let fams = msgFamilies();
@@ -2733,7 +2742,7 @@
     if (d.who === 'owe') fams = fams.filter((g) => g.owes > 0);
     if (d.who === 'late') fams = fams.filter((g) => g.late > 0);
     if (d.who === 'pick') fams = fams.filter((g) => d.picked.includes(g.key));
-    const body = d.body.trim() + (d.stop && d.body.trim() && !/STOP/i.test(d.body) ? ` ${STOP_LINE}` : '');
+    const body = d.body.trim() + (d.stop && d.body.trim() && !/STOP/i.test(d.body) ? `\n${STOP_LINE}` : '');
     const send = [], skipped = [], used = new Set();
     fams.forEach((g) => {
       const phones = msgPhones(g, d.secondary);
@@ -2742,7 +2751,9 @@
         if (textsStopped(to.phone)) return skipped.push({ g, why: `${to.name || to.phone} replied STOP` });
         if (used.has(to.phone)) return;
         used.add(to.phone);
-        send.push({ g, to, text: msgText(body, g, to) });
+        if (d.skip.includes(to.phone)) return skipped.push({ g, why: 'you took them off', phone: to.phone });
+        const own = d.edits[to.phone];
+        send.push({ g, to, text: own ?? msgText(body, g, to), edited: own != null });
       });
     });
     return { fams, send, skipped, body };
@@ -2751,9 +2762,14 @@
     const wide = /[^\x00-\x7F]/.test(t);
     return t.length <= (wide ? 70 : 160) ? 1 : Math.ceil(t.length / (wide ? 67 : 153));
   };
+  async function loadMsgTpls() {   // null until 014 is run
+    const { data, error } = await sb.from('message_templates').select('*').order('sort').order('name');
+    state.msgTpls = error ? null : data;
+  }
 
   function renderMessages(el) {
-    const d = state.msgDraft || (state.msgDraft = { who: 'owe', cls: state.classrooms[0]?.id || '', secondary: false, body: '', stop: true, when: 'now', at: '', picked: [], q: '' });
+    const d = state.msgDraft || (state.msgDraft = { who: 'owe', cls: state.classrooms[0]?.id || '', secondary: false, body: '', stop: true, when: 'now', at: '',
+      picked: [], q: '', tpl: null, tplName: '', edits: {}, skip: [], editing: null });
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
     el.innerHTML = `<div class="msg-grid">
       <section class="panel msg-compose"><h2>New text</h2>
@@ -2763,11 +2779,15 @@
           <div class="full" id="msg-pick" ${d.who === 'pick' ? '' : 'hidden'}><input type="search" name="q" placeholder="Search families…" value="${esc(d.q)}">
             <div class="msg-pick" id="msg-pick-list"></div></div>
           <label class="full pill-check"><input type="checkbox" class="check" name="secondary" ${d.secondary ? 'checked' : ''}> Also text the second parent (Secondary contact)</label>
-          <div class="full msg-templates"><span class="muted small">Start from:</span>
-            ${Object.entries(MSG_TEMPLATES).map(([k, [label]]) => `<button class="btn small" type="button" data-tpl="${k}">${esc(label)}</button>`).join('')}</div>
-          <label class="full">Message<textarea name="body" rows="5" maxlength="900" placeholder="Hi {parent}, …">${esc(d.body)}</textarea></label>
-          <p class="full muted small msg-help">{parent} = their first name · {child} = the children’s first names · {balance} = what the family owes.
-            <span id="msg-count"></span></p>
+          <div class="full msg-templates" id="msg-tpls"></div>
+          <label class="full">Message<textarea name="body" rows="6" maxlength="900"
+            placeholder="Write it your way. Tap a block below to add each family’s names, e.g. Hi {parent}! …">${esc(d.body)}</textarea></label>
+          <div class="full msg-blocks"><span class="muted small">Add:</span>
+            ${MSG_BLOCKS.map(([tok, label]) => `<button class="btn small block-btn" type="button" data-block="${esc(tok)}">${esc(label)}</button>`).join('')}</div>
+          <p class="full muted small msg-help">Blocks are filled in for each family: see how every text reads under <b>Who gets it</b>,
+            and change any one of them there. <span id="msg-count"></span>
+            <button class="btn ghost small" type="button" id="msg-next-blank" hidden>Fill in the next [blank]</button></p>
+          <div class="full msg-save" id="msg-save-row"></div>
           <label class="full pill-check"><input type="checkbox" class="check" name="stop" ${d.stop ? 'checked' : ''}> End with “${STOP_LINE}”</label>
           <label>When<select name="when">${opt('now', 'Send now', d.when)}${opt('later', 'Later…', d.when)}</select></label>
           <label id="msg-at" ${d.when === 'later' ? '' : 'hidden'}>On<input type="datetime-local" name="at" value="${esc(d.at)}"></label>
@@ -2781,11 +2801,87 @@
       <p class="muted small">Texts go out between 8am and 9pm Miami time (one written later waits until 8am). Families who replied STOP are skipped.
         Replies go to the school’s Twilio number${state.settings?.telegram_token_set ? ' and are copied to Telegram' : ''}.</p></section>`;
     const form = $('#msg-form', el);
+    const setBody = (v) => { d.body = form.body.value = v; d.edits = {}; d.editing = null; };
+    const selectBlank = (from) => {   // select the next [blank] (brackets too), so typing replaces it
+      const ta = form.body, re = /\[[^\]]*\]/g;
+      re.lastIndex = from;
+      let m = re.exec(ta.value);
+      if (!m && from) { re.lastIndex = 0; m = re.exec(ta.value); }
+      if (!m) return false;
+      ta.focus();
+      ta.setSelectionRange(m.index, m.index + m[0].length);
+      return true;
+    };
+    $('#msg-next-blank', el).addEventListener('click', () => selectBlank(form.body.selectionEnd || 0));
+
+    // My messages: start from one, save the one being written, change or delete a saved one
+    const drawTpls = () => {
+      const saved = state.msgTpls, list = saved || MSG_EXAMPLES;
+      $('#msg-tpls', el).innerHTML = `<span class="muted small">${saved ? 'My messages:' : 'Start from:'}</span>
+        ${list.map((t) => `<button class="btn small ${t.id === d.tpl ? 'on' : ''}" type="button" data-tpl="${esc(t.id)}">${esc(t.name)}</button>`).join('')}
+        ${saved ? '<button class="btn small ghost" type="button" data-tpl-new>+ New message</button>' : ''}
+        ${saved && !saved.length ? '<span class="muted small">None saved yet: write one below and save it.</span>' : ''}`;
+      const cur = saved?.find((t) => t.id === d.tpl);
+      $('#msg-save-row', el).innerHTML = saved === undefined ? ''
+        : saved === null ? '<p class="muted small">To save your own messages here, run <code>014_message_templates.sql</code> in Supabase.</p>'
+          : `<input name="tplName" maxlength="60" placeholder="Name it to save it, e.g. Picture day" value="${esc(d.tplName)}">
+            ${cur ? `<button class="btn small" type="button" id="tpl-update">Save changes</button>
+              <button class="btn small" type="button" id="tpl-new">Save as new</button>
+              <button class="btn small ghost danger" type="button" id="tpl-del">Delete</button>`
+              : '<button class="btn small" type="button" id="tpl-new">Save to My messages</button>'}`;
+      $$('[data-tpl]', el).forEach((b) => b.addEventListener('click', () => {
+        const t = list.find((x) => x.id === b.dataset.tpl);
+        if (d.body.trim() && d.body !== t.body && d.body !== (list.find((x) => x.id === d.tpl)?.body) && !confirm('Replace what you’ve written?')) return;
+        setBody(t.body);
+        d.tpl = saved ? t.id : null;
+        d.tplName = saved ? t.name : '';
+        if (/\{balance\}/i.test(t.body) && d.who === 'all') d.who = form.who.value = 'owe';
+        drawTpls();
+        draw();
+        if (!selectBlank(0)) form.body.focus();
+      }));
+      $('[data-tpl-new]', el)?.addEventListener('click', () => {
+        if (d.body.trim() && !cur && !confirm('Start over? What you’ve written will be cleared.')) return;
+        setBody('');
+        d.tpl = null;
+        d.tplName = '';
+        drawTpls();
+        draw();
+        form.body.focus();
+      });
+      const saveTpl = async (asNew) => {
+        const name = d.tplName.trim(), body = d.body.trim();
+        if (!body) return toast('Write the message first', true);
+        if (!name) { form.tplName.focus(); return toast('Give it a name first', true); }
+        const q = asNew ? sb.from('message_templates').insert({ name, body, sort: Math.max(0, ...saved.map((t) => t.sort)) + 1 })
+          : sb.from('message_templates').update({ name, body, updated_at: new Date().toISOString() }).eq('id', cur.id);
+        const { data, error } = await q.select().single();
+        if (error) return fail(error, 'Could not save it');
+        state.msgTpls = asNew ? [...saved, data] : saved.map((t) => (t.id === data.id ? data : t));
+        d.tpl = data.id;
+        drawTpls();
+        toast(asNew ? `Saved “${name}” to My messages` : `Saved changes to “${name}”`);
+      };
+      $('#tpl-new', el)?.addEventListener('click', () => saveTpl(true));
+      $('#tpl-update', el)?.addEventListener('click', () => saveTpl(false));
+      $('#tpl-del', el)?.addEventListener('click', async () => {
+        if (!confirm(`Delete “${cur.name}” from My messages? (Texts already sent stay in Texts sent.)`)) return;
+        const { error } = await sb.from('message_templates').delete().eq('id', cur.id);
+        if (error) return fail(error, 'Could not delete it');
+        state.msgTpls = saved.filter((t) => t.id !== cur.id);
+        d.tpl = null;
+        d.tplName = '';
+        drawTpls();
+        toast(`Deleted “${cur.name}”`);
+      });
+    };
+
     const draw = () => {
       const r = msgRecipients(d);
       $('#msg-cls', el).hidden = d.who !== 'class';
       $('#msg-pick', el).hidden = d.who !== 'pick';
       $('#msg-at', el).hidden = d.when !== 'later';
+      $('#msg-next-blank', el).hidden = !HAS_BLANK.test(d.body);
       if (d.who === 'pick') {
         const q = d.q.trim().toLowerCase();
         $('#msg-pick-list', el).innerHTML = msgFamilies().filter((g) => !q || `${g.name} ${g.kids.map((s) => s.name).join(' ')}`.toLowerCase().includes(q))
@@ -2800,30 +2896,70 @@
       $('#msg-count', el).textContent = d.body.trim() ? `${longest.length} characters · ${smsParts(longest)} text${smsParts(longest) === 1 ? '' : 's'} each` : '';
       $('#msg-sum', el).textContent = `${r.send.length} text${r.send.length === 1 ? '' : 's'}${r.skipped.length ? ` · ${r.skipped.length} skipped` : ''}`;
       $('#msg-send', el).textContent = r.send.length ? `${d.when === 'later' ? 'Schedule' : 'Send'} ${r.send.length} text${r.send.length === 1 ? '' : 's'}` : 'Send';
-      $('#msg-list', el).innerHTML = (r.send.length ? `<ul class="msg-to">${r.send.slice(0, 60).map((x) => `<li><div><b>${esc(x.to.name || x.g.name)}</b>
-          <span class="muted small">${esc(x.g.kids.map((s) => s.name).join(', '))} · ${esc(x.to.phone)}${x.g.owes ? ` · owes ${money(x.g.owes)}` : ''}</span></div>
-          ${d.body.trim() ? `<div class="msg-bubble">${esc(x.text)}</div>` : ''}</li>`).join('')}</ul>${r.send.length > 60 ? `<p class="muted small">…and ${r.send.length - 60} more.</p>` : ''}`
-        : '<p class="muted">Nobody to text yet.</p>')
-        + (r.skipped.length ? `<p class="muted small"><b>Skipped:</b> ${r.skipped.map((x) => `${esc(x.g.name)} (${esc(x.why)})`).join(', ')}</p>` : '');
+      const zero = /\{balance\}/i.test(d.body) ? r.send.filter((x) => !x.g.owes && !x.edited).length : 0;
+      const one = (x) => {
+        const ph = esc(x.to.phone);
+        const acts = `<span class="msg-acts">${d.body.trim() && d.editing !== x.to.phone ? `<button class="btn ghost small" type="button" data-edit-one="${ph}">Change</button>` : ''}
+          ${x.edited ? `<button class="btn ghost small" type="button" data-undo-one="${ph}">Undo change</button>` : ''}
+          <button class="btn ghost small" type="button" data-skip-one="${ph}">Don’t send</button></span>`;
+        const text = d.editing === x.to.phone
+          ? `<textarea class="msg-one" data-one="${ph}" rows="4" maxlength="1500">${esc(x.text)}</textarea>
+            <div><button class="btn small" type="button" data-done-one>Done</button></div>`
+          : d.body.trim() ? `<div class="msg-bubble">${esc(x.text)}</div>${x.edited ? '<span class="muted small">Changed just for them</span>' : ''}` : '';
+        return `<li><div class="msg-to-head"><div><b>${esc(x.to.name || x.g.name)}</b>
+          <span class="muted small">${esc(x.g.kids.map((s) => s.name).join(', '))} · ${esc(x.to.phone)}${x.g.owes ? ` · owes ${money(x.g.owes)}` : ''}</span></div>${acts}</div>${text}</li>`;
+      };
+      $('#msg-list', el).innerHTML = (zero ? `<p class="check-warn small">${zero} of these famil${zero === 1 ? 'y owes' : 'ies owe'} $0.00, so the balance block reads $0.00 for them.</p>` : '')
+        + (r.send.length ? `<ul class="msg-to">${r.send.slice(0, 60).map(one).join('')}</ul>${r.send.length > 60 ? `<p class="muted small">…and ${r.send.length - 60} more.</p>` : ''}`
+          : '<p class="muted">Nobody to text yet.</p>')
+        + (r.skipped.length ? `<p class="muted small"><b>Skipped:</b> ${r.skipped.map((x) => `${esc(x.g.name)} (${esc(x.why)}${x.phone
+          ? ` · <button class="btn ghost small" type="button" data-unskip="${esc(x.phone)}">put back</button>` : ''})`).join(', ')}</p>` : '');
+      $$('[data-edit-one]', el).forEach((b) => b.addEventListener('click', () => {
+        d.editing = b.dataset.editOne;
+        draw();
+        const ta = $(`.msg-one[data-one="${CSS.escape(d.editing)}"]`, el);
+        ta?.focus();
+        ta?.setSelectionRange(ta.value.length, ta.value.length);
+      }));
+      $$('.msg-one', el).forEach((ta) => ta.addEventListener('input', () => { d.edits[ta.dataset.one] = ta.value; }));
+      $$('[data-done-one]', el).forEach((b) => b.addEventListener('click', () => {
+        const x = r.send.find((y) => y.to.phone === d.editing);
+        if (x && d.edits[d.editing] != null && (!d.edits[d.editing].trim() || d.edits[d.editing] === msgText(r.body, x.g, x.to))) delete d.edits[d.editing];
+        d.editing = null;
+        draw();
+      }));
+      $$('[data-undo-one]', el).forEach((b) => b.addEventListener('click', () => { delete d.edits[b.dataset.undoOne]; d.editing = null; draw(); }));
+      $$('[data-skip-one]', el).forEach((b) => b.addEventListener('click', () => { d.skip.push(b.dataset.skipOne); if (d.editing === b.dataset.skipOne) d.editing = null; draw(); }));
+      $$('[data-unskip]', el).forEach((b) => b.addEventListener('click', () => { d.skip = d.skip.filter((x) => x !== b.dataset.unskip); draw(); }));
     };
     form.addEventListener('input', (e) => {
       const t = e.target;
       if (!t.name) return;
       d[t.name] = t.type === 'checkbox' ? t.checked : t.value;
+      if (t.name !== 'tplName') draw();
+    });
+    form.addEventListener('change', (e) => {
+      if (!e.target.name || e.target.name === 'tplName' || e.target.name === 'body') return;
+      d[e.target.name] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
       draw();
     });
-    form.addEventListener('change', (e) => { if (e.target.name) { d[e.target.name] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; draw(); } });
-    $$('[data-tpl]', el).forEach((b) => b.addEventListener('click', () => {
-      d.body = MSG_TEMPLATES[b.dataset.tpl][1];
-      form.body.value = d.body;
-      if (b.dataset.tpl === 'payment' && d.who !== 'late') d.who = form.who.value = 'owe';
+    $$('[data-block]', el).forEach((b) => b.addEventListener('click', () => {
+      const ta = form.body, blank = b.dataset.block === '[ ]', tok = blank ? '[write here]' : b.dataset.block;
+      const a = ta.selectionStart ?? ta.value.length, z = ta.selectionEnd ?? a;
+      const before = ta.value.slice(0, a), after = ta.value.slice(z);
+      const pad = /[^\s(\[]$/.test(before) ? ' ' : '';   // "Hi" + {parent} → "Hi {parent}"
+      ta.value = before + pad + tok + after;
+      d.body = ta.value;
+      ta.focus();
+      const at = a + pad.length;
+      if (blank) ta.setSelectionRange(at + 1, at + tok.length - 1);   // "write here" selected: just type over it
+      else ta.setSelectionRange(at + tok.length, at + tok.length);
       draw();
-      form.body.focus();
     }));
     $('#msg-send', el).addEventListener('click', async () => {
       const r = msgRecipients(d);
       if (!d.body.trim()) return toast('Write the message first', true);
-      if (/\[[^\]]*\]/.test(d.body)) return toast('Fill in the parts in [brackets] first', true);
+      if (r.send.some((x) => HAS_BLANK.test(x.text))) { selectBlank(0); return toast('Fill in the parts in [brackets] first', true); }
       if (!r.send.length) return toast('Nobody to text', true);
       let at = new Date();
       if (d.when === 'later') {
@@ -2838,7 +2974,7 @@
       const { data: m, error } = await sb.from('messages').insert({ audience: `${audience} (${r.send.length})`, body: r.body, send_at: at.toISOString(), created_by: state.me.id })
         .select().single();
       if (error) { btn.disabled = false; return fail(error, 'Could not save the text'); }
-      const rows = r.send.map((x) => ({ message_id: m.id, student_id: x.to.sid, name: x.to.name || null, phone: x.to.phone, body: x.text }));
+      const rows = r.send.map((x) => ({ message_id: m.id, student_id: x.to.sid, name: x.to.name || null, phone: x.to.phone, body: x.text.trim() }));
       for (let i = 0; i < rows.length; i += 200) {
         const { error: e2 } = await sb.from('message_recipients').insert(rows.slice(i, i + 200));
         if (e2) { btn.disabled = false; return fail(e2, 'Could not save the text'); }
@@ -2866,7 +3002,9 @@
       state.msgDraft = null;
       renderMessages(el);
     });
+    drawTpls();
     draw();
+    if (state.msgTpls === undefined) loadMsgTpls().then(() => { if ($('#msg-tpls', el)) drawTpls(); });
     loadMsgHistory(el);
   }
 
@@ -2906,6 +3044,7 @@
         <div class="section"><h3>Families (${rs.length})</h3><ul class="chg-list mini">${rs.sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((r) => `<li>
           <span class="pay-pill ps-${MSG_PILL[r.status]}">${esc(MSG_STATUS[r.status])}</span>
           <span><b>${esc(r.name || r.phone)}</b> <span class="muted small">${esc(r.phone)}${r.sent_at ? ` · ${esc(fmtDateTime(r.sent_at))}` : ''}</span>
+          <div class="small msg-their">${esc(r.body)}</div>
           ${r.error ? `<div class="check-warn small">${esc(r.error)}</div>` : ''}</span></li>`).join('')}</ul></div>`,
       foot: `${waiting ? '<button class="btn danger" id="msg-cancel" type="button">Cancel the ones not sent</button>' : ''}<span class="spacer"></span>
         <button class="btn" data-close type="button">Close</button>`,
@@ -2986,6 +3125,7 @@
         : `reopened pay period ${fmtDate(d.period_start)} – ${fmtDate(d.period_end)}`;
       case 'messages': return c.action === 'insert' ? `texted ${d.audience}: “${String(d.body || '').slice(0, 80)}${String(d.body || '').length > 80 ? '…' : ''}”`
         : c.diff?.canceled_at ? `canceled a text to ${d.audience}` : `changed a text to ${d.audience}`;
+      case 'message_templates': return `${{ insert: 'saved', update: 'changed', delete: 'deleted' }[c.action]} the message “${d.name}” in My messages`;
       case 'settings': return `changed settings: ${Object.keys(c.diff || {}).map((k) => FIELD_LABEL[k] || k.replace(/_/g, ' ')).join(', ')}`;
       case 'profiles': return c.action === 'update' ? `changed ${d.full_name || d.email}’s access: ${dt}` : `${act} login ${d.email}`;
       default: return `${act} ${c.table_name.replace(/_/g, ' ')}`;

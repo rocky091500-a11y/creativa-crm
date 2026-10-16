@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql` and `013_family_texts.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql` and `014_message_templates.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -255,15 +255,21 @@ number as the tour texts:
 - **Who gets it**: all enrolled families, one class, families who owe money, families with a late balance (past the
   Friday grace day), or families you tick. Each family gets one text per number (the primary contact's cell, or the
   second parent's too if ticked; brothers and sisters on one family account share a text).
-- **Wording**: start from *Payment reminder*, *Activity reminder* or *School closed*, or write your own.
-  `{parent}`, `{child}` and `{balance}` are filled in for each family, and the preview shows every text before it
-  goes. Parts in `[brackets]` must be filled in first. “Reply STOP to opt out.” is added unless you untick it.
+- **Wording**: write it your way. The **Add** blocks drop in each family's details where the cursor is: parent's
+  first name `{parent}`, child's first name `{child}`, balance owed `{balance}`, class `{class}`, and your own first
+  name `{me}`; *Blank to fill in* adds a `[blank]` to fill in each time (*Fill in the next [blank]* jumps to it, and a
+  text with a blank left can't be sent). The preview shows every family's text before it goes; **Change** rewrites
+  one family's text just for them, **Don't send** takes a family off. “Reply STOP to opt out.” is added on its own
+  line unless you untick it.
+- **My messages** (`014_message_templates.sql`): name a message and save it to start from next time; change or
+  delete saved ones. It starts with three examples (payment reminder, activity reminder, school closed).
 - **When**: now, or a date and time. Texts only go out between 8am and 9pm Miami time; one sent later waits until 8am.
 - Numbers that replied STOP are skipped (and a STOP Twilio reports while sending is recorded). **Texts sent** lists
   every text with who sent it and what happened to each family; one that hasn't gone out can be canceled. Each
   child's page lists the texts their family got.
 
-`supabase/migrations/013_family_texts.sql` holds the texts (`messages`, `message_recipients`);
+`supabase/migrations/013_family_texts.sql` holds the texts (`messages`, `message_recipients`), and
+`014_message_templates.sql` the saved ones (`message_templates`);
 `netlify/functions/family-texts.mjs` sends them through Twilio when **Send** is pressed, and
 `family-texts-hourly.mjs` sends scheduled ones every hour. It needs `SUPABASE_SERVICE_ROLE_KEY`,
 `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_MESSAGING_SERVICE_SID` (or `TWILIO_FROM`), the same variables

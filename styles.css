@@ -497,3 +497,17 @@ table.roster tr.st-graduated td { color: var(--ink-soft); }
 .msg-history tbody tr:hover td { background: var(--cream); }
 .msg-history p.muted { margin: 10px 0 0; }
 @media (max-width: 900px) { .msg-grid { grid-template-columns: 1fr; } }
+.msg-templates .btn.on { background: var(--sage-deep); border-color: var(--sage-deep); color: var(--white); }
+.msg-blocks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: -4px; }
+.msg-blocks .block-btn { background: #E3E8D6; border-color: transparent; color: var(--sage-deep); border-radius: 999px; }
+.msg-blocks .block-btn::before { content: '+ '; }
+.msg-blocks .block-btn:hover { border-color: var(--sage); }
+.msg-save { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.msg-save input { flex: 1 1 220px; width: auto; }
+.msg-save p { margin: 0; }
+.msg-to-head { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+.msg-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; flex: none; }
+.msg-acts .btn { padding: 2px 8px; font-size: 12px; }
+.msg-one { width: 100%; max-width: 420px; }
+.msg-preview p .btn { padding: 0 6px; font-size: 12px; }
+.msg-their { color: var(--ink-soft); margin-top: 2px; white-space: pre-wrap; }

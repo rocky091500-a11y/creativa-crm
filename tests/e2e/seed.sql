@@ -43,3 +43,10 @@ insert into public.time_entries (employee_id, clock_in, clock_out, out_reason)
 -- A missed clock-out, on someone who has since left (so it never changes Cora's totals, whatever the date).
 insert into public.employees (first_name, last_name, position, pay_rate, active) values ('Dee', 'Missed', 'Assistant teacher', 15, false);
 insert into public.time_entries (employee_id, clock_in) select id, now() - interval '30 hours' from public.employees where first_name = 'Dee';
+
+-- Billing system sheets kept as history (010). Fake families.
+update public.students set family_account = 'ALPHA, TEST' where name = 'Test Kid Alpha';
+insert into public.billing_history (as_of, period_start, period_end, customer, family_account, balance, note) values
+  ('2026-08-12', '2026-08-10', '2026-08-21', 'ALPHA, TEST', 'ALPHA, TEST', 560, null),
+  ('2026-08-25', '2026-08-24', '2026-09-04', 'ALPHA, TEST', 'ALPHA, TEST', -40, 'Handwritten on the sheet: paid early'),
+  ('2026-08-12', '2026-08-10', '2026-08-21', 'GONE, KID', 'GONE, KID', 100, null);

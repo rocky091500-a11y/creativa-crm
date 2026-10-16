@@ -440,3 +440,15 @@ details.history-panel > summary::before { content: '▸ '; color: var(--ink-soft
 details.history-panel[open] > summary::before { content: '▾ '; }
 details.history-panel[open] > summary { margin-bottom: 10px; }
 table.hist .hist-period { font-size: 11px; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--ink-soft); }
+
+/* graduated; Aug–Sep amounts to check (011) */
+.stage-pill.st-graduated { background: #E3E8D6; color: var(--sage-deep); }
+table.roster tr.st-graduated td { color: var(--ink-soft); }
+.hist-check { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 4px; }
+.hist-check p { margin: 0 0 10px; }
+.hc-fam { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line); }
+.hc-fam:first-of-type { border-top: 0; }
+.hc-rows { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.hc-rows label { display: flex; flex-direction: column; gap: 2px; width: 150px; }
+.hc-rows input { margin-top: 2px; }
+.hc-fam .btn { justify-self: start; }

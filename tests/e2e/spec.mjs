@@ -353,9 +353,9 @@ try {
   await page.click('#p-now');
   // Periods before the CRM's first billing Monday (Oct 5) show the billing system's sheet, with nothing to bill.
   for (let i = 0; i < 40 && !(await page.locator('.month-bar b', { hasText: 'Aug 10 – Aug 21' }).count()); i++) await page.click('#p-prev');
-  await page.locator('.before-crm', { hasText: 'billing system sheet' }).waitFor();
+  await page.locator('.before-crm', { hasText: 'billed and paid in the billing system' }).waitFor();
   assert.equal(await page.locator('#t-bill, [data-bill-one], #t-add, #t-late').count(), 0, 'nothing to bill before the CRM');
-  assert.match(await page.locator('#tb-rows tr', { hasText: 'ALPHA, TEST' }).textContent(), /Test Kid Alpha[\s\S]*\$560\.00/);
+  assert.match(await page.locator('#tb-rows tr', { hasText: 'ALPHA, TEST' }).textContent(), /Test Kid Alpha[\s\S]*\$560\.00[\s\S]*Paid/);
   assert.ok(await page.locator('#p-prev').isDisabled(), 'no earlier sheets');
   await page.click('#p-next');
   await page.locator('#tb-rows tr', { hasText: 'ALPHA, TEST' }).locator('td', { hasText: '-$40.00' }).waitFor();   // Aug 24 – Sep 4
@@ -408,7 +408,7 @@ try {
   assert.ok(await page.locator('#hist-rows tr', { hasText: 'GONE, KID' }).locator('text=(not in the CRM)').count());
   assert.deepEqual((await page.locator('#hist-panel tfoot th.num').allTextContents()).map((x) => x.trim()), ['$660.00', '-$40.00']);
   await histAlpha.click();
-  await page.locator('.drawer .section', { hasText: 'Earlier balances (billing system)' }).locator('li', { hasText: 'paid early' }).waitFor();
+  await page.locator('.drawer .section', { hasText: 'Earlier billing (billing system, paid)' }).locator('li', { hasText: 'paid early' }).waitFor();
   await page.locator('.drawer [data-close]').first().click();
   ok('Reports: the billing system’s balance sheets by family and date, totals; shown on the child’s page');
 

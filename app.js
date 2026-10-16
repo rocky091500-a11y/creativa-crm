@@ -1038,11 +1038,11 @@
                 <button class="btn ghost small" type="button" data-receipt="${p.id}">Receipt #${p.receipt_no}</button>
                 ${finEdit ? `<button class="btn ghost small" type="button" data-edit-pay="${p.id}">Edit</button>` : ''}</li>`).join('')
               || '<li class="muted">No payments recorded yet.</li>'}</ul></div>` : ''}
-          ${id && historyFor(s0).length ? `<div class="section"><h3>Earlier balances (billing system)</h3>
+          ${id && historyFor(s0).length ? `<div class="section"><h3>Earlier billing (billing system, paid)</h3>
             <ul class="pay-list">${historyFor(s0).map((h) => `<li><span class="p-date">${esc(fmtDate(h.as_of))}</span>
-              <span class="p-what">Owed on the sheet for tuition ${esc(fmtDate(h.period_start))} – ${esc(fmtDate(h.period_end))}${h.note ? ` · ${esc(h.note)}` : ''}</span>
+              <span class="p-what">Billed for tuition ${esc(fmtDate(h.period_start))} – ${esc(fmtDate(h.period_end))}${h.note ? ` · ${esc(h.note)}` : ''}</span>
               <b>${money(h.balance)}</b></li>`).join('')}</ul>
-            <p class="muted small">From the Balance Summary sheets printed before the CRM (a minus is a credit). For reference only.</p></div>` : ''}` : ''}
+            <p class="muted small">From the Balance Summary sheets before the CRM, all paid there (a minus is a credit). For reference only.</p></div>` : ''}` : ''}
         ${inq ? `<p class="small"><a href="#" id="open-inq">Open the original inquiry (${esc(inq.parent_name || 'family')})</a></p>` : ''}`,
       foot: `${id && isAdmin() ? '<button class="btn danger" id="st-del" type="button">Delete</button>' : ''}
         <span class="spacer"></span><button class="btn" data-close type="button">Cancel</button>
@@ -1795,18 +1795,18 @@
         <b>${esc(fmtPeriod(p))}, ${p.slice(0, 4)}</b>
         <button class="btn small" id="p-next" type="button" aria-label="Next billing period">›</button>
         <button class="btn small ghost" id="p-now" type="button">This period</button>
-        <span class="muted small">Before the CRM: billed in the billing system.</span></div>
-      <section class="panel before-crm"><h2>Tuition ${esc(fmtPeriod(p))} · billing system sheet</h2>
-        ${rows.length ? `<p class="muted small">What each family owed on the Balance Summary printed ${esc(longDate(rows[0].as_of))} for this period
-          (a minus is a credit). These bills and payments are in the billing system, not the CRM, so there is nothing to bill or record here.</p>
+        <span class="muted small">Before the CRM: billed and paid in the billing system.</span></div>
+      <section class="panel before-crm"><h2>Tuition ${esc(fmtPeriod(p))} · billed and paid in the billing system</h2>
+        ${rows.length ? `<p class="muted small">This period was billed and paid before the CRM. Below is each family’s balance on the Balance Summary
+          printed ${esc(longDate(rows[0].as_of))} for it, which is what they were billed (a minus is a credit). Nothing to bill or collect here.</p>
         <div class="stats">
-          <div class="stat"><b>${money(total)}</b><span>Total balances on the sheet</span></div>
-          <div class="stat"><b>${rows.filter((h) => Number(h.balance) > 0).length}</b><span>Families owing</span></div>
+          <div class="stat"><b>${money(total)}</b><span>Billed (sheet total)</span></div>
+          <div class="stat"><b>${rows.filter((h) => Number(h.balance) > 0).length}</b><span>Families billed</span></div>
           <div class="stat"><b>${money(credits)}</b><span>Credits</span></div>
           <div class="stat"><b>${rows.length}</b><span>Families on the sheet</span></div>
         </div>
         <div class="toolbar"><input type="search" id="tb-q" placeholder="Search family or child…"></div>
-        <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Children</th><th class="num">Balance on the sheet</th><th>Note</th></tr></thead>
+        <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Children</th><th class="num">Billed (sheet)</th><th>Status</th><th>Note</th></tr></thead>
           <tbody id="tb-rows"></tbody></table></div>`
           : `<p class="muted">There’s no billing system sheet for this period in the CRM.</p>`}</section>`;
     const go = (np) => { state.period = np; renderTuition(el); };
@@ -1822,8 +1822,10 @@
         const kids = kidsOf(h);
         return `<tr ${kids.length ? `data-sid="${kids[0].id}"` : ''}><td><b>${esc(h.customer)}</b></td>
           <td>${kids.length ? esc(kids.map((s) => s.name).join(', ')) : '<span class="muted small">not in the CRM</span>'}</td>
-          <td class="num${Number(h.balance) < 0 ? ' ok-text' : ''}">${money(h.balance)}</td><td class="small">${esc(h.note || '')}</td></tr>`;
-      }).join('') || '<tr><td colspan="4" class="muted">Nobody matches.</td></tr>';
+          <td class="num${Number(h.balance) < 0 ? ' ok-text' : ''}">${money(h.balance)}</td>
+          <td>${Number(h.balance) > 0 ? '<span class="pay-pill ps-paid">Paid</span>' : Number(h.balance) < 0 ? '<span class="muted small">Credit</span>' : ''}</td>
+          <td class="small">${esc(h.note || '')}</td></tr>`;
+      }).join('') || '<tr><td colspan="5" class="muted">Nobody matches.</td></tr>';
       $$('#tb-rows tr[data-sid]', el).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.sid)));
     };
     $('#tb-q', el)?.addEventListener('input', draw);
@@ -2471,8 +2473,9 @@
     const sum = (d) => round2(state.history.filter((h) => h.as_of === d).reduce((t, h) => t + Number(h.balance), 0));
     return `<details class="panel history-panel" id="hist-panel"><summary><h2>Balances on the billing system’s sheets
         <span class="muted small">${sheets.length} sheet${sheets.length === 1 ? '' : 's'}, ${esc(fmtDate(sheets[0].as_of))} – ${esc(fmtDate(sheets[sheets.length - 1].as_of))}</span></h2></summary>
-      <p class="muted small">What each family owed on the day each Balance Summary was printed, for the tuition period written on it
-        (a minus is a credit). Kept for reference: it doesn’t change what anyone owes in the CRM or what goes on annual statements.</p>
+      <p class="muted small">Each family’s balance on the Balance Summary printed for each tuition period, which is what they were billed
+        (a minus is a credit). All billed and paid in the billing system before the CRM. Kept for reference: it doesn’t change what anyone
+        owes in the CRM or what goes on annual statements.</p>
       <div class="toolbar"><input type="search" id="hist-q" placeholder="Search family…"><span class="spacer"></span>
         <button class="btn small" id="hist-csv" type="button">Download CSV</button></div>
       <div class="table-wrap flat"><table class="hist"><thead><tr><th>Family</th>${sheets.map((sh) => `<th class="num">${esc(fmtDate(sh.as_of))}

@@ -157,6 +157,8 @@
     signature: null,      // receipt signature image (data: URL), finance only
     history: [],          // balances from the billing system's sheets (010), finance only
     hasLog: false,        // false until 012_change_log.sql has been run
+    hasMsgs: false,       // false until 013_family_texts.sql has been run (and only for those who can text)
+    msgDraft: null,
     unseen: [],           // changes by other people since I last opened Changes (012)
     changeFilters: { who: '', area: '', q: '' },
     pay: null,            // Payroll page data for payPeriod
@@ -318,7 +320,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -333,6 +335,7 @@
       fin ? selectAll('billing_history', 'as_of') : none,                      // missing until 010
       sb.from('change_log').select('id, at, actor').neq('actor', state.me.id)  // missing until 012
         .gt('at', state.me.changes_seen_at || '1970-01-01').order('at', { ascending: false }).limit(200),
+      isAdmin() || state.me.finance === 'edit' ? sb.from('messages').select('id').limit(1) : none,   // missing until 013
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -362,6 +365,7 @@
     state.history = hist.error ? [] : hist.data || [];
     state.hasLog = !chg.error;
     state.unseen = chg.error ? [] : chg.data || [];
+    state.hasMsgs = (isAdmin() || state.me.finance === 'edit') && !msg.error;
     state.loadedAt = Date.now();
   }
 
@@ -394,6 +398,7 @@
       ...(state.hasEnrollment ? { roster: 'Enrollment' } : {}),
       ...(state.hasEnrollment && canViewFinance() ? { tuition: 'Tuition', reports: 'Reports' } : {}),
       ...(canPayroll() ? { payroll: 'Payroll' } : {}),
+      ...(state.hasMsgs ? { messages: 'Messages' } : {}),
       ...(state.hasLog ? { changes: 'Changes' } : {}),
       ...(isAdmin() ? { staff: 'Settings' } : {}) };
     if (!views[state.view]) state.view = 'today';
@@ -422,7 +427,7 @@
     const el = $('#view');
     if (!el) return;
     ({ today: renderToday, board: renderBoard, list: renderList, staff: renderStaff,
-      roster: renderRoster, tuition: renderTuition, reports: renderReports, payroll: renderPayroll, changes: renderChanges })[state.view](el);
+      roster: renderRoster, tuition: renderTuition, reports: renderReports, payroll: renderPayroll, changes: renderChanges, messages: renderMessages })[state.view](el);
   }
 
   // ───────────── filters ─────────────
@@ -1058,6 +1063,7 @@
               <b>${money(earlierPaid(h))}</b></li>`).join('')}</ul>
             <p class="muted small">From the Balance Summary sheets before the CRM, all paid there (a minus is a credit). For reference only.</p></div>` : ''}` : ''}
         ${inq ? `<p class="small"><a href="#" id="open-inq">Open the original inquiry (${esc(inq.parent_name || 'family')})</a></p>` : ''}
+        ${id && state.hasMsgs ? '<div class="section"><h3>Texts</h3><ul class="chg-list mini" id="st-texts"><li class="muted small">Loading…</li></ul></div>' : ''}
         ${id && state.hasLog ? '<div class="section"><h3>Recent changes</h3><ul class="chg-list mini" id="st-changes"><li class="muted small">Loading…</li></ul></div>' : ''}`,
       foot: `${id && isAdmin() ? '<button class="btn danger" id="st-del" type="button">Delete</button>' : ''}
         <span class="spacer"></span><button class="btn" data-close type="button">Cancel</button>
@@ -1087,6 +1093,17 @@
     }));
     $$('[data-receipt]', drawer).forEach((b) => b.addEventListener('click', () =>
       showReceipts(state.payments.filter((p) => p.id === b.dataset.receipt))));
+    if (id && state.hasMsgs) {
+      sb.from('message_recipients').select('status, body, sent_at, name, messages(created_at, created_by)').eq('student_id', id).limit(300).then(({ data, error }) => {
+        const ul = $('#st-texts', drawer);
+        if (!ul) return;
+        const list = (data || []).sort((a, b) => (b.messages?.created_at || '').localeCompare(a.messages?.created_at || '')).slice(0, 6);
+        ul.innerHTML = error ? '<li class="muted small">Could not load texts.</li>' : list.map((r) => `<li><span class="chg-time">${esc(fmtDateTime(r.sent_at || r.messages?.created_at))}</span>
+          <span><span class="pay-pill ps-${MSG_PILL[r.status]}">${esc(MSG_STATUS[r.status])}</span> ${esc(r.body)}
+          <span class="muted small">· to ${esc(r.name || '')}, by ${esc(staffName(r.messages?.created_by) || 'staff')}</span></span></li>`).join('')
+          || '<li class="muted small">No texts sent yet.</li>';
+      });
+    }
     if (id && state.hasLog) {
       sb.from('change_log').select('*').eq('student_id', id).order('at', { ascending: false }).limit(10).then(({ data, error }) => {
         const ul = $('#st-changes', drawer);
@@ -2663,6 +2680,246 @@
     draw();
   }
 
+  // ───────────── Messages (013): texts to families ─────────────
+  // Staff pick who gets it (everyone, a class, families who owe or are late, or families they tick), write it once,
+  // and each family gets its own text with {parent}, {child} and {balance} filled in. netlify/functions/family-texts.mjs
+  // sends them through Twilio, between 8am and 9pm.
+  const MSG_STATUS = { queued: 'Waiting', sending: 'Sending', sent: 'Sent', failed: 'Failed', opted_out: 'Opted out', canceled: 'Canceled' };
+  const MSG_PILL = { queued: 'open', sending: 'open', sent: 'paid', failed: 'overdue', opted_out: 'none', canceled: 'void' };
+  const MSG_WHO = { all: 'All enrolled families', class: 'One class', owe: 'Families who owe money', late: 'Families with a late balance', pick: 'Families I pick' };
+  // Plain characters only: an accent or curly quote makes every text cost more (70 characters a part instead of 160).
+  const MSG_TEMPLATES = {
+    payment: ['Payment reminder', "Hi {parent}, this is Creativa Academy. A friendly reminder that {child}'s tuition balance is {balance}. You can pay by Zelle, card or cash. Thank you!"],
+    activity: ['Activity reminder', 'Hi {parent}! Reminder from Creativa Academy: [activity] is on [day] at [time]. Please [what to bring]. Thank you!'],
+    closed: ['School closed', 'Hi {parent}, Creativa Academy will be closed on [day] for [reason]. We reopen on [day]. Thank you!'],
+  };
+  const STOP_LINE = 'Reply STOP to opt out.';
+  const familyOwes = (kids) => round2(kids.reduce((t, s) => t + openInvoices(s.id).reduce((u, i) => u + invoiceBalance(i), 0), 0));
+  const familyLate = (kids) => round2(kids.reduce((t, s) => t + openInvoices(s.id).filter((i) => todayStr() > addDays(i.due_date, 4))
+    .reduce((u, i) => u + invoiceBalance(i), 0), 0));
+  function msgFamilies() {   // every family with an enrolled child, or with money owed
+    const groups = new Map();
+    state.students.filter((s) => s.status === 'enrolled' || openInvoices(s.id).length).forEach((s) => {
+      const k = familyKey(s);
+      if (!groups.has(k)) groups.set(k, { key: k, kids: [] });
+      groups.get(k).kids.push(s);
+    });
+    return [...groups.values()].map((g) => ({ ...g, name: familyName(g.kids), owes: familyOwes(g.kids), late: familyLate(g.kids) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+  function msgPhones(g, secondary) {
+    const out = new Map();
+    g.kids.forEach((s) => {
+      const cs = state.contacts.filter((c) => c.student_id === s.id && (c.role === 'primary' || (secondary && c.role === 'secondary')))
+        .sort((a, b) => a.role.localeCompare(b.role));
+      cs.forEach((c) => { const ph = e164(c.sms_phone || c.cell_phone); if (ph && !out.has(ph)) out.set(ph, { name: contactName(c), phone: ph, sid: s.id }); });
+      if (!cs.some((c) => e164(c.sms_phone || c.cell_phone))) {
+        const ph = e164(s.parent_phone);
+        if (ph && !out.has(ph)) out.set(ph, { name: s.parent_name || '', phone: ph, sid: s.id });
+      }
+    });
+    return [...out.values()];
+  }
+  function msgText(body, g, to) {
+    const first = String(to.name || '').trim().split(/\s+/)[0];
+    const kids = g.kids.map((s) => s.name.split(' ')[0]);
+    const child = kids.length > 1 ? `${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]}` : kids[0] || 'your child';
+    return body.replace(/ ?\{parent\}/g, first ? ` ${first}` : '').replace(/\{child\}/g, child).replace(/\{balance\}/g, money(g.owes)).trim();
+  }
+  function msgRecipients(d) {
+    let fams = msgFamilies();
+    if (d.who === 'all') fams = fams.filter((g) => g.kids.some((s) => s.status === 'enrolled'));
+    if (d.who === 'class') fams = fams.filter((g) => g.kids.some((s) => s.status === 'enrolled' && s.classroom_id === d.cls));
+    if (d.who === 'owe') fams = fams.filter((g) => g.owes > 0);
+    if (d.who === 'late') fams = fams.filter((g) => g.late > 0);
+    if (d.who === 'pick') fams = fams.filter((g) => d.picked.includes(g.key));
+    const body = d.body.trim() + (d.stop && d.body.trim() && !/STOP/i.test(d.body) ? ` ${STOP_LINE}` : '');
+    const send = [], skipped = [], used = new Set();
+    fams.forEach((g) => {
+      const phones = msgPhones(g, d.secondary);
+      if (!phones.length) return skipped.push({ g, why: 'no cell number' });
+      phones.forEach((to) => {
+        if (textsStopped(to.phone)) return skipped.push({ g, why: `${to.name || to.phone} replied STOP` });
+        if (used.has(to.phone)) return;
+        used.add(to.phone);
+        send.push({ g, to, text: msgText(body, g, to) });
+      });
+    });
+    return { fams, send, skipped, body };
+  }
+  const smsParts = (t) => {   // how many texts Twilio bills for one message
+    const wide = /[^\x00-\x7F]/.test(t);
+    return t.length <= (wide ? 70 : 160) ? 1 : Math.ceil(t.length / (wide ? 67 : 153));
+  };
+
+  function renderMessages(el) {
+    const d = state.msgDraft || (state.msgDraft = { who: 'owe', cls: state.classrooms[0]?.id || '', secondary: false, body: '', stop: true, when: 'now', at: '', picked: [], q: '' });
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+    el.innerHTML = `<div class="msg-grid">
+      <section class="panel msg-compose"><h2>New text</h2>
+        <form id="msg-form" class="grid2" novalidate>
+          <label class="full">Who gets it<select name="who">${Object.entries(MSG_WHO).map(([k, v]) => opt(k, v, d.who)).join('')}</select></label>
+          <label class="full" id="msg-cls" ${d.who === 'class' ? '' : 'hidden'}>Class<select name="cls">${state.classrooms.map((c) => opt(c.id, c.name, d.cls)).join('')}</select></label>
+          <div class="full" id="msg-pick" ${d.who === 'pick' ? '' : 'hidden'}><input type="search" name="q" placeholder="Search families…" value="${esc(d.q)}">
+            <div class="msg-pick" id="msg-pick-list"></div></div>
+          <label class="full pill-check"><input type="checkbox" class="check" name="secondary" ${d.secondary ? 'checked' : ''}> Also text the second parent (Secondary contact)</label>
+          <div class="full msg-templates"><span class="muted small">Start from:</span>
+            ${Object.entries(MSG_TEMPLATES).map(([k, [label]]) => `<button class="btn small" type="button" data-tpl="${k}">${esc(label)}</button>`).join('')}</div>
+          <label class="full">Message<textarea name="body" rows="5" maxlength="900" placeholder="Hi {parent}, …">${esc(d.body)}</textarea></label>
+          <p class="full muted small msg-help">{parent} = their first name · {child} = the children’s first names · {balance} = what the family owes.
+            <span id="msg-count"></span></p>
+          <label class="full pill-check"><input type="checkbox" class="check" name="stop" ${d.stop ? 'checked' : ''}> End with “${STOP_LINE}”</label>
+          <label>When<select name="when">${opt('now', 'Send now', d.when)}${opt('later', 'Later…', d.when)}</select></label>
+          <label id="msg-at" ${d.when === 'later' ? '' : 'hidden'}>On<input type="datetime-local" name="at" value="${esc(d.at)}"></label>
+          <div class="full"><button class="btn primary" id="msg-send" type="button">Send</button></div>
+        </form></section>
+      <section class="panel msg-preview"><h2>Who gets it <span class="muted small" id="msg-sum"></span></h2><div id="msg-list"></div></section>
+    </div>
+    <section class="panel msg-history"><h2>Texts sent</h2>
+      <div class="table-wrap flat"><table><thead><tr><th>When</th><th>By</th><th>To</th><th>Message</th><th>Status</th></tr></thead>
+        <tbody id="msg-hist"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
+      <p class="muted small">Texts go out between 8am and 9pm Miami time (one written later waits until 8am). Families who replied STOP are skipped.
+        Replies go to the school’s Twilio number${state.settings?.telegram_token_set ? ' and are copied to Telegram' : ''}.</p></section>`;
+    const form = $('#msg-form', el);
+    const draw = () => {
+      const r = msgRecipients(d);
+      $('#msg-cls', el).hidden = d.who !== 'class';
+      $('#msg-pick', el).hidden = d.who !== 'pick';
+      $('#msg-at', el).hidden = d.when !== 'later';
+      if (d.who === 'pick') {
+        const q = d.q.trim().toLowerCase();
+        $('#msg-pick-list', el).innerHTML = msgFamilies().filter((g) => !q || `${g.name} ${g.kids.map((s) => s.name).join(' ')}`.toLowerCase().includes(q))
+          .map((g) => `<label class="pill-check"><input type="checkbox" class="check" data-fam="${esc(g.key)}" ${d.picked.includes(g.key) ? 'checked' : ''}>
+            ${esc(g.name)} <span class="muted small">${esc(g.kids.map((s) => s.name.split(' ')[0]).join(', '))}</span></label>`).join('');
+        $$('#msg-pick-list [data-fam]', el).forEach((b) => b.addEventListener('change', () => {
+          d.picked = b.checked ? [...new Set([...d.picked, b.dataset.fam])] : d.picked.filter((k) => k !== b.dataset.fam);
+          draw();
+        }));
+      }
+      const longest = r.send.reduce((m, x) => (x.text.length > m.length ? x.text : m), r.body);
+      $('#msg-count', el).textContent = d.body.trim() ? `${longest.length} characters · ${smsParts(longest)} text${smsParts(longest) === 1 ? '' : 's'} each` : '';
+      $('#msg-sum', el).textContent = `${r.send.length} text${r.send.length === 1 ? '' : 's'}${r.skipped.length ? ` · ${r.skipped.length} skipped` : ''}`;
+      $('#msg-send', el).textContent = r.send.length ? `${d.when === 'later' ? 'Schedule' : 'Send'} ${r.send.length} text${r.send.length === 1 ? '' : 's'}` : 'Send';
+      $('#msg-list', el).innerHTML = (r.send.length ? `<ul class="msg-to">${r.send.slice(0, 60).map((x) => `<li><div><b>${esc(x.to.name || x.g.name)}</b>
+          <span class="muted small">${esc(x.g.kids.map((s) => s.name).join(', '))} · ${esc(x.to.phone)}${x.g.owes ? ` · owes ${money(x.g.owes)}` : ''}</span></div>
+          ${d.body.trim() ? `<div class="msg-bubble">${esc(x.text)}</div>` : ''}</li>`).join('')}</ul>${r.send.length > 60 ? `<p class="muted small">…and ${r.send.length - 60} more.</p>` : ''}`
+        : '<p class="muted">Nobody to text yet.</p>')
+        + (r.skipped.length ? `<p class="muted small"><b>Skipped:</b> ${r.skipped.map((x) => `${esc(x.g.name)} (${esc(x.why)})`).join(', ')}</p>` : '');
+    };
+    form.addEventListener('input', (e) => {
+      const t = e.target;
+      if (!t.name) return;
+      d[t.name] = t.type === 'checkbox' ? t.checked : t.value;
+      draw();
+    });
+    form.addEventListener('change', (e) => { if (e.target.name) { d[e.target.name] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; draw(); } });
+    $$('[data-tpl]', el).forEach((b) => b.addEventListener('click', () => {
+      d.body = MSG_TEMPLATES[b.dataset.tpl][1];
+      form.body.value = d.body;
+      if (b.dataset.tpl === 'payment' && d.who !== 'late') d.who = form.who.value = 'owe';
+      draw();
+      form.body.focus();
+    }));
+    $('#msg-send', el).addEventListener('click', async () => {
+      const r = msgRecipients(d);
+      if (!d.body.trim()) return toast('Write the message first', true);
+      if (/\[[^\]]*\]/.test(d.body)) return toast('Fill in the parts in [brackets] first', true);
+      if (!r.send.length) return toast('Nobody to text', true);
+      let at = new Date();
+      if (d.when === 'later') {
+        if (!d.at) return toast('Pick when to send it', true);
+        at = new Date(d.at);
+        if (at < new Date()) return toast('Pick a time that hasn’t passed', true);
+      }
+      if (!confirm(`${d.when === 'later' ? `Schedule ${r.send.length} text${r.send.length === 1 ? '' : 's'} for ${fmtDateTime(at.toISOString())}` : `Send ${r.send.length} text${r.send.length === 1 ? '' : 's'} now`}?`)) return;
+      const btn = $('#msg-send', el);
+      btn.disabled = true;
+      const audience = d.who === 'class' ? `${classroomName(d.cls)} families` : d.who === 'pick' ? `${r.fams.length} famil${r.fams.length === 1 ? 'y' : 'ies'} picked` : MSG_WHO[d.who];
+      const { data: m, error } = await sb.from('messages').insert({ audience: `${audience} (${r.send.length})`, body: r.body, send_at: at.toISOString(), created_by: state.me.id })
+        .select().single();
+      if (error) { btn.disabled = false; return fail(error, 'Could not save the text'); }
+      const rows = r.send.map((x) => ({ message_id: m.id, student_id: x.to.sid, name: x.to.name || null, phone: x.to.phone, body: x.text }));
+      for (let i = 0; i < rows.length; i += 200) {
+        const { error: e2 } = await sb.from('message_recipients').insert(rows.slice(i, i + 200));
+        if (e2) { btn.disabled = false; return fail(e2, 'Could not save the text'); }
+      }
+      let note = d.when === 'later' ? `Scheduled for ${fmtDateTime(at.toISOString())}` : 'Saved';
+      if (d.when === 'now') {
+        btn.textContent = 'Sending…';
+        const tot = { sent: 0, failed: 0 };
+        let out = null;
+        try {
+          for (let k = 0; k < 30; k++) {   // each call sends for a few seconds; call again while there are more
+            const res = await fetch('/.netlify/functions/family-texts', { method: 'POST' });
+            out = res.ok ? await res.json() : null;
+            if (!out || out.dryRun) break;
+            tot.sent += out.sent; tot.failed += out.failed;
+            btn.textContent = `Sending… ${tot.sent} sent`;
+            if (!out.more || !out.due) break;
+          }
+        } catch { out = null; }
+        note = out?.dryRun ? 'Saved. Twilio isn’t connected yet, so the texts are waiting; they go out once it is'
+          : tot.sent || tot.failed ? `${tot.sent} sent${tot.failed ? `, ${tot.failed} failed (see Texts sent)` : ''}${out?.more ? '; the rest go out within the hour' : ''}`
+            : out?.due === 0 ? 'Saved: texts go out between 8am and 9pm, so these go at 8am' : 'Saved: the texts go out within the hour';
+      }
+      toast(note);
+      state.msgDraft = null;
+      renderMessages(el);
+    });
+    draw();
+    loadMsgHistory(el);
+  }
+
+  async function loadMsgHistory(el) {
+    const { data: ms, error } = await sb.from('messages').select('*').order('created_at', { ascending: false }).limit(60);
+    const tbody = $('#msg-hist', el);
+    if (!tbody) return;
+    if (error) { tbody.innerHTML = '<tr><td colspan="5" class="muted">Could not load texts.</td></tr>'; return; }
+    const ids = ms.map((m) => m.id);
+    const recs = [];
+    for (let i = 0; i < ids.length; i += 20) {
+      const { data } = await sb.from('message_recipients').select('*').in('message_id', ids.slice(i, i + 20)).limit(5000);
+      recs.push(...(data || []));
+    }
+    const by = (id) => recs.filter((r) => r.message_id === id);
+    tbody.innerHTML = ms.map((m) => {
+      const rs = by(m.id), n = (st) => rs.filter((r) => r.status === st).length;
+      const parts = [['sent', 'sent'], ['queued', 'waiting'], ['sending', 'sending'], ['failed', 'failed'], ['opted_out', 'opted out'], ['canceled', 'canceled']]
+        .filter(([k]) => n(k)).map(([k, label]) => `${n(k)} ${label}`);
+      return `<tr data-msg="${m.id}"><td class="nowrap">${esc(fmtDateTime(m.send_at > m.created_at ? m.send_at : m.created_at))}${m.send_at > new Date().toISOString() && !m.canceled_at ? '<div class="muted small">scheduled</div>' : ''}</td>
+        <td>${esc(m.created_by === state.me.id ? 'You' : staffName(m.created_by))}</td><td>${esc(m.audience)}</td>
+        <td class="small">${esc(m.body.length > 90 ? m.body.slice(0, 87) + '…' : m.body)}</td>
+        <td><span class="pay-pill ps-${n('failed') ? 'overdue' : n('queued') || n('sending') ? 'open' : m.canceled_at ? 'void' : 'paid'}">${esc(parts.join(' · ') || '—')}</span></td></tr>`;
+    }).join('') || '<tr><td colspan="5" class="muted">No texts sent yet.</td></tr>';
+    $$('#msg-hist tr[data-msg]', el).forEach((tr) => tr.addEventListener('click', () => {
+      const m = ms.find((x) => x.id === tr.dataset.msg);
+      openMessage(m, by(m.id), el);
+    }));
+  }
+
+  function openMessage(m, rs, el) {
+    const waiting = rs.some((r) => r.status === 'queued');
+    const ctl = mountDrawer({
+      title: esc(m.audience),
+      sub: esc(`${m.created_by === state.me.id ? 'You' : staffName(m.created_by)} · ${fmtDateTime(m.created_at)}${m.send_at > m.created_at ? ` · for ${fmtDateTime(m.send_at)}` : ''}`),
+      body: `<div class="section"><h3>Message</h3><div class="msg-bubble">${esc(m.body)}</div></div>
+        <div class="section"><h3>Families (${rs.length})</h3><ul class="chg-list mini">${rs.sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((r) => `<li>
+          <span class="pay-pill ps-${MSG_PILL[r.status]}">${esc(MSG_STATUS[r.status])}</span>
+          <span><b>${esc(r.name || r.phone)}</b> <span class="muted small">${esc(r.phone)}${r.sent_at ? ` · ${esc(fmtDateTime(r.sent_at))}` : ''}</span>
+          ${r.error ? `<div class="check-warn small">${esc(r.error)}</div>` : ''}</span></li>`).join('')}</ul></div>`,
+      foot: `${waiting ? '<button class="btn danger" id="msg-cancel" type="button">Cancel the ones not sent</button>' : ''}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Close</button>`,
+    });
+    $('#msg-cancel', ctl.drawer)?.addEventListener('click', async () => {
+      if (!confirm('Cancel this text for everyone it hasn’t gone to yet?')) return;
+      const { data, error } = await sb.rpc('message_cancel', { p_message: m.id });
+      if (error) return fail(error, 'Could not cancel');
+      toast(`Canceled for ${data} famil${data === 1 ? 'y' : 'ies'}`);
+      closeDrawer();
+      loadMsgHistory(el);
+    });
+  }
+
   // ───────────── Changes (012): who changed what ─────────────
   const CHANGE_AREA = { enrollment: 'Enrollment', finance: 'Tuition & payments', payroll: 'Payroll', settings: 'Settings & access' };
   const FIELD_LABEL = { name: 'name', dob: 'birthday', classroom_id: 'class', status: 'status', start_date: 'start date', withdrawn_on: 'last day',
@@ -2727,6 +2984,8 @@
       }
       case 'payroll_periods': return c.action === 'insert' ? `marked pay period ${fmtDate(d.period_start)} – ${fmtDate(d.period_end)} as entered in Patriot`
         : `reopened pay period ${fmtDate(d.period_start)} – ${fmtDate(d.period_end)}`;
+      case 'messages': return c.action === 'insert' ? `texted ${d.audience}: “${String(d.body || '').slice(0, 80)}${String(d.body || '').length > 80 ? '…' : ''}”`
+        : c.diff?.canceled_at ? `canceled a text to ${d.audience}` : `changed a text to ${d.audience}`;
       case 'settings': return `changed settings: ${Object.keys(c.diff || {}).map((k) => FIELD_LABEL[k] || k.replace(/_/g, ' ')).join(', ')}`;
       case 'profiles': return c.action === 'update' ? `changed ${d.full_name || d.email}’s access: ${dt}` : `${act} login ${d.email}`;
       default: return `${act} ${c.table_name.replace(/_/g, ' ')}`;

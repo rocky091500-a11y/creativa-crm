@@ -156,6 +156,9 @@
     hasV7: false,         // false until 008_payroll_timeclock.sql has been run
     signature: null,      // receipt signature image (data: URL), finance only
     history: [],          // balances from the billing system's sheets (010), finance only
+    hasLog: false,        // false until 012_change_log.sql has been run
+    unseen: [],           // changes by other people since I last opened Changes (012)
+    changeFilters: { who: '', area: '', q: '' },
     pay: null,            // Payroll page data for payPeriod
     payPeriod: null,
     payTab: store.get('payTab', 'hours'),
@@ -315,7 +318,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -328,6 +331,8 @@
       sb.from('text_opt_outs').select('phone'), // missing until 005_text_reminders.sql is run
       fin ? sb.from('receipt_signature').select('image').maybeSingle() : none, // missing until 008
       fin ? selectAll('billing_history', 'as_of') : none,                      // missing until 010
+      sb.from('change_log').select('id, at, actor').neq('actor', state.me.id)  // missing until 012
+        .gt('at', state.me.changes_seen_at || '1970-01-01').order('at', { ascending: false }).limit(200),
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -355,6 +360,8 @@
     }
     state.optOuts = new Set((oo.error ? [] : oo.data || []).map((r) => r.phone));
     state.history = hist.error ? [] : hist.data || [];
+    state.hasLog = !chg.error;
+    state.unseen = chg.error ? [] : chg.data || [];
     state.loadedAt = Date.now();
   }
 
@@ -387,13 +394,15 @@
       ...(state.hasEnrollment ? { roster: 'Enrollment' } : {}),
       ...(state.hasEnrollment && canViewFinance() ? { tuition: 'Tuition', reports: 'Reports' } : {}),
       ...(canPayroll() ? { payroll: 'Payroll' } : {}),
+      ...(state.hasLog ? { changes: 'Changes' } : {}),
       ...(isAdmin() ? { staff: 'Settings' } : {}) };
     if (!views[state.view]) state.view = 'today';
     app.innerHTML = `
       <header class="top">
         <img src="/assets/logo.png" alt="Creativa Academy">
         <nav>${Object.entries(views).map(([k, v]) =>
-          `<button data-view="${k}" ${state.view === k ? 'aria-current="page"' : ''}>${v}</button>`).join('')}</nav>
+          `<button data-view="${k}" ${state.view === k ? 'aria-current="page"' : ''}>${v}${k === 'changes' && state.unseen.length
+            ? ` <span class="nav-badge" aria-label="${state.unseen.length} new">${state.unseen.length > 99 ? '99+' : state.unseen.length}</span>` : ''}</button>`).join('')}</nav>
         <button class="btn primary" id="add">+ Add<span class="hide-sm"> inquiry</span></button>
         <div class="me"><span>${esc(state.me.full_name || state.me.email)}</span>
           <button class="btn ghost small" id="signout">Sign out</button></div>
@@ -413,7 +422,7 @@
     const el = $('#view');
     if (!el) return;
     ({ today: renderToday, board: renderBoard, list: renderList, staff: renderStaff,
-      roster: renderRoster, tuition: renderTuition, reports: renderReports, payroll: renderPayroll })[state.view](el);
+      roster: renderRoster, tuition: renderTuition, reports: renderReports, payroll: renderPayroll, changes: renderChanges })[state.view](el);
   }
 
   // ───────────── filters ─────────────
@@ -463,6 +472,7 @@
 
   // ───────────── Today ─────────────
   function renderToday(el) {
+    el.onclick = (e) => { if (e.target.closest('#see-changes')) { state.view = 'changes'; store.set('view', 'changes'); renderShell(); } };
     const today = todayStr();
     const open = state.inquiries.filter((i) => !CLOSED.has(i.stage));
     const due = open.filter((i) => i.next_follow_up && i.next_follow_up <= today)
@@ -481,7 +491,9 @@
           <div>${esc([i.child_name, ageOf(i.child_dob), i.program].filter(Boolean).join(' · ') || SOURCE_LABEL[i.source] || '')}</div></div>
         <span class="when ${cls}">${when}</span></div>`;
 
-    el.innerHTML = `
+    const unseenBy = [...new Set(state.unseen.map((c) => staffName(c.actor) || 'Someone'))];
+    el.innerHTML = `${state.unseen.length ? `<div class="panel changes-note"><b>${state.unseen.length} change${state.unseen.length === 1 ? '' : 's'}</b>
+        by ${esc(unseenBy.join(', '))} since you last looked. <button class="btn small" type="button" id="see-changes">See changes</button></div>` : ''}
       <div class="stats">
         <div class="stat"><b>${fresh.length}</b><span>New, not yet contacted</span></div>
         <div class="stat"><b>${due.length}</b><span>Follow-ups due</span></div>
@@ -1045,7 +1057,8 @@
               <span class="p-what">Tuition ${esc(fmtDate(h.period_start))} – ${esc(fmtDate(h.period_end))} · sheet ${money(h.balance)}${h.needs_check ? ' · to check' : ''}${h.note ? ` · ${esc(h.note)}` : ''}</span>
               <b>${money(earlierPaid(h))}</b></li>`).join('')}</ul>
             <p class="muted small">From the Balance Summary sheets before the CRM, all paid there (a minus is a credit). For reference only.</p></div>` : ''}` : ''}
-        ${inq ? `<p class="small"><a href="#" id="open-inq">Open the original inquiry (${esc(inq.parent_name || 'family')})</a></p>` : ''}`,
+        ${inq ? `<p class="small"><a href="#" id="open-inq">Open the original inquiry (${esc(inq.parent_name || 'family')})</a></p>` : ''}
+        ${id && state.hasLog ? '<div class="section"><h3>Recent changes</h3><ul class="chg-list mini" id="st-changes"><li class="muted small">Loading…</li></ul></div>' : ''}`,
       foot: `${id && isAdmin() ? '<button class="btn danger" id="st-del" type="button">Delete</button>' : ''}
         <span class="spacer"></span><button class="btn" data-close type="button">Cancel</button>
         <button class="btn primary" id="st-save" type="button">${id ? 'Save' : 'Add student'}</button>`,
@@ -1074,6 +1087,14 @@
     }));
     $$('[data-receipt]', drawer).forEach((b) => b.addEventListener('click', () =>
       showReceipts(state.payments.filter((p) => p.id === b.dataset.receipt))));
+    if (id && state.hasLog) {
+      sb.from('change_log').select('*').eq('student_id', id).order('at', { ascending: false }).limit(10).then(({ data, error }) => {
+        const ul = $('#st-changes', drawer);
+        if (!ul) return;
+        ul.innerHTML = error ? '<li class="muted small">Could not load changes.</li>' : (data || []).map((c) => `<li><span class="chg-time">${esc(fmtDateTime(c.at))}</span>
+          <span><b>${esc(staffName(c.actor) || 'Someone')}</b> ${esc(describeChange(c))}</span></li>`).join('') || '<li class="muted small">No changes recorded yet.</li>';
+      });
+    }
     $('#stmt-one', drawer)?.addEventListener('click', () => {
       const year = taxYearDefault();
       showStatements(statementGroups(year).filter((g) => g.key === familyKey(s0)), year);
@@ -1341,6 +1362,7 @@
   const schoolYear = (ym) => { const [y, m] = ym.split('-').map(Number); const a = m >= 8 ? y : y - 1; return `${a} – ${a + 1}`; };
 
   function receiptLine(p) {
+    if (p.old) return `Tuition — ${longPeriod(p.old)}`;
     const inv = p.invoice_id && state.invoices.find((i) => i.id === p.invoice_id);
     const t = inv && lateFeeFor(inv);
     if (t) return `${inv.description} — tuition ${longPeriod(t.period_start)}`;
@@ -1362,7 +1384,7 @@
         <div class="r-title"><h1>Payment Receipt</h1><span class="r-year">School year ${esc(schoolYear(p.covers_month.slice(0, 7)))}</span>
           ${set.receipt_license ? `<span class="r-license">License No. ${esc(set.receipt_license)}</span>` : ''}
           ${set.receipt_tax_id ? `<span class="r-license">Tax ID (EIN) ${esc(set.receipt_tax_id)}</span>` : ''}</div></header>
-      <p class="r-intro"><span>Receipt No. <b>${esc(p.receipt_no)}</b></span><span>Date <b>${esc(longDate(p.paid_on))}</b></span></p>
+      <p class="r-intro">${p.old ? '<span>Paid through <b>the billing system</b></span>' : `<span>Receipt No. <b>${esc(p.receipt_no)}</b></span>`}<span>Date <b>${esc(longDate(p.paid_on))}</b></span></p>
       <h2 class="r-h">Student</h2>
       <table class="r-table"><thead><tr><th>Student</th><th>Date of birth</th><th>Class</th><th>Received from</th></tr></thead>
         <tbody><tr><td>${esc(s.name)}</td><td>${esc(s.dob ? longDate(s.dob) : '')}</td>
@@ -1370,7 +1392,7 @@
       <h2 class="r-h">Payment</h2>
       <table class="r-table"><thead><tr><th>Description</th><th>Date received</th><th>Method</th><th class="num">Amount</th></tr></thead>
         <tbody><tr><td>${esc(receiptLine(p))}${p.note ? `<div class="r-note">${esc(p.note)}</div>` : ''}</td>
-          <td>${esc(longDate(p.paid_on))}</td><td>${esc(METHOD[p.method])}${p.reference ? `<div class="r-note">${esc(p.reference)}</div>` : ''}</td>
+          <td>${p.old ? 'Billing system' : esc(longDate(p.paid_on))}</td><td>${p.old ? 'Billing system' : esc(METHOD[p.method])}${p.reference ? `<div class="r-note">${esc(p.reference)}</div>` : ''}</td>
           <td class="num"><b>${money(p.amount)}</b></td></tr></tbody>
         <tfoot><tr><th colspan="3">Total received</th><th class="num">${money(p.amount)}</th></tr></tfoot></table>
       ${programs.length || f.award_id ? `<div class="r-box"><h3>${esc(programLabel || 'Scholarship')}</h3>
@@ -1681,7 +1703,7 @@
         <span class="spacer"></span>
         ${edit && toBill ? `<button class="btn small primary" id="t-bill" type="button">Bill this period (${toBill})</button>` : ''}
         ${edit && lateDue.length ? `<button class="btn small" id="t-late" type="button">Add ${money(lateAmt)} late fees (${lateDue.length})</button>` : ''}
-        ${before ? '' : '<button class="btn small" id="t-fes" type="button">Print FES-UA receipts</button>'}
+        <button class="btn small" id="t-fes" type="button">Print FES-UA receipts</button>
         <button class="btn small" id="t-csv" type="button">Download CSV</button>
         ${edit ? '<button class="btn small" id="t-add" type="button">+ Record payment</button>' : ''}
       </div>
@@ -1760,7 +1782,19 @@
       toast('Late fee waived');
       renderTuition(el);
     }));
-    $('#t-fes', el)?.addEventListener('click', () => {
+    if (before) {
+      // Old periods: one receipt per FES-UA child for what the family paid through the billing system.
+      $('#t-fes', el).addEventListener('click', () => {
+        const fesRows = rows.filter((r) => hasFunding(r.s.id, 'fes_ua'));
+        const list = fesRows.filter((r) => r.inv).map((r) => ({ old: p, student_id: r.s.id, covers_month: p.slice(0, 8) + '01', paid_on: todayStr(),
+          payer: 'parent', amount: r.inv.amount, note: r.pre?.h?.needs_check ? '' : null }))
+          .sort((a, b) => nameOf(a.student_id).localeCompare(nameOf(b.student_id)));
+        showReceipts(list);
+        const shared = fesRows.filter((r) => !r.inv && r.pre?.with).length;
+        if (shared) toast(`${shared} FES-UA child${shared === 1 ? '’s' : 'ren’s'} amount is combined with a brother or sister’s; it’s on their receipt`);
+      });
+    }
+    if (!before) $('#t-fes', el).addEventListener('click', () => {
       const fes = periodPays.filter((x) => hasFunding(x.student_id, 'fes_ua'));
       const family = fes.filter((x) => x.payer === 'parent');
       showReceipts(family.sort((a, b) => nameOf(a.student_id).localeCompare(nameOf(b.student_id)) || a.receipt_no - b.receipt_no));
@@ -2626,6 +2660,133 @@
         return [g.name, g.students[0].family_account, g.students.map((s) => s.name).join('; '), g.payments.length, g.total,
           by(['cash']), by(['zelle']), by(['card']), by(['check', 'ach', 'other'])];
       })));
+    draw();
+  }
+
+  // ───────────── Changes (012): who changed what ─────────────
+  const CHANGE_AREA = { enrollment: 'Enrollment', finance: 'Tuition & payments', payroll: 'Payroll', settings: 'Settings & access' };
+  const FIELD_LABEL = { name: 'name', dob: 'birthday', classroom_id: 'class', status: 'status', start_date: 'start date', withdrawn_on: 'last day',
+    withdraw_reason: 'reason', parent_name: 'parent', parent_phone: 'parent phone', parent_email: 'parent email', notes: 'notes', rbt: 'RBT',
+    therapy: 'therapy', reg_fee: 'registration fee', doc_registration: 'registration packet', doc_blue_form: 'blue form', doc_yellow_form: 'yellow form',
+    doc_birth_cert: 'birth certificate', family_account: 'family account', funding: 'funding', tuition_amount: 'rate', tuition_frequency: 'billed',
+    award_id: 'award ID', billing_program: 'billing item', bill_family: 'billed to family', amount: 'amount', paid_on: 'date received', method: 'method',
+    payer: 'paid by', reference: 'reference', note: 'note', invoice_id: 'invoice', covers_month: 'month', void: 'void', description: 'description',
+    due_date: 'due', invoice_date: 'date', clock_in: 'clock in', clock_out: 'clock out', out_reason: 'left for', pay_rate: 'pay rate', position: 'position',
+    lunch_minutes: 'lunch', schedule: 'schedule', active: 'active', first_name: 'first name', last_name: 'last name', relationship: 'relationship',
+    role: 'role', cell_phone: 'cell', work_phone: 'work phone', home_phone: 'home phone', sms_phone: 'texts to', email: 'email', paid: 'paid',
+    needs_check: 'to check', finance: 'finances', payroll: 'payroll', capacity: 'capacity', teachers: 'teachers', sort: 'order', full_name: 'name' };
+  const MONEY_KEYS = new Set(['amount', 'tuition_amount', 'pay_rate', 'paid', 'balance', 'late_fee_amount']);
+  function fmtVal(k, v) {
+    if (v == null || v === '') return '—';
+    if (typeof v === 'boolean') return v ? 'yes' : 'no';
+    if (MONEY_KEYS.has(k)) return money(v);
+    if (k === 'funding') return (v.length ? v : ['private']).map((x) => FUNDING[x] || x).join(', ');
+    if (k === 'classroom_id') return classroomName(v) || 'a class';
+    if (k === 'status') return (STUDENT_STATUS[v] || v).toLowerCase();
+    if (k === 'method') return METHOD[v] || v;
+    if (k === 'payer') return PAYER[v] || v;
+    if (k === 'role') return CONTACT_ROLE[v] || v;
+    if (k === 'invoice_id') { const inv = state.invoices.find((i) => i.id === v); return inv ? invoiceLabel(inv) : 'an invoice'; }
+    if (k === 'clock_in' || k === 'clock_out') return clockTime(v);
+    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return fmtDate(v);
+    const t = typeof v === 'string' ? v : JSON.stringify(v);
+    return t.length > 60 ? t.slice(0, 57) + '…' : t;
+  }
+  const diffText = (c, max = 3) => {
+    const parts = Object.entries(c.diff || {}).map(([k, [a, b]]) => `${FIELD_LABEL[k] || k.replace(/_/g, ' ')} ${fmtVal(k, a)} → ${fmtVal(k, b)}`);
+    return parts.slice(0, max).join('; ') + (parts.length > max ? `; and ${parts.length - max} more` : '');
+  };
+  function describeChange(c) {
+    const d = c.data || {}, act = { insert: 'added', update: 'changed', delete: 'removed' }[c.action];
+    const kid = state.students.find((x) => x.id === c.student_id)?.name || (c.table_name === 'students' ? d.name : '') || 'a child';
+    const emp = state.changeEmps?.[c.employee_id] || (d.first_name ? [d.first_name, d.last_name].filter(Boolean).join(' ') : 'a staff member');
+    const dt = diffText(c);
+    switch (c.table_name) {
+      case 'students': return c.action === 'insert' ? `added ${kid}${d.classroom_id ? ` to ${classroomName(d.classroom_id)}` : ''}`
+        : c.action === 'delete' ? `deleted ${kid}` : `changed ${kid}: ${dt}`;
+      case 'student_finance': return c.action === 'update' ? `changed tuition for ${kid}: ${dt}` : `${c.action === 'insert' ? 'set up' : 'removed'} tuition for ${kid}`;
+      case 'payments': return c.action === 'insert' ? `recorded a ${money(d.amount)} ${METHOD[d.method] || ''} payment for ${kid} (receipt #${d.receipt_no})`
+        : c.action === 'delete' ? `deleted payment #${d.receipt_no} (${money(d.amount)}) for ${kid}` : `changed payment #${d.receipt_no} for ${kid}: ${dt}`;
+      case 'invoices': {
+        const what = d.late_fee_for ? 'late fee' : 'bill';
+        if (c.action === 'insert') return d.late_fee_for ? `added a ${money(d.amount)} late fee for ${kid}`
+          : `billed ${kid} ${money(d.amount)} (${d.description}${d.period_start ? ` · ${fmtPeriod(d.period_start)}` : ''})`;
+        if (c.action === 'delete') return `deleted ${kid}’s ${what} (${money(d.amount)})`;
+        if (c.diff?.void && c.diff.void[1] === true) return d.late_fee_for ? `waived the ${money(d.amount)} late fee for ${kid}` : `voided ${kid}’s ${money(d.amount)} bill`;
+        return `changed ${kid}’s ${what}: ${dt}`;
+      }
+      case 'student_contacts': return `${act} ${CONTACT_ROLE[d.role]?.toLowerCase() || ''} contact ${[d.first_name, d.last_name].filter(Boolean).join(' ')} for ${kid}${c.action === 'update' ? `: ${dt}` : ''}`;
+      case 'classrooms': return `${act} class ${d.name}${c.action === 'update' ? `: ${dt}` : ''}`;
+      case 'billing_history': return c.action === 'update' ? `confirmed ${d.family_account || d.customer}’s amount for tuition ${d.period_start ? fmtPeriod(d.period_start) : ''}: ${dt}`
+        : `${act} a billing system line for ${d.customer}`;
+      case 'employees': return c.action === 'insert' ? `added ${emp} to payroll` : c.action === 'delete' ? `removed ${emp} from payroll` : `changed ${emp}: ${dt}`;
+      case 'time_entries': {
+        const when = d.work_date ? dayLabel(d.work_date) : '';
+        return c.action === 'insert' ? `added time for ${emp}: ${when} ${clockTime(d.clock_in)} – ${d.clock_out ? clockTime(d.clock_out) : 'still in'}`
+          : c.action === 'delete' ? `deleted ${emp}’s time on ${when}` : `changed ${emp}’s time on ${when}: ${dt}`;
+      }
+      case 'payroll_periods': return c.action === 'insert' ? `marked pay period ${fmtDate(d.period_start)} – ${fmtDate(d.period_end)} as entered in Patriot`
+        : `reopened pay period ${fmtDate(d.period_start)} – ${fmtDate(d.period_end)}`;
+      case 'settings': return `changed settings: ${Object.keys(c.diff || {}).map((k) => FIELD_LABEL[k] || k.replace(/_/g, ' ')).join(', ')}`;
+      case 'profiles': return c.action === 'update' ? `changed ${d.full_name || d.email}’s access: ${dt}` : `${act} login ${d.email}`;
+      default: return `${act} ${c.table_name.replace(/_/g, ' ')}`;
+    }
+  }
+
+  async function renderChanges(el) {
+    el.innerHTML = '<p class="muted">Loading…</p>';
+    const seenBefore = state.me.changes_seen_at || '1970-01-01';
+    const [log, emps] = await Promise.all([
+      sb.from('change_log').select('*').order('at', { ascending: false }).limit(1000),
+      canPayroll() ? sb.from('employees').select('id, first_name, last_name') : Promise.resolve({ data: [] }),
+    ]);
+    if (log.error) return fail(log.error, 'Could not load changes');
+    state.changeEmps = Object.fromEntries((emps.data || []).map((e) => [e.id, empName(e)]));
+    const { data: seenNow } = await sb.rpc('mark_changes_seen');
+    if (seenNow) state.me.changes_seen_at = seenNow;
+    state.unseen = [];
+    $('header nav button[data-view=changes] .nav-badge')?.remove();
+    const all = log.data;
+    const f = state.changeFilters;
+    const people = [...new Set(all.map((c) => c.actor).filter(Boolean))].sort((a, b) => staffName(a).localeCompare(staffName(b)));
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+    el.innerHTML = `<section class="panel changes-help"><h2>Changes</h2>
+        <p class="muted small">Everything staff change in the CRM, newest first, with who did it: children and contacts, tuition and payments,
+          payroll and time, settings and access. New ones since you last looked are highlighted.
+          You see the areas you have access to.</p></section>
+      <div class="toolbar">
+        <select id="cg-who" aria-label="Who">${opt('', 'Everyone', f.who)}${opt('others', 'Everyone but me', f.who)}${people.map((id) => opt(id, staffName(id) || 'Someone', f.who)).join('')}</select>
+        <select id="cg-area" aria-label="Area">${opt('', 'All areas', f.area)}${Object.entries(CHANGE_AREA).map(([k, v]) => opt(k, v, f.area)).join('')}</select>
+        <input type="search" id="cg-q" placeholder="Search a name or a word…" value="${esc(f.q)}">
+        <span class="spacer"></span><button class="btn small" id="cg-csv" type="button">Download CSV</button></div>
+      <div id="cg-list"></div>`;
+    const shown = () => all.filter((c) => {
+      if (f.who === 'others' ? c.actor === state.me.id : f.who && c.actor !== f.who) return false;
+      if (f.area && c.area !== f.area) return false;
+      if (f.q && !`${staffName(c.actor)} ${describeChange(c)}`.toLowerCase().includes(f.q.trim().toLowerCase())) return false;
+      return true;
+    });
+    const draw = () => {
+      const list = shown();
+      const days = [];
+      list.forEach((c) => {
+        const day = localDate(new Date(c.at));
+        if (!days.length || days[days.length - 1].day !== day) days.push({ day, items: [] });
+        days[days.length - 1].items.push(c);
+      });
+      $('#cg-list', el).innerHTML = days.map((g) => `<section class="panel chg-day"><h2>${esc(g.day === todayStr() ? 'Today' : longDate(g.day))}</h2>
+        <ul class="chg-list">${g.items.map((c) => `<li class="${c.actor !== state.me.id && c.at > seenBefore ? 'new' : ''}">
+          <span class="chg-time">${esc(new Date(c.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}</span>
+          <span class="chg-what"><b>${esc(c.actor === state.me.id ? 'You' : staffName(c.actor) || 'Someone')}</b> ${esc(describeChange(c))}
+            <span class="tag">${esc(CHANGE_AREA[c.area])}</span></span>
+          ${c.student_id && state.students.some((x) => x.id === c.student_id) ? `<button class="btn ghost small" type="button" data-cg-kid="${c.student_id}">Open</button>` : ''}</li>`).join('')}</ul></section>`).join('')
+        || '<p class="muted">No changes yet.</p>';
+      $$('[data-cg-kid]', el).forEach((b) => b.addEventListener('click', () => openStudent(b.dataset.cgKid)));
+    };
+    [['cg-who', 'who', 'change'], ['cg-area', 'area', 'change'], ['cg-q', 'q', 'input']].forEach(([id, k, ev]) =>
+      $('#' + id, el).addEventListener(ev, (e) => { f[k] = e.target.value; draw(); }));
+    $('#cg-csv', el).addEventListener('click', () => csvDownload('creativa-changes.csv', ['Date', 'Time', 'Who', 'Area', 'What', 'Details'],
+      shown().map((c) => [localDate(new Date(c.at)), new Date(c.at).toLocaleTimeString(), staffName(c.actor), CHANGE_AREA[c.area], describeChange(c), diffText(c, 99)])));
     draw();
   }
 

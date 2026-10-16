@@ -53,7 +53,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql` and `011_graduated_earlier_payments.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql` and `012_change_log.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -244,6 +244,15 @@ amount is a best guess (`needs_check`) until finance staff confirm it on Reports
 period before Oct 5 looks like a CRM period: one row per child with class and funding, the amount billed and paid
 (siblings share one), Step Up pending children, and nothing to bill. The same migration adds the **Graduated** status:
 like Withdrawn, with the last day at school; graduated children are billed only through that day.
+
+## Who changed what (012)
+
+Every change a signed-in person makes to children, contacts, classes, tuition, payments, invoices, the old sheets'
+amounts, payroll, time, settings or access is written to `change_log` (who, when, the row, and old → new for each
+changed field) by a trigger; nobody can edit or delete it. Imports, the time clock and the system aren't logged.
+**Changes** (tab) lists them by day with filters by person and area; its count shows changes by other people since
+you last opened it, Today mentions them, and each child's page has its recent changes. Staff see enrollment changes,
+finance access sees tuition changes, payroll access sees payroll changes, admins see everything.
 
 ## Payroll and the time clock (008)
 

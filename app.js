@@ -39,7 +39,7 @@
   // How many payments of each kind make up a month's tuition on the Tuition page.
   const PER_MONTH = { monthly: 1, biweekly: 2, weekly: 4 };
   const PAYER = { parent: 'Parent', sr: 'School Readiness', fes: 'FES / Step Up', vpk: 'VPK', other: 'Other' };
-  const METHOD = { cash: 'Cash', check: 'Check', zelle: 'Zelle', card: 'Card', ach: 'Bank transfer', other: 'Other' };
+  const METHOD = { cash: 'Cash', check: 'Check', zelle: 'Zelle', card: 'Credit / debit card', ach: 'Bank transfer', other: 'Other' };
   // Payroll time clock (008_payroll_timeclock.sql). Times are the school's (Miami) time.
   const TZ = 'America/New_York';
   const PAY_FREQ = { weekly: 'Every week', biweekly: 'Every two weeks', semimonthly: 'Twice a month (1st–15th and 16th–end)', monthly: 'Once a month' };
@@ -1027,6 +1027,7 @@
             }).join('') || '<li class="muted">No invoices yet. Bill from the Tuition page.</li>'}</ul></div>` : ''}
           ${id ? `<div class="section"><h3>Payments</h3>
             ${finEdit ? '<button class="btn small" type="button" id="pay-add">+ Record payment</button>' : ''}
+            <button class="btn small" type="button" id="stmt-one">Annual statement ${taxYearDefault()}</button>
             <ul class="pay-list">${pays.map((p) => `<li data-pay="${p.id}">
                 <span class="p-date">${esc(fmtDate(p.paid_on))}</span>
                 <span class="p-what">${esc(paymentFor(p))} · ${esc(PAYER[p.payer])} · ${esc(METHOD[p.method])}</span>
@@ -1063,6 +1064,10 @@
     }));
     $$('[data-receipt]', drawer).forEach((b) => b.addEventListener('click', () =>
       showReceipts(state.payments.filter((p) => p.id === b.dataset.receipt))));
+    $('#stmt-one', drawer)?.addEventListener('click', () => {
+      const year = taxYearDefault();
+      showStatements(statementGroups(year).filter((g) => g.key === familyKey(s0)), year);
+    });
     $$('[data-pay-inv]', drawer).forEach((b) => b.addEventListener('click', () => {
       if (!ctl.dirty || confirm('Discard your changes?')) openPayment({ studentId: id, invoiceId: b.dataset.payInv, back });
     }));
@@ -1345,7 +1350,8 @@
     return `<article class="receipt">
       <header class="r-band"><img src="/assets/logo.png" alt="${esc(set.school_name || 'Creativa Academy')}">
         <div class="r-title"><h1>Payment Receipt</h1><span class="r-year">School year ${esc(schoolYear(p.covers_month.slice(0, 7)))}</span>
-          ${set.receipt_license ? `<span class="r-license">License No. ${esc(set.receipt_license)}</span>` : ''}</div></header>
+          ${set.receipt_license ? `<span class="r-license">License No. ${esc(set.receipt_license)}</span>` : ''}
+          ${set.receipt_tax_id ? `<span class="r-license">Tax ID (EIN) ${esc(set.receipt_tax_id)}</span>` : ''}</div></header>
       <p class="r-intro"><span>Receipt No. <b>${esc(p.receipt_no)}</b></span><span>Date <b>${esc(longDate(p.paid_on))}</b></span></p>
       <h2 class="r-h">Student</h2>
       <table class="r-table"><thead><tr><th>Student</th><th>Date of birth</th><th>Class</th><th>Received from</th></tr></thead>
@@ -1365,16 +1371,19 @@
     </article>`;
   }
 
-  // Receipts open over the app; Print (or Save as PDF) prints only them, one per page.
+  // Receipts and statements open over the app; Print (or Save as PDF) prints only them, one per page.
   function showReceipts(list) {
     if (!list.length) return toast('No payments to print', true);
+    showSheet(`${list.length} receipt${list.length === 1 ? '' : 's'}`, list.map(receiptHtml));
+  }
+  function showSheet(label, pages) {
     const sheet = document.createElement('div');
     sheet.className = 'print-sheet';
     sheet.setAttribute('role', 'dialog');
-    sheet.innerHTML = `<div class="print-bar no-print"><b>${list.length} receipt${list.length === 1 ? '' : 's'}</b><span class="spacer"></span>
+    sheet.innerHTML = `<div class="print-bar no-print"><b>${esc(label)}</b><span class="spacer"></span>
         <button class="btn primary" type="button" id="rc-print">Print / Save as PDF</button>
         <button class="btn" type="button" id="rc-close">Close</button></div>
-      ${list.map(receiptHtml).join('')}`;
+      ${pages.join('')}`;
     document.body.append(sheet);
     document.body.classList.add('printing');
     const close = () => { sheet.remove(); document.body.classList.remove('printing'); };
@@ -1382,6 +1391,75 @@
     $('#rc-close', sheet).addEventListener('click', close);
     sheet.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
     $('#rc-close', sheet).focus();
+  }
+
+  // ───────────── Annual statements (tax time) ─────────────
+  // What a family paid in a calendar year, for the child and dependent care credit (IRS Form 2441 asks for the
+  // provider's name, address and tax ID and the amount paid). Payments from School Readiness, Step Up (FES) and VPK
+  // are left out: the family didn't pay those. Siblings on the same billing family account share one statement.
+  const FAMILY_PAYERS = new Set(['parent', 'other']);
+  const taxYearDefault = () => { const d = new Date(); return d.getMonth() < 4 ? d.getFullYear() - 1 : d.getFullYear(); };   // Jan–Apr: last year
+  const familyKey = (s) => (s.family_account?.trim() ? 'f:' + s.family_account.trim().toLowerCase() : 's:' + s.id);
+  function familyName(students) {
+    for (const s of students) {
+      const c = state.contacts.find((x) => x.student_id === s.id && x.role === 'primary');
+      if (c && contactName(c)) return contactName(c);
+    }
+    const p = students.find((s) => s.parent_name);
+    return p ? p.parent_name : `Family of ${students.map((s) => s.name).join(' & ')}`;
+  }
+  function statementGroups(year) {
+    const groups = new Map();
+    state.payments.filter((p) => FAMILY_PAYERS.has(p.payer) && p.paid_on.startsWith(`${year}-`)).forEach((p) => {
+      const s = state.students.find((x) => x.id === p.student_id);
+      if (!s) return;
+      const k = familyKey(s);
+      if (!groups.has(k)) groups.set(k, { key: k, students: [], payments: [] });
+      const g = groups.get(k);
+      if (!g.students.includes(s)) g.students.push(s);
+      g.payments.push(p);
+    });
+    return [...groups.values()].map((g) => ({ ...g, name: familyName(g.students), students: g.students.sort((a, b) => a.name.localeCompare(b.name)),
+      total: round2(g.payments.reduce((t, p) => t + Number(p.amount), 0)),
+      payments: g.payments.sort((a, b) => a.paid_on.localeCompare(b.paid_on) || a.receipt_no - b.receipt_no) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+  function statementHtml(g, year) {
+    const set = state.settings || {};
+    const school = set.school_name || 'Creativa Academy';
+    const address = (set.receipt_header || '').split(' · ')[0];
+    const many = g.students.length > 1;
+    const partial = String(year) === todayStr().slice(0, 4);
+    const nameOf = (sid) => state.students.find((s) => s.id === sid)?.name || '';
+    return `<article class="receipt statement">
+      <header class="r-band"><img src="/assets/logo.png" alt="${esc(school)}">
+        <div class="r-title"><h1>Annual Statement</h1><span class="r-year">Tax year ${year}</span>
+          ${set.receipt_license ? `<span class="r-license">License No. ${esc(set.receipt_license)}</span>` : ''}</div></header>
+      <p class="r-intro"><span>For <b>${esc(g.name)}</b></span><span>Date <b>${esc(longDate(todayStr()))}</b></span></p>
+      <h2 class="r-h">Child care provider</h2>
+      <table class="r-table"><thead><tr><th>Name</th><th>Address</th><th>Tax ID (EIN)</th></tr></thead>
+        <tbody><tr><td><b>${esc(school)}</b></td><td>${esc(address)}</td><td><b>${esc(set.receipt_tax_id || '')}</b></td></tr></tbody></table>
+      <h2 class="r-h">Child${many ? 'ren' : ''}</h2>
+      <table class="r-table"><thead><tr><th>Name</th><th>Date of birth</th><th>Class</th></tr></thead>
+        <tbody>${g.students.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td>${esc(s.dob ? longDate(s.dob) : '')}</td>
+          <td>${esc(classroomName(s.classroom_id))}</td></tr>`).join('')}</tbody></table>
+      <h2 class="r-h">Payments received in ${year}${partial ? ` (through ${esc(longDate(todayStr()))})` : ''}</h2>
+      <table class="r-table"><thead><tr><th>Date</th><th>Receipt</th>${many ? '<th>Child</th>' : ''}<th>For</th><th>Method</th><th class="num">Amount</th></tr></thead>
+        <tbody>${g.payments.map((p) => `<tr><td>${esc(fmtDate(p.paid_on))}</td><td>#${esc(p.receipt_no)}</td>
+          ${many ? `<td>${esc(nameOf(p.student_id))}</td>` : ''}<td>${esc(receiptLine(p))}</td><td>${esc(METHOD[p.method])}</td>
+          <td class="num">${money(p.amount)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><th colspan="${many ? 5 : 4}">Total paid in ${year}</th><th class="num">${money(g.total)}</th></tr></tfoot></table>
+      <p class="r-note">${esc(school)} received the payments above from this family for child care between January 1 and
+        ${partial ? esc(longDate(todayStr())) : `December 31, ${year}`}. Payments made by School Readiness, Step Up For Students or VPK are not included.</p>
+      <div class="r-sign"><span class="r-line">${state.signature ? `<img class="r-sig" src="${esc(state.signature)}" alt="Signature">` : ''}</span>
+        <span>${esc(set.receipt_signer || 'Authorized signature')}</span></div>
+      <footer class="r-foot"><b>${esc(school)}</b>${set.receipt_header ? `\n${esc(set.receipt_header)}` : ''}</footer>
+    </article>`;
+  }
+  function showStatements(groups, year) {
+    if (!groups.length) return toast(`No family payments in ${year}`, true);
+    if (!state.settings?.receipt_tax_id) toast('Tip: add the school’s tax ID on Settings → Receipts so it prints on statements');
+    showSheet(`${groups.length} annual statement${groups.length === 1 ? '' : 's'} · ${year}`, groups.map((g) => statementHtml(g, year)));
   }
 
   // ───────────── Tuition ─────────────
@@ -1738,6 +1816,16 @@
         <section class="panel"><h2>By method</h2><table class="mini"><tbody>${table(byMethod)}</tbody></table></section>
         <section class="panel"><h2>By class</h2><table class="mini"><tbody>${table(byClass)}</tbody></table></section>
       </div>
+      <section class="panel" id="who-paid"><h2>Who paid how · ${esc(fmtMonth(m))}</h2>
+        <div class="method-grid">${Object.keys(METHOD).filter((k) => ['cash', 'zelle', 'card'].includes(k) || pays.some((p) => p.method === k)).map((k) => {
+          const list = pays.filter((p) => p.method === k).sort((a, b) => a.paid_on.localeCompare(b.paid_on) || a.receipt_no - b.receipt_no);
+          return `<div class="method-col" data-method="${k}"><h3>${esc(METHOD[k])} <span class="muted small">${money(list.reduce((t, p) => t + Number(p.amount), 0))} · ${list.length}</span></h3>
+            <ul class="plain">${list.map((p) => {
+              const s = state.students.find((x) => x.id === p.student_id) || {};
+              return `<li><span>${esc(s.name || '')}${p.payer !== 'parent' ? ` <span class="muted small">(${esc(PAYER[p.payer])})</span>` : ''}</span>
+                <span class="muted small">${esc(fmtDate(p.paid_on))} · #${esc(p.receipt_no)}</span><b>${money(p.amount)}</b></li>`;
+            }).join('') || '<li class="muted small">None</li>'}</ul></div>`;
+        }).join('')}</div></section>
       <section class="panel report-year"><h2>School year ${startYear}–${String(startYear + 1).slice(2)}</h2>
         <div class="table-wrap flat"><table><thead><tr><th>Month</th><th class="num">Received</th><th class="num">${state.hasV6 ? 'Billed' : 'Tuition due'}</th><th class="num">${state.hasV6 ? 'Still owed' : 'Paid toward month'}</th></tr></thead>
         <tbody>${year.map((ym) => {
@@ -1759,7 +1847,9 @@
             <ul>${list.map((s) => `<li><a href="#" data-student="${s.id}">${esc(s.name)}</a> <span class="muted small">${esc(classroomName(s.classroom_id))}${state.finance[s.id]?.award_id ? ' · ID ' + esc(state.finance[s.id].award_id) : ''}</span></li>`).join('') || '<li class="muted">None</li>'}</ul></details>`;
         }).join('')}
       </section>
+      ${stmtPanel()}
       <div class="toolbar"><span class="spacer"></span><button class="btn small" id="rp-csv" type="button">Download ${esc(fmtMonth(m))} payments (CSV)</button></div>`;
+    bindStmtPanel(el);
     bindMonthBar(el, renderReports);
     $$('.report-year tr[data-month]', el).forEach((tr) => tr.addEventListener('click', () => { state.month = tr.dataset.month; renderReports(el); }));
     $$('[data-student]', el).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openStudent(a.dataset.student); }));
@@ -2312,6 +2402,51 @@
     });
   }
 
+  // Reports → annual statements: every family's total for a tax year, printable one by one or all at once.
+  function stmtPanel() {
+    const years = [...new Set([taxYearDefault(), ...state.payments.filter((p) => FAMILY_PAYERS.has(p.payer)).map((p) => Number(p.paid_on.slice(0, 4)))])]
+      .sort((a, b) => b - a);
+    const year = state.stmtYear || taxYearDefault();
+    return `<section class="panel" id="stmt-panel"><h2>Annual statements (for taxes)</h2>
+      <p class="muted small">What each family paid in a year (January–December), with the school’s tax ID, for the child care tax credit.
+        Payments from School Readiness, Step Up and VPK are left out. Brothers and sisters on the same family account share one statement.
+        ${state.settings?.receipt_tax_id ? '' : '<b class="warn-text">Add the tax ID on Settings → Receipts first.</b>'}</p>
+      <div class="toolbar"><select id="stmt-year" aria-label="Tax year">${years.map((y) => `<option value="${y}" ${y === year ? 'selected' : ''}>${y}</option>`).join('')}</select>
+        <input type="search" id="stmt-q" placeholder="Search family or child…"><span class="spacer"></span>
+        <button class="btn small" id="stmt-csv" type="button">Download CSV</button>
+        <button class="btn small primary" id="stmt-all" type="button">Print all</button></div>
+      <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Children</th><th class="num">Payments</th><th class="num">Total paid</th><th></th></tr></thead>
+        <tbody id="stmt-rows"></tbody></table></div></section>`;
+  }
+  function bindStmtPanel(el) {
+    const panel = $('#stmt-panel', el);
+    if (!panel) return;
+    const year = () => Number($('#stmt-year', panel).value);
+    const shown = () => {
+      const q = $('#stmt-q', panel).value.trim().toLowerCase();
+      return statementGroups(year()).filter((g) => !q || `${g.name} ${g.students.map((s) => s.name).join(' ')} ${g.students[0].family_account || ''}`.toLowerCase().includes(q));
+    };
+    const draw = () => {
+      $('#stmt-rows', panel).innerHTML = shown().map((g) => `<tr data-stmt="${esc(g.key)}"><td><b>${esc(g.name)}</b></td>
+          <td>${esc(g.students.map((s) => s.name).join(', '))}</td><td class="num">${g.payments.length}</td><td class="num">${money(g.total)}</td>
+          <td><button class="btn small" type="button" data-print="${esc(g.key)}">Print</button></td></tr>`).join('')
+        || `<tr><td colspan="5" class="muted">No family payments in ${year()}.</td></tr>`;
+      $$('[data-stmt]', panel).forEach((tr) => tr.addEventListener('click', () =>
+        showStatements(statementGroups(year()).filter((g) => g.key === tr.dataset.stmt), year())));
+    };
+    $('#stmt-year', panel).addEventListener('change', () => { state.stmtYear = year(); draw(); });
+    $('#stmt-q', panel).addEventListener('input', draw);
+    $('#stmt-all', panel).addEventListener('click', () => showStatements(shown(), year()));
+    $('#stmt-csv', panel).addEventListener('click', () => csvDownload(`creativa-annual-statements-${year()}.csv`,
+      ['Family', 'Family account', 'Children', 'Payments', 'Total paid', 'Cash', 'Zelle', 'Card', 'Other methods'],
+      shown().map((g) => {
+        const by = (ks) => round2(g.payments.filter((p) => ks.includes(p.method)).reduce((t, p) => t + Number(p.amount), 0));
+        return [g.name, g.students[0].family_account, g.students.map((s) => s.name).join('; '), g.payments.length, g.total,
+          by(['cash']), by(['zelle']), by(['card']), by(['check', 'ach', 'other'])];
+      })));
+    draw();
+  }
+
   // ───────────── Settings panels (admin) ─────────────
   function settingsPanelsHtml() {
     if (!state.hasEnrollment) return '';
@@ -2332,6 +2467,7 @@
           ${fInput('school_name', 'School name', set.school_name)}
           ${fInput('receipt_signer', 'Signed by', set.receipt_signer, 'text', 'placeholder="Name, Administrator"')}
           ${state.hasV7 ? fInput('receipt_license', 'School license number', set.receipt_license, 'text', 'placeholder="C11MD1517"') : ''}
+          ${'receipt_tax_id' in set ? fInput('receipt_tax_id', 'Tax ID (EIN), for receipts and annual statements', set.receipt_tax_id, 'text', 'placeholder="12-3456789" maxlength="20"') : ''}
           <label class="full">Address line at the bottom (address · phone · email)<textarea name="receipt_header" rows="2">${esc(set.receipt_header)}</textarea></label>
           <div class="full"><button class="btn small primary" type="submit">Save receipt details</button></div>
         </form>
@@ -2603,7 +2739,8 @@
       state.settings = data;
       toast('Saved');
     });
-    saveSettings($('#set-receipt', el), ['school_name', 'receipt_signer', 'receipt_header', ...(state.hasV7 ? ['receipt_license'] : [])]);
+    saveSettings($('#set-receipt', el), ['school_name', 'receipt_signer', 'receipt_header', ...(state.hasV7 ? ['receipt_license'] : []),
+      ...('receipt_tax_id' in (state.settings || {}) ? ['receipt_tax_id'] : [])]);
     bindSignature(el);
     saveSettings($('#set-emails', el), ['emails_enabled', 'tour_reminder_subject', 'tour_reminder_body', 'followup_subject', 'followup_body']);
     if ($('#set-texts', el)) saveSettings($('#set-texts', el), ['texts_enabled', 'tour_reminder_text', 'followup_text']);

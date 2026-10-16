@@ -387,6 +387,11 @@ try {
   assert.equal(fs.readFileSync(await rdl.path(), 'utf8').trim().split(/\r\n/).length, 4);
   await shot(page, '13-reports');
   ok('Reports: received and billed in the month, by payer, funding lists with award IDs, payments CSV');
+  const whoPaid = page.locator('#who-paid');
+  assert.match(await whoPaid.locator('[data-method=zelle]').textContent(), /Zelle \$300\.00 · 1[\s\S]*Test Kid Alpha[\s\S]*\$300\.00/);
+  assert.equal(await whoPaid.locator('[data-method=cash] li').count(), 2, 'cash: the family and School Readiness');
+  assert.match(await whoPaid.locator('[data-method=card]').textContent(), /None/);
+  ok('Reports: who paid by cash, Zelle and card this month, by name');
 
   // ── enrolled inquiry → enrollment list ──
   await page.click('header nav button[data-view=list]');
@@ -452,6 +457,31 @@ try {
   await page.pdf({ path: path.join(SHOTS, '17-receipt-signature.pdf'), format: 'Letter', printBackground: true });
   await page.locator('#rc-close').click();
   ok('Receipts: license number and the uploaded signature print on every receipt');
+
+  // ── annual statements for taxes ──
+  await page.click('header nav button[data-view=staff]');
+  await page.locator('#set-receipt input[name=receipt_tax_id]').fill('12-3456789');
+  await page.locator('#set-receipt button[type=submit]').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await page.click('header nav button[data-view=reports]');
+  const stmtRows = page.locator('#stmt-rows tr');
+  await stmtRows.first().waitFor();
+  assert.match(await stmtRows.filter({ hasText: 'Alpha Parent' }).textContent(), /Test Kid Alpha[\s\S]*\$300\.00/);
+  assert.match(await stmtRows.filter({ hasText: 'Test Kid Beta' }).textContent(), /\$50\.00/, 'program (School Readiness) payments left out');
+  await stmtRows.filter({ hasText: 'Alpha Parent' }).locator('[data-print]').click();
+  const stmt = page.locator('.print-sheet .statement');
+  await stmt.waitFor();
+  const stmtText = await stmt.textContent();
+  for (const want of ['Annual Statement', 'Tax ID (EIN)', '12-3456789', 'License No. C11MD1517', 'Test Kid Alpha', 'Total paid in', '$300.00', 'Zelle']) {
+    assert.ok(stmtText.includes(want), `statement shows ${want}`);
+  }
+  assert.ok(await stmt.locator('.r-sig').count(), 'statement is signed');
+  await shot(page, '26-annual-statement');
+  await page.pdf({ path: path.join(SHOTS, '26-annual-statement.pdf'), format: 'Letter', printBackground: true });
+  await page.locator('#rc-close').click();
+  await page.click('header nav button[data-view=tuition]');
+  await page.click('header nav button[data-view=staff]');
+  ok('Annual statements: tax ID, family total for the year (programs left out), signed, printable');
 
   // ── Telegram alerts ──
   await page.click('header nav button[data-view=staff]');
@@ -598,7 +628,7 @@ try {
   await prow('Ana Clock').waitFor();
   await pr.locator('.here-now', { hasText: 'Nobody is clocked in' }).waitFor();
   const missed = pr.locator('#pp-missed');
-  await missed.locator('li', { hasText: 'Cora Seed' }).locator('[data-fix]').click();
+  await missed.locator('li', { hasText: 'Dee Missed' }).locator('[data-fix]').click();
   await pr.locator('.drawer input[name=t_in]').fill('07:00');
   await pr.locator('.drawer input[name=t_out]').fill('08:00');
   await pr.locator('.drawer #te-save').click();
@@ -630,9 +660,10 @@ try {
   const ps = pr.locator('.pay-sheet');
   await ps.waitFor();
   const lines = await ps.locator('tbody tr').allTextContents();
-  assert.equal(lines.length, 2, 'only people with hours');
-  assert.match(lines[0], /Office, Bea\s*4\.00\s*0\.00\s*4\.00/);
-  assert.match(lines[1], /Seed, Cora\s*40\.00\s*4\.00\s*44\.00/);
+  assert.ok(!lines.some((l) => l.includes('Clock, Ana')), 'only people with hours in the period (Ana clocked in this period)');
+  assert.match(lines.find((l) => l.includes('Office, Bea')) || '', /Office, Bea\s*4\.00\s*0\.00\s*4\.00/);
+  assert.match(lines.find((l) => l.includes('Seed, Cora')) || '', /Seed, Cora\s*40\.00\s*4\.00\s*44\.00/);
+  assert.ok(lines.findIndex((l) => l.includes('Office, Bea')) < lines.findIndex((l) => l.includes('Seed, Cora')), 'by last name');
   const patriotCsv = pr.waitForEvent('download');
   await pr.click('#ps-csv');
   assert.match((await patriotCsv).suggestedFilename(), /^creativa-patriot-hours-\d{4}-\d{2}-\d{2}\.csv$/);

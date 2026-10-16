@@ -422,3 +422,12 @@ table.ts tfoot th { text-transform: none; letter-spacing: 0; font-size: 13px; co
   .pay-sheet { padding: 20px 14px; }
   .pay-sheet .r-table { display: block; overflow-x: auto; }
 }
+
+/* who paid how, annual statements (009) */
+.method-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 20px; }
+.method-col h3 { font-size: 16px; margin-bottom: 4px; }
+.method-col h3 .muted { font-family: var(--body); font-weight: 500; }
+.method-col ul.plain li { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; padding: 5px 0; font-size: 14px; }
+.method-col ul.plain li > .muted { grid-column: 1; }
+.method-col ul.plain li > b { grid-column: 2; grid-row: 1; }
+#stmt-panel .toolbar select { width: auto; }

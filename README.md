@@ -53,7 +53,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql` and `008_payroll_timeclock.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql` and `009_tax_statements.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -218,6 +218,16 @@ Every receipt shows the school's license number (`settings.receipt_license`, C11
 admin uploads one on **Settings → Receipts**, the signature of the person in *Signed by* over the signature line. The
 CRM crops the photo to the ink and makes the paper transparent. The image is kept in `receipt_signature`, readable
 only by finance staff (for printing) and changed only by admins; it is never in this repository.
+
+## Annual statements and payment methods (009)
+
+- **Annual statements** (Reports → *Annual statements (for taxes)*, or *Annual statement* on a child's page): what a
+  family paid in a calendar year, with the school's name, address, **tax ID (EIN)** and license number, every payment
+  (date, receipt, method, amount) and the total, signed. That's what parents need for the child and dependent care
+  credit (IRS Form 2441). Payments from School Readiness, Step Up and VPK are left out; siblings on the same billing
+  family account share one statement. Print one, or all for the year; CSV with totals by method.
+- The tax ID (`settings.receipt_tax_id`, set on Settings → Receipts) also prints on every receipt.
+- **Who paid how** (Reports): each month's cash, Zelle, credit/debit card (and other) payments, by child, with totals.
 
 ## Payroll and the time clock (008)
 

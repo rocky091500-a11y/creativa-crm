@@ -40,4 +40,6 @@ insert into public.time_entries (employee_id, clock_in, clock_out, out_reason)
     from public.employees e, unnest(array[0, 3, 4, 5, 6]) k,
          lateral (select (public.payroll_period(current_date - 14)).period_start + k as d) x
    where e.first_name = 'Cora';
-insert into public.time_entries (employee_id, clock_in) select id, now() - interval '30 hours' from public.employees where first_name = 'Cora';
+-- A missed clock-out, on someone who has since left (so it never changes Cora's totals, whatever the date).
+insert into public.employees (first_name, last_name, position, pay_rate, active) values ('Dee', 'Missed', 'Assistant teacher', 15, false);
+insert into public.time_entries (employee_id, clock_in) select id, now() - interval '30 hours' from public.employees where first_name = 'Dee';

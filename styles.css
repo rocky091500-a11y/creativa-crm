@@ -452,3 +452,5 @@ table.roster tr.st-graduated td { color: var(--ink-soft); }
 .hc-rows label { display: flex; flex-direction: column; gap: 2px; width: 150px; }
 .hc-rows input { margin-top: 2px; }
 .hc-fam .btn { justify-self: start; }
+.pay-pill.ps-check { background: #F6E7C8; color: var(--warn); }
+.pay-pill.ps-missing { color: var(--ink-soft); }

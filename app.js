@@ -33,6 +33,7 @@
   // Biweekly billing (007_billing_contacts.sql)
   const CONTACT_ROLE = { primary: 'Primary', secondary: 'Secondary', emergency: 'Emergency / authorized' };
   const INV_STATUS = { paid: 'Paid', partial: 'Partly paid', open: 'Open', overdue: 'Late', void: 'Void',
+    check: 'Check amount', missing: 'Not on the sheet',
     not_invoiced: 'Not billed yet', stepup: 'Step Up pending', not_billed: 'Not billed to family', unset: 'No rate set',
     none: 'Nothing due' };
   const FUNDING = { ...PROGRAMS_FUNDING, private: 'Private pay' };
@@ -1635,9 +1636,14 @@
   function renderTuition(el) {
     if (!state.hasV6) return renderTuitionMonthly(el);
     const p = state.period || (state.period = periodOf(todayStr()));
-    if (p < billing().anchor) return renderTuitionBefore(el, p);
+    // Before the first CRM billing Monday the period was billed and paid in the old billing system (010/011): same page,
+    // filled in from its Balance Summary sheet, with nothing to bill or collect.
+    const before = p < billing().anchor;
+    const pre = before ? preRows(p) : null;
+    const earliest = state.history.reduce((m, h) => (h.period_start && h.period_start < m ? h.period_start : m), p);
     const f = state.tuitionFilters, edit = canEditFinance();
-    const rows = billRows(p);
+    const rows = before ? pre.rows.filter((r) => r.s).map(asBillRow) : billRows(p);
+    const gone = before ? pre.rows.filter((r) => !r.s) : [];
     const billed = round2(rows.reduce((t, r) => t + (r.inv ? Number(r.inv.amount) : 0), 0));
     const paidP = round2(rows.reduce((t, r) => t + r.paid, 0));
     const owedP = round2(rows.reduce((t, r) => t + r.balance, 0));
@@ -1656,11 +1662,12 @@
     const familyOf = (sid) => state.students.find((s) => s.id === sid)?.family_account || '';
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
     const late = (i) => { const d = daysBetween(i.due_date, todayStr()); return d <= 0 ? 'current' : d <= 30 ? '1–30 days' : d <= 60 ? '31–60 days' : d <= 90 ? '61–90 days' : 'over 90 days'; };
-    el.innerHTML = `<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period">‹</button>
+    el.innerHTML = `<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period" ${before && p <= earliest ? 'disabled' : ''}>‹</button>
         <b>${esc(fmtPeriod(p))}, ${p.slice(0, 4)}</b>
         <button class="btn small" id="p-next" type="button" aria-label="Next billing period">›</button>
         ${p !== periodOf(todayStr()) ? '<button class="btn small ghost" id="p-now" type="button">This period</button>' : ''}
-        <span class="muted small">Billed Monday ${esc(fmtDate(p))}, due that day (grace until Friday ${esc(fmtDate(addDays(p, 4)))}).</span></div>
+        <span class="muted small">${before ? `Before the CRM: billed and paid in the billing system${pre.sheet.length ? ` (sheet printed ${esc(fmtDate(pre.sheet[0].as_of))})` : ''}.`
+          : `Billed Monday ${esc(fmtDate(p))}, due that day (grace until Friday ${esc(fmtDate(addDays(p, 4)))}).`}</span></div>
       <div class="stats">
         <div class="stat"><b>${money(billed)}</b><span>Billed this period</span></div>
         <div class="stat"><b>${money(paidP)}</b><span>Paid on this period’s invoices</span></div>
@@ -1669,21 +1676,30 @@
       </div>
       <div class="toolbar">
         <input type="search" id="t-q" placeholder="Search student or family…" value="${esc(f.q)}">
-        <select id="t-status">${opt('', 'Everyone', f.status)}${opt('owing', 'Owes money', f.status)}${opt('paid', 'Paid', f.status)}${opt('not_invoiced', 'Not billed yet', f.status)}${opt('stepup', 'Step Up pending', f.status)}${opt('unset', 'No rate set', f.status)}</select>
+        <select id="t-status">${opt('', 'Everyone', f.status)}${opt('owing', 'Owes money', f.status)}${opt('paid', 'Paid', f.status)}${opt('not_invoiced', 'Not billed yet', f.status)}${opt('stepup', 'Step Up pending', f.status)}${opt('unset', 'No rate set', f.status)}${before ? opt('check', 'Check amount', f.status) + opt('missing', 'Not on the sheet', f.status) : ''}</select>
         <select id="t-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding)).join('')}</select>
         <span class="spacer"></span>
         ${edit && toBill ? `<button class="btn small primary" id="t-bill" type="button">Bill this period (${toBill})</button>` : ''}
         ${edit && lateDue.length ? `<button class="btn small" id="t-late" type="button">Add ${money(lateAmt)} late fees (${lateDue.length})</button>` : ''}
-        <button class="btn small" id="t-fes" type="button">Print FES-UA receipts</button>
+        ${before ? '' : '<button class="btn small" id="t-fes" type="button">Print FES-UA receipts</button>'}
         <button class="btn small" id="t-csv" type="button">Download CSV</button>
         ${edit ? '<button class="btn small" id="t-add" type="button">+ Record payment</button>' : ''}
       </div>
       <div class="table-wrap"><table class="tuition"><thead><tr>
         <th>Student</th><th>Funding</th><th class="num">Rate</th><th class="num">Billed</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th>${edit ? '<th></th>' : ''}
       </tr></thead><tbody id="t-rows"></tbody></table></div>
-      <p class="muted small">Each child is billed their biweekly rate on the billing Monday. Step Up (pending) children aren’t billed and
+      <p class="muted small">${before ? `${pre.sheet.length ? 'Billed and paid in the billing system before the CRM: amounts come from the family’s line on its Balance Summary,'
+          + ' and brothers and sisters billed together share one amount. “Check amount” means the family carried a balance or had a credit; confirm it on'
+          + ' Reports → Annual statements.' : 'There’s no billing system sheet for this period in the CRM.'} Step Up (pending) children aren’t billed and aren’t late.`
+        : `Each child is billed their biweekly rate on the billing Monday. Step Up (pending) children aren’t billed and
         aren’t late. Set the rate, billing item and funding on each child’s page.${lateAmt ? ` Tuition not paid by Friday gets a
-        ${money(lateAmt)} late fee once you tap “Add late fees”; waive one from the list below.` : ''}</p>
+        ${money(lateAmt)} late fee once you tap “Add late fees”; waive one from the list below.` : ''}`}</p>
+      ${gone.length ? `<section class="panel"><h2>On the sheet but not in the CRM <span class="muted small">${gone.length}</span></h2>
+        <div class="table-wrap flat"><table><thead><tr><th>Family</th><th class="num">Billed</th><th class="num">Paid</th><th>Status</th></tr></thead>
+        <tbody id="t-gone">${gone.map((r) => { const st = r.status === 'check' ? 'check' : r.sh.amount ? 'paid' : 'none';
+          return `<tr><td><b>${esc(r.sh.h.customer)}</b></td><td class="num">${r.sh.amount ? money(r.sh.amount) : ''}</td>
+          <td class="num">${r.sh.amount ? money(r.sh.amount) : ''}</td><td><span class="pay-pill ps-${st}">${INV_STATUS[st]}</span></td></tr>`; }).join('')}</tbody></table></div>
+      </section>` : ''}
       <section class="panel"><h2>Owed from all periods <span class="muted small">${money(owedAll)}</span></h2>
         <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Student</th><th>For</th><th>Due</th><th class="num">Balance</th><th>Late</th>${edit ? '<th></th>' : ''}</tr></thead>
         <tbody id="t-open">${open.map((i) => `<tr data-inv="${i.id}" data-sid="${i.student_id}"><td>${esc(familyOf(i.student_id))}</td><td>${esc(nameOf(i.student_id))}</td>
@@ -1704,7 +1720,7 @@
         <tbody id="t-pays">${periodPays.map((x) => `<tr data-pay="${x.id}"><td>${esc(fmtDate(x.paid_on))}</td><td>${esc(nameOf(x.student_id))}</td>
           <td>${esc(paymentFor(x))}</td><td>${esc(METHOD[x.method])}${x.reference ? ` <span class="muted small">${esc(x.reference)}</span>` : ''}</td>
           <td class="num">${money(x.amount)}</td><td><button class="btn ghost small" type="button" data-receipt="${x.id}">#${x.receipt_no}</button></td></tr>`).join('')
-          || '<tr><td colspan="6" class="muted">No payments received in this period yet.</td></tr>'}</tbody></table></div>
+          || `<tr><td colspan="6" class="muted">${before ? 'Payments for this period were made in the billing system.' : 'No payments received in this period yet.'}</td></tr>`}</tbody></table></div>
       </section>`;
 
     const go = (np) => { state.period = np; renderTuition(el); };
@@ -1744,7 +1760,7 @@
       toast('Late fee waived');
       renderTuition(el);
     }));
-    $('#t-fes', el).addEventListener('click', () => {
+    $('#t-fes', el)?.addEventListener('click', () => {
       const fes = periodPays.filter((x) => hasFunding(x.student_id, 'fes_ua'));
       const family = fes.filter((x) => x.payer === 'parent');
       showReceipts(family.sort((a, b) => nameOf(a.student_id).localeCompare(nameOf(b.student_id)) || a.receipt_no - b.receipt_no));
@@ -1778,12 +1794,15 @@
           <td><b>${esc(r.s.name)}</b><div class="muted small">${esc([classroomName(r.s.classroom_id), r.s.family_account].filter(Boolean).join(' · '))}</div></td>
           <td>${fundingTags(r.s.id)}</td>
           <td class="num">${r.fr.tuition_amount != null ? `${money(r.fr.tuition_amount)}<div class="muted small">${FREQ[r.fr.tuition_frequency] || ''}</div>` : ''}</td>
-          <td class="num">${r.inv ? money(r.inv.amount) : ''}</td>
+          <td class="num">${r.inv ? money(r.inv.amount) : r.pre?.with ? `<span class="muted small">with ${esc(r.pre.with.split(' ')[0])}</span>` : ''}
+            ${r.pre?.family ? `<div class="muted small">${esc(r.pre.family.join(' & '))}</div>` : ''}</td>
           <td class="num">${r.paid ? money(r.paid) : ''}</td>
           <td class="num">${r.balance ? money(r.balance) : ''}</td>
-          <td><span class="pay-pill ps-${r.status}">${INV_STATUS[r.status]}</span>${r.inv && lateFeeOf(r.inv)
-            ? `<div class="muted small">+ ${money(lateFeeOf(r.inv).amount)} late fee${invoiceBalance(lateFeeOf(r.inv)) ? '' : ' (paid)'}</div>` : ''}</td>
-          ${edit ? `<td>${r.inv && r.balance > 0 ? `<button class="btn small" type="button" data-pay-inv="${r.inv.id}">Record payment</button>`
+          <td><span class="pay-pill ps-${r.status}">${INV_STATUS[r.status]}</span>${!r.pre && r.inv && lateFeeOf(r.inv)
+            ? `<div class="muted small">+ ${money(lateFeeOf(r.inv).amount)} late fee${invoiceBalance(lateFeeOf(r.inv)) ? '' : ' (paid)'}</div>` : ''}
+            ${r.pre?.h && r.pre.amount != null && round2(r.pre.h.balance) !== round2(r.pre.amount) ? `<div class="muted small">sheet ${money(r.pre.h.balance)}</div>` : ''}
+            ${r.pre?.h?.note ? `<div class="muted small">${esc(r.pre.h.note)}</div>` : ''}</td>
+          ${edit ? `<td>${r.pre ? '' : r.inv && r.balance > 0 ? `<button class="btn small" type="button" data-pay-inv="${r.inv.id}">Record payment</button>`
             : r.status === 'not_invoiced' ? `<button class="btn small" type="button" data-bill-one="${r.s.id}">Bill ${money(periodAmount(r.fr))}</button>`
               : r.inv ? `<button class="btn small" type="button" data-pay-for="${r.s.id}">+ Payment</button>` : ''}</td>` : ''}</tr>`).join('')
         || `<tr><td colspan="${edit ? 8 : 7}" class="muted">Nobody matches.</td></tr>`;
@@ -1810,8 +1829,6 @@
   // CRM period, one row per child with class and funding, using its Balance Summary sheet (010/011): what each family
   // was billed (and paid) for it. Nothing to bill or record here.
   const earlierPaid = (h) => (h.paid != null ? Number(h.paid) : Math.max(Number(h.balance), 0));
-  const PRE_STATUS = { paid: 'Paid (billing system)', check: 'Check amount', stepup: 'Step Up pending', not_billed: 'Not billed to family',
-    none: 'Nothing due', credit: 'Credit', missing: 'Not on the sheet' };
   function preRows(p) {
     const sheet = state.history.filter((h) => h.period_start === p);
     const kids = state.students.filter((s) => activeInPeriod(s, p)).sort(sortStudents);
@@ -1849,62 +1866,11 @@
     sheet.filter((h) => !used.has(h.id)).forEach((h) => rows.push({ s: null, fr: {}, sh: { h, amount: earlierPaid(h) }, status: earlierPaid(h) > 0 ? (h.needs_check ? 'check' : 'paid') : 'none' }));
     return { rows, sheet };
   }
-  function renderTuitionBefore(el, p) {
-    const { rows, sheet } = preRows(p);
-    const f = state.tuitionFilters;
-    const earliest = state.history.reduce((m, h) => (h.period_start && h.period_start < m ? h.period_start : m), p);
-    const paidTotal = round2(rows.reduce((t, r) => t + (r.sh?.amount || 0), 0));
-    const sheetTotal = round2(sheet.reduce((t, h) => t + Number(h.balance), 0));
-    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
-    el.innerHTML = `<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period" ${p <= earliest ? 'disabled' : ''}>‹</button>
-        <b>${esc(fmtPeriod(p))}, ${p.slice(0, 4)}</b>
-        <button class="btn small" id="p-next" type="button" aria-label="Next billing period">›</button>
-        <button class="btn small ghost" id="p-now" type="button">This period</button>
-        <span class="muted small">Before the CRM: billed and paid in the billing system${sheet.length ? ` (sheet printed ${esc(fmtDate(sheet[0].as_of))})` : ''}.</span></div>
-      <div class="stats">
-        <div class="stat"><b>${money(paidTotal)}</b><span>Billed and paid (billing system)</span></div>
-        <div class="stat"><b>${rows.filter((r) => r.status === 'paid' || r.status === 'check').length}</b><span>Children billed</span></div>
-        <div class="stat"><b>${rows.filter((r) => r.status === 'stepup').length}</b><span>Step Up pending</span></div>
-        <div class="stat"><b>${money(sheetTotal)}</b><span>Total on the sheet</span></div>
-      </div>
-      <div class="toolbar">
-        <input type="search" id="t-q" placeholder="Search student or family…" value="${esc(f.q)}">
-        <select id="t-status">${opt('', 'Everyone', f.status)}${Object.entries(PRE_STATUS).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
-        <select id="t-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding)).join('')}</select>
-      </div>
-      <div class="table-wrap before-crm"><table class="tuition"><thead><tr>
-        <th>Student</th><th>Funding</th><th class="num">Billed &amp; paid</th><th class="num">Sheet balance</th><th>Status</th></tr></thead>
-        <tbody id="t-rows"></tbody></table></div>
-      <p class="muted small">${sheet.length ? `Amounts come from the family’s line on the billing system’s Balance Summary for this period; brothers and sisters billed
-        together share one amount. “Check amount” means the family carried a balance or had a credit; confirm it on Reports → Annual statements.`
-        : 'There’s no billing system sheet for this period in the CRM.'} Step Up (pending) children aren’t billed while Step Up approves them.</p>`;
-    const go = (np) => { state.period = np; renderTuition(el); };
-    $('#p-prev', el).addEventListener('click', () => go(addDays(p, -billing().days)));
-    $('#p-next', el).addEventListener('click', () => go(addDays(p, billing().days)));
-    $('#p-now', el).addEventListener('click', () => go(periodOf(todayStr())));
-    [['t-q', 'q', 'input'], ['t-status', 'status', 'change'], ['t-funding', 'funding', 'change']].forEach(([id, k, ev]) =>
-      $('#' + id, el).addEventListener(ev, (e) => { f[k] = e.target.value; draw(); }));
-    draw();
-    function draw() {
-      const q = f.q.trim().toLowerCase();
-      const shown = rows.filter((r) => {
-        if (f.status && r.status !== f.status && !(f.status === 'owing')) return false;
-        if (f.funding && (!r.s || !hasFunding(r.s.id, f.funding))) return false;
-        if (q && !`${r.s?.name || ''} ${r.s?.parent_name || ''} ${r.s?.family_account || ''} ${r.sh?.h.customer || ''}`.toLowerCase().includes(q)) return false;
-        return true;
-      });
-      $('#t-rows', el).innerHTML = shown.map((r) => `<tr ${r.s ? `data-id="${r.s.id}"` : ''}>
-          <td>${r.s ? `<b>${esc(r.s.name)}</b><div class="muted small">${esc([classroomName(r.s.classroom_id), r.s.family_account].filter(Boolean).join(' · '))}</div>`
-            : `<b>${esc(r.sh.h.customer)}</b><div class="muted small">not in the CRM</div>`}</td>
-          <td>${r.s ? fundingTags(r.s.id) : ''}</td>
-          <td class="num">${r.sh?.amount != null ? money(r.sh.amount) : r.sh?.with ? `<span class="muted small">with ${esc(r.sh.with.split(' ')[0])}</span>` : ''}
-            ${r.sh?.family ? `<div class="muted small">${esc(r.sh.family.join(' & '))}</div>` : ''}</td>
-          <td class="num">${r.sh && r.sh.amount != null ? `<span class="muted">${money(r.sh.h.balance)}</span>` : ''}</td>
-          <td><span class="pay-pill ps-${({ paid: 'paid', check: 'open', stepup: 'stepup', not_billed: 'not_billed', none: 'none', credit: 'paid', missing: 'none' })[r.status]}">${PRE_STATUS[r.status]}</span>
-            ${r.sh?.h.note ? `<div class="muted small">${esc(r.sh.h.note)}</div>` : ''}</td></tr>`).join('')
-        || '<tr><td colspan="5" class="muted">Nobody matches.</td></tr>';
-      $$('#t-rows tr[data-id]', el).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.id)));
-    }
+  // An old period's child row, shaped like billRows() so the page is the same as any CRM period.
+  function asBillRow(r) {
+    const amt = r.sh?.amount;
+    return { s: r.s, fr: r.fr, pre: r.sh || {}, inv: amt > 0 ? { amount: amt } : null, paid: amt > 0 ? amt : 0, balance: 0,
+      status: r.status === 'credit' ? 'paid' : r.status };
   }
 
   // ───────────── Reports ─────────────

@@ -848,6 +848,90 @@ try {
   assert.equal(await p2.locator('header nav button[data-view=messages]').count(), 0, 'no Messages without finance access');
   ok('Messages: write your own with blocks, save it to My messages, fill in its [blank], change one family’s text; history and cancel');
 
+  // ── lists (015) ──
+  await page.click('header nav button[data-view=messages]');
+  const listRow = (name) => page.locator('.msg-lists-ul li', { hasText: name });
+  await listRow('Moms 2nd Floor').waitFor();
+  assert.deepEqual(await page.locator('.msg-lists-ul .ml-name b').allTextContents(), ['FES Moms', 'Kinder Moms', 'Moms 1st Floor', 'Moms 2nd Floor',
+    'VPK Moms', 'School Readiness families', 'Step Up (pending) families', 'Private pay families']);
+  assert.match(await listRow('Moms 2nd Floor').textContent(), /Early 3s, Late 3s[\s\S]*1 family · 1 text\b/);
+  assert.match(await listRow('FES Moms').textContent(), /Every class · FES-UA, FES-EO[\s\S]*1 family · 1 text\b/);
+  await listRow('Moms 2nd Floor').locator('[data-list-text]').click();
+  assert.equal(await page.locator('#msg-form select[name=who] option:checked').textContent(), 'Moms 2nd Floor');
+  await page.locator('#msg-list li', { hasText: 'Test Kid Alpha' }).waitFor();
+  await listRow('VPK Moms').locator('[data-list-edit]').click();
+  await page.locator('.drawer #ls-now li', { hasText: 'no cell number' }).waitFor();   // Test Kid Beta has no phone
+  await page.fill('#ls-xname', 'Front Desk');
+  await page.fill('#ls-xphone', '786 555 0100');
+  await page.click('#ls-xadd');
+  await page.locator('.drawer #ls-now li', { hasText: '+17865550100' }).waitFor();
+  await page.fill('#ls-q', 'alpha');
+  await page.click('#ls-found [data-addfam]');
+  await page.locator('.drawer #ls-fams li', { hasText: 'Test Kid Alpha' }).waitFor();
+  await shot(page, '30-list-edit');
+  await page.click('#ls-save');
+  await page.waitForSelector('#toast:has-text("Saved “VPK Moms”")');
+  assert.match(await listRow('VPK Moms').textContent(), /VPK · \+1 added by hand · \+1 other[\s\S]*2 families \+ 1 other · 2 texts/);
+  await page.click('#list-new');
+  await page.fill('.drawer input[name=name]', 'Early 3s FES');
+  await page.locator('.drawer label', { hasText: 'Early 3s' }).locator('input').check();
+  await page.locator('.drawer label', { hasText: 'FES-UA' }).locator('input').check();
+  await page.locator('.drawer #ls-now li', { hasText: 'Alpha Parent' }).waitFor();
+  await page.click('#ls-save');
+  await listRow('Early 3s FES').waitFor();
+  assert.ok(await page.locator('#msg-form select[name=who] option', { hasText: 'Early 3s FES' }).count(), 'a new list can be texted');
+  await page.locator('.msg-lists').scrollIntoViewIfNeeded();
+  await shot(page, '29-lists');
+  ok('Lists: the school’s lists by class and funding (kept up to date), add families by hand and other people, make a new one');
+
+  // who in a family gets group texts; Families I pick still reach the primary contact
+  await page.click('header nav button[data-view=roster]');
+  await page.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' }).locator('td').first().click();
+  await drawer.locator('.contact-list li', { hasText: 'Alpha Parent' }).locator('[data-contact]').click();
+  assert.equal(await page.locator('.drawer input[name=group_texts]').isChecked(), true, 'the Primary contact gets group texts');
+  await page.locator('.drawer input[name=group_texts]').uncheck();
+  await page.click('#ct-save');
+  await page.waitForSelector('#toast:has-text("Contact saved")');
+  await drawer.locator('.contact-list li', { hasText: 'Alpha Parent' }).locator('.tag', { hasText: 'no group texts' }).waitFor();
+  await drawer.locator('.contact-list li', { hasText: 'Beto Alpha' }).locator('[data-contact]').click();
+  assert.equal(await page.locator('.drawer input[name=group_texts]').isChecked(), false, 'a Secondary contact doesn’t, unless ticked');
+  await page.locator('.drawer input[name=group_texts]').check();
+  await page.click('#ct-save');
+  await page.waitForSelector('#toast:has-text("Contact saved")');
+  await drawer.locator('.contact-list li', { hasText: 'Beto Alpha' }).locator('.tag', { hasText: 'gets group texts' }).waitFor();
+  await drawer.locator('#st-text').click();
+  await page.locator('#msg-pick-list input[data-fam]:checked').waitFor();
+  assert.match(await page.locator('#msg-list').textContent(), /Alpha Parent[\s\S]*\+13055550101/, 'texting one family reaches the Primary contact');
+  await page.selectOption('#msg-form select[name=who]', { label: 'FES Moms' });
+  await page.locator('#msg-list li', { hasText: 'Beto Alpha' }).waitFor();
+  assert.equal(await page.locator('#msg-list li', { hasText: '+13055550101' }).count(), 0, 'group texts skip a contact set not to get them');
+  ok('Group texts go to the contacts set to get them (the Primary contact unless changed); “Text this family” from a child’s page');
+
+  // missing paperwork, someone else, and a new website request while the CRM is open
+  await page.click('#msg-tpls [data-tpl-new]');
+  await page.selectOption('#msg-form select[name=who]', 'all');
+  await tpl('Missing paperwork').click();
+  assert.equal(await page.locator('#msg-form select[name=who]').inputValue(), 'docs', 'a message with {missing} goes to families missing paperwork');
+  const docsTo = page.locator('#msg-list li', { hasText: 'Test Kid Alpha' });
+  assert.match(await docsTo.locator('.msg-bubble').textContent(),
+    /^Hi Beto, this is Emily from Creativa Academy\. We are still missing Test's [a-z ]+\. Please bring it to the front desk when you can\. Thank you!\nReply STOP/);
+  await page.selectOption('#msg-form select[name=who]', 'one');
+  await page.fill('#msg-form input[name=oneName]', 'Rosa');
+  await page.fill('#msg-form input[name=onePhone]', '(305) 555-0199');
+  assert.match(await page.locator('#msg-list').textContent(), /Rosa[\s\S]*\+13055550199/);
+  assert.equal(await page.locator('#msg-send').textContent(), 'Send 1 text');
+  const sent = await fetch(`${BASE}/rest/v1/rpc/submit_inquiry`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ p_form: 'schedule-tour', p_data: { 'parent-name': 'Walker Newfamily', 'parent-phone': '3055550142', 'child-name': 'Wally' } }) });
+  assert.ok(sent.ok, `website request saved (${sent.status})`);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.waitForSelector('#toast:has-text("New tour request: Walker Newfamily")');
+  await page.locator('header nav button[data-view=today] .nav-badge', { hasText: '1' }).waitFor();
+  assert.match(await page.title(), /^\(1\) /);
+  await page.click('header nav button[data-view=today]');
+  await page.locator('.panel', { hasText: 'New inquiries' }).locator('.row', { hasText: 'Walker Newfamily' }).waitFor();
+  assert.equal(await page.locator('header nav button[data-view=today] .nav-badge').count(), 0);
+  ok('Messages: families missing paperwork ({missing} filled in), someone else by number; a new website request shows up without reloading');
+
   const p3 = await newPage();
   await login(p3, 'teacher@creativaacademy.com', 'teacher-pass-1');
   await p3.click('header nav button[data-view=tuition]');

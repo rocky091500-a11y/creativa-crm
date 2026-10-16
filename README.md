@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql` and `014_message_templates.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql` and `015_message_lists.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -252,12 +252,22 @@ like Withdrawn, with the last day at school; graduated children are billed only 
 **Messages** (tab; admins, and staff with finance "View & record") texts enrolled families through the same Twilio
 number as the tour texts:
 
-- **Who gets it**: all enrolled families, one class, families who owe money, families with a late balance (past the
-  Friday grace day), or families you tick. Each family gets one text per number (the primary contact's cell, or the
-  second parent's too if ticked; brothers and sisters on one family account share a text).
+- **Who gets it**: one of **My lists**, all enrolled families, one class, families who owe money, families with a late
+  balance (past the Friday grace day), families missing paperwork, the waiting list, families you tick, or someone
+  else by typing a number (also **Text this family** on a child's page). Each family gets one text per number;
+  brothers and sisters on one family account share a text.
+- **My lists** (`015_message_lists.sql`), like TextMagic's lists but kept up to date by the CRM: a list is children in
+  some classes (none ticked = every class) with some funding (none = any), plus families added by hand and other
+  people (a name and a cell number, e.g. yourself for a copy). A child who changes class or funding moves lists by
+  themselves. It starts with FES Moms (FES-UA/EO), Kinder Moms (Kindergarten), Moms 1st Floor (18–23 months, Early 2s,
+  Late 2s), Moms 2nd Floor (Early 3s, Late 3s), VPK Moms (VPK), School Readiness, Step Up (pending) and Private pay
+  families; change, add or delete any.
+- **Who in a family gets group texts** (lists, classes, everyone, reminders): each contact's **Gets group texts** box on
+  the child's page; by default the Primary contact yes, others no. A list can also text the second parent. Texts to
+  families picked by hand go to the Primary contact.
 - **Wording**: write it your way. The **Add** blocks drop in each family's details where the cursor is: parent's
-  first name `{parent}`, child's first name `{child}`, balance owed `{balance}`, class `{class}`, and your own first
-  name `{me}`; *Blank to fill in* adds a `[blank]` to fill in each time (*Fill in the next [blank]* jumps to it, and a
+  first name `{parent}`, child's first name `{child}`, balance owed `{balance}`, class `{class}`, missing paperwork `{missing}` (e.g. “Ana's blue
+  form and birth certificate”), and your own first name `{me}`; *Blank to fill in* adds a `[blank]` to fill in each time (*Fill in the next [blank]* jumps to it, and a
   text with a blank left can't be sent). The preview shows every family's text before it goes; **Change** rewrites
   one family's text just for them, **Don't send** takes a family off. “Reply STOP to opt out.” is added on its own
   line unless you untick it.
@@ -277,6 +287,12 @@ as the tour texts; without them texts wait as *Waiting* and go out once they are
 parents who agreed to them: register the A2P campaign as *Mixed* with a payment reminder and an activity reminder as
 sample messages, and keep the consent line (“I agree to receive text messages from Creativa Academy about my child,
 tuition and school events. Reply STOP to opt out.”) in the enrollment packet.
+
+## New website requests while the CRM is open
+
+The CRM checks for new website requests every minute while it's open (and as soon as you come back to its tab), so
+they show up without reloading: a message pops up, **Today** shows how many came in, and the browser tab shows the
+count, until you open Today, Pipeline or All inquiries. Telegram alerts (006) keep coming as before.
 
 ## Who changed what (012)
 

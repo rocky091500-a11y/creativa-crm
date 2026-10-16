@@ -320,7 +320,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -336,6 +336,7 @@
       sb.from('change_log').select('id, at, actor').neq('actor', state.me.id)  // missing until 012
         .gt('at', state.me.changes_seen_at || '1970-01-01').order('at', { ascending: false }).limit(200),
       isAdmin() || state.me.finance === 'edit' ? sb.from('messages').select('id').limit(1) : none,   // missing until 013
+      sb.from('student_contacts').select('group_texts').limit(1),                                     // missing until 015
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -366,7 +367,9 @@
     state.hasLog = !chg.error;
     state.unseen = chg.error ? [] : chg.data || [];
     state.hasMsgs = (isAdmin() || state.me.finance === 'edit') && !msg.error;
-    state.msgTpls = undefined;   // My messages: loaded when Messages opens
+    state.msgTpls = undefined;   // My messages and lists: loaded when Messages opens
+    state.hasGroupTexts = !gt.error;
+    watchInquiries();
     state.loadedAt = Date.now();
   }
 
@@ -375,6 +378,43 @@
     await loadAll();
     renderView();
   });
+
+  // New website requests while the CRM is open: checked every minute and when you come back to the tab, so they show
+  // up here as well as on Telegram without reloading. Today gets a count until you open Today, Pipeline or All inquiries.
+  let inqTimer = null;
+  const TITLE = document.title;
+  function watchInquiries() {
+    if (inqTimer) return;
+    inqTimer = setInterval(checkNewInquiries, 60_000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkNewInquiries(); });
+  }
+  async function checkNewInquiries() {
+    if (!state.me?.active || document.hidden || !state.inquiries || state.checkingInq) return;
+    state.checkingInq = true;
+    try {
+      const latest = state.inquiries.reduce((m, i) => (i.created_at > m ? i.created_at : m), '1970-01-01T00:00:00Z');
+      const { data, error } = await sb.from('inquiries').select('*').gt('created_at', latest).order('created_at', { ascending: false });
+      const fresh = error ? [] : (data || []).filter((i) => !state.inquiries.some((x) => x.id === i.id));
+      if (!fresh.length) return;
+      state.inquiries = [...fresh, ...state.inquiries];
+      const web = fresh.filter((i) => i.source !== 'manual');
+      if (web.length) {
+        state.newInq = (state.newInq || 0) + web.length;
+        const w = web[0];
+        toast(web.length === 1 ? `New ${(SOURCE_LABEL[w.source] || 'website request').toLowerCase()}: ${w.parent_name || w.child_name || 'a family'}`
+          : `${web.length} new website requests`);
+        drawInqBadge();
+      }
+      if (state.openId === undefined && ['today', 'board', 'list'].includes(state.view)) renderView();
+    } finally { state.checkingInq = false; }
+  }
+  function drawInqBadge() {
+    const n = state.newInq || 0, b = $('header nav button[data-view=today]');
+    document.title = n ? `(${n}) ${TITLE}` : TITLE;
+    if (!b) return;
+    $('.nav-badge', b)?.remove();
+    if (n) b.insertAdjacentHTML('beforeend', ` <span class="nav-badge" aria-label="${n} new">${n > 99 ? '99+' : n}</span>`);
+  }
 
   function upsertLocal(row) {
     const idx = state.inquiries.findIndex((x) => x.id === row.id);
@@ -417,8 +457,10 @@
     $$('header nav button').forEach((b) => b.addEventListener('click', () => {
       state.view = b.dataset.view;
       store.set('view', state.view);
+      if (['today', 'board', 'list'].includes(state.view)) state.newInq = 0;
       renderShell();
     }));
+    drawInqBadge();
     $('#add').addEventListener('click', () => openDrawer(null));
     $('#signout').addEventListener('click', () => sb.auth.signOut());
     renderView();
@@ -1015,6 +1057,8 @@
           const phones = [['Cell', c.cell_phone], ['Text', c.sms_phone], ['Work', c.work_phone], ['Home', c.home_phone]].filter(([, v]) => v);
           return `<li><div class="c-head"><b>${esc(contactName(c) || '(no name)')}</b>
               <span class="tag">${esc(CONTACT_ROLE[c.role])}${c.relationship ? ' · ' + esc(c.relationship) : ''}</span>
+              ${c.group_texts === true && c.role !== 'primary' ? '<span class="tag">gets group texts</span>' : ''}
+              ${c.group_texts === false && c.role === 'primary' ? '<span class="tag">no group texts</span>' : ''}
               <button class="btn ghost small" type="button" data-contact="${c.id}">Edit</button></div>
             ${phones.length ? `<div class="c-phones">${phones.map(([l, v]) => `<span>${l} <a href="tel:${digits(v)}">${esc(v)}</a>${l !== 'Work' && l !== 'Home' ? ` <a class="sms-link" href="sms:${digits(v)}">text</a>` : ''}</span>`).join('')}</div>` : ''}
             ${c.email ? `<div class="c-phones"><a href="mailto:${esc(c.email)}">${esc(c.email)}</a></div>` : ''}
@@ -1064,7 +1108,8 @@
               <b>${money(earlierPaid(h))}</b></li>`).join('')}</ul>
             <p class="muted small">From the Balance Summary sheets before the CRM, all paid there (a minus is a credit). For reference only.</p></div>` : ''}` : ''}
         ${inq ? `<p class="small"><a href="#" id="open-inq">Open the original inquiry (${esc(inq.parent_name || 'family')})</a></p>` : ''}
-        ${id && state.hasMsgs ? '<div class="section"><h3>Texts</h3><ul class="chg-list mini" id="st-texts"><li class="muted small">Loading…</li></ul></div>' : ''}
+        ${id && state.hasMsgs ? `<div class="section"><h3 class="h-row">Texts <button class="btn small" type="button" id="st-text">Text this family</button></h3>
+          <ul class="chg-list mini" id="st-texts"><li class="muted small">Loading…</li></ul></div>` : ''}
         ${id && state.hasLog ? '<div class="section"><h3>Recent changes</h3><ul class="chg-list mini" id="st-changes"><li class="muted small">Loading…</li></ul></div>' : ''}`,
       foot: `${id && isAdmin() ? '<button class="btn danger" id="st-del" type="button">Delete</button>' : ''}
         <span class="spacer"></span><button class="btn" data-close type="button">Cancel</button>
@@ -1094,6 +1139,14 @@
     }));
     $$('[data-receipt]', drawer).forEach((b) => b.addEventListener('click', () =>
       showReceipts(state.payments.filter((p) => p.id === b.dataset.receipt))));
+    $('#st-text', drawer)?.addEventListener('click', () => {
+      if (ctl.dirty && !confirm('Discard your changes?')) return;
+      closeDrawer();
+      state.msgDraft = { ...newMsgDraft(), who: 'pick', picked: [familyKey(s0)] };
+      state.view = 'messages';
+      store.set('view', state.view);
+      renderShell();
+    });
     if (id && state.hasMsgs) {
       sb.from('message_recipients').select('status, body, sent_at, name, messages(created_at, created_by)').eq('student_id', id).limit(300).then(({ data, error }) => {
         const ul = $('#st-texts', drawer);
@@ -1345,6 +1398,8 @@
           ${fInput('home_phone', 'Home phone', c.home_phone, 'tel')}
           ${fInput('email', 'Email', c.email, 'email')}
           <label class="full">Notes<input name="notes" value="${esc(c.notes)}" placeholder="e.g. Call mom first"></label>
+          ${state.hasGroupTexts ? `<label class="full pill-check"><input type="checkbox" class="check" name="group_texts" ${getsGroupTexts(c) ? 'checked' : ''}>
+            Gets group texts (lists, classes, all families, reminders)</label>` : ''}
         </div></div>`,
       foot: `${contactId ? '<button class="btn danger" id="ct-del" type="button">Remove</button>' : ''}<span class="spacer"></span>
         <button class="btn" data-close type="button">Cancel</button>
@@ -1352,12 +1407,16 @@
     });
     const { drawer, form } = ctl;
     form.first_name.focus();
+    let gtTouched = c.group_texts != null;   // until ticked by hand, group texts follow the role (Primary yes, others no)
+    form.group_texts?.addEventListener('change', () => { gtTouched = true; });
+    form.role.addEventListener('change', () => { if (form.group_texts && !gtTouched) form.group_texts.checked = form.role.value === 'primary'; });
     const done = () => { ctl.dirty = false; renderView(); if (back) back(); else closeDrawer(); };
     $('#ct-save', drawer).addEventListener('click', async () => {
       const row = { student_id: sid };
       ['role', 'relationship', 'first_name', 'last_name', 'cell_phone', 'sms_phone', 'work_phone', 'home_phone', 'email', 'notes']
         .forEach((k) => { row[k] = formVal(form, k); });
       if (!row.first_name && !row.last_name) { form.first_name.focus(); return toast('Add the contact’s name', true); }
+      if (form.group_texts) row.group_texts = form.group_texts.checked === (row.role === 'primary') ? null : form.group_texts.checked;
       const q = contactId ? sb.from('student_contacts').update(row).eq('id', contactId) : sb.from('student_contacts').insert(row);
       const { data, error } = await q.select().single();
       if (error) return fail(error, 'Could not save the contact');
@@ -2687,7 +2746,8 @@
   // sends them through Twilio, between 8am and 9pm.
   const MSG_STATUS = { queued: 'Waiting', sending: 'Sending', sent: 'Sent', failed: 'Failed', opted_out: 'Opted out', canceled: 'Canceled' };
   const MSG_PILL = { queued: 'open', sending: 'open', sent: 'paid', failed: 'overdue', opted_out: 'none', canceled: 'void' };
-  const MSG_WHO = { all: 'All enrolled families', class: 'One class', owe: 'Families who owe money', late: 'Families with a late balance', pick: 'Families I pick' };
+  const MSG_WHO = { all: 'All enrolled families', class: 'One class', owe: 'Families who owe money', late: 'Families with a late balance',
+    docs: 'Families missing paperwork', waitlist: 'Waiting list families', pick: 'Families I pick', one: 'Someone else (type a number)' };
   // Examples shown until 014_message_templates.sql is run; after that the school writes and saves its own ("My messages").
   // Plain characters only: an accent or curly quote makes every text cost more (70 characters a part instead of 160).
   const MSG_EXAMPLES = [
@@ -2697,16 +2757,18 @@
   ];
   // Blocks: filled in for each family when the text goes out. "[ ]" is a blank the writer fills in before sending.
   const MSG_BLOCKS = [['{parent}', 'Parent’s first name'], ['{child}', 'Child’s first name'], ['{balance}', 'Balance owed'],
-    ['{class}', 'Class'], ['{me}', 'My first name'], ['[ ]', 'Blank to fill in']];
+    ['{class}', 'Class'], ['{missing}', 'Missing paperwork'], ['{me}', 'My first name'], ['[ ]', 'Blank to fill in']];
   const STOP_LINE = 'Reply STOP to opt out.';
   const HAS_BLANK = /\[[^\]]*\]/;
   const familyOwes = (kids) => round2(kids.reduce((t, s) => t + openInvoices(s.id).reduce((u, i) => u + invoiceBalance(i), 0), 0));
   const familyLate = (kids) => round2(kids.reduce((t, s) => t + openInvoices(s.id).filter((i) => todayStr() > addDays(i.due_date, 4))
     .reduce((u, i) => u + invoiceBalance(i), 0), 0));
   const andList = (xs) => (xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}` : xs[0] || '');
-  function msgFamilies() {   // every family with an enrolled child, or with money owed
+  const anyKid = (s) => s.status === 'enrolled' || openInvoices(s.id).length > 0;          // enrolled, or still owes
+  const pickable = (s) => !LEFT.has(s.status) || openInvoices(s.id).length > 0;             // ... or on the waiting list
+  function msgFamilies(keep = anyKid) {   // the children kept, grouped by family
     const groups = new Map();
-    state.students.filter((s) => s.status === 'enrolled' || openInvoices(s.id).length).forEach((s) => {
+    state.students.filter(keep).forEach((s) => {
       const k = familyKey(s);
       if (!groups.has(k)) groups.set(k, { key: k, kids: [] });
       groups.get(k).kids.push(s);
@@ -2714,18 +2776,34 @@
     return [...groups.values()].map((g) => ({ ...g, name: familyName(g.kids), owes: familyOwes(g.kids), late: familyLate(g.kids) }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
-  function msgPhones(g, secondary) {
+  // A list (015): children in its classes (none = every class) with its funding (none = any; "private" = no program).
+  function listMatch(l, s) {
+    const fund = fundingOf(s.id);
+    return (!l.classes.length || l.classes.includes(s.classroom_id))
+      && (!l.funding.length || l.funding.some((f) => fund.includes(f) || (f === 'sr' && fund.includes('sr_bpiece'))));
+  }
+  const listKids = (l) => (s) => l.families.includes(s.id) || (s.status === 'enrolled' && listMatch(l, s));
+  // Who in a family gets a text. Group texts (lists, classes, everyone, reminders) go to contacts set to get them
+  // (015; usually the Primary contact); texts to families picked by hand go to the Primary contact.
+  const getsGroupTexts = (c) => c.group_texts ?? c.role === 'primary';
+  function msgPhones(g, secondary, group = true) {
     const out = new Map();
     g.kids.forEach((s) => {
-      const cs = state.contacts.filter((c) => c.student_id === s.id && (c.role === 'primary' || (secondary && c.role === 'secondary')))
+      const mine = state.contacts.filter((c) => c.student_id === s.id);
+      const cs = mine.filter((c) => (group ? getsGroupTexts(c) : c.role === 'primary') || (secondary && c.role === 'secondary'))
         .sort((a, b) => a.role.localeCompare(b.role));
       cs.forEach((c) => { const ph = e164(c.sms_phone || c.cell_phone); if (ph && !out.has(ph)) out.set(ph, { name: contactName(c), phone: ph, sid: s.id }); });
-      if (!cs.some((c) => e164(c.sms_phone || c.cell_phone))) {
+      if (!cs.some((c) => e164(c.sms_phone || c.cell_phone)) && !(group && mine.some((c) => c.group_texts === false))) {
         const ph = e164(s.parent_phone);
         if (ph && !out.has(ph)) out.set(ph, { name: s.parent_name || '', phone: ph, sid: s.id });
       }
     });
     return [...out.values()];
+  }
+  function missingText(g) {   // {missing}: "Ana's blue form and birth certificate, and Leo's yellow form"
+    const parts = g.kids.filter((s) => s.status === 'enrolled').map((s) => [s.name.split(' ')[0], missingDocs(s).map(([, long]) => long.toLowerCase())])
+      .filter(([, docs]) => docs.length).map(([first, docs]) => `${first}'s ${andList(docs)}`);
+    return parts.length > 1 ? `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}` : parts[0] || 'nothing';
   }
   function msgText(body, g, to) {
     const first = String(to.name || '').trim().split(/\s+/)[0];
@@ -2733,48 +2811,86 @@
     const cls = andList([...new Set(g.kids.filter((s) => s.classroom_id).map((s) => classroomName(s.classroom_id)).filter(Boolean))]) || 'class';
     const me = String(state.me.full_name || '').trim().split(/\s+/)[0] || 'the office';
     return body.replace(/ ?\{parent\}/gi, first ? ` ${first}` : '').replace(/\{child\}/gi, child).replace(/\{balance\}/gi, money(g.owes))
-      .replace(/\{class\}/gi, cls).replace(/\{me\}/gi, me).trim();
+      .replace(/\{class\}/gi, cls).replace(/\{missing\}/gi, () => missingText(g)).replace(/\{me\}/gi, me).trim();
+  }
+  const msgList = (d) => d.listObj || (d.who.startsWith('list:') ? (state.msgLists || []).find((l) => `list:${l.id}` === d.who) : null);
+  function msgAudience(d) {   // { fams, extra: other people [{name, phone}], group, secondary }
+    const l = msgList(d);
+    if (l) return { fams: msgFamilies(listKids(l)), extra: l.extra || [], group: true, secondary: l.both_parents };
+    const en = (s) => s.status === 'enrolled';
+    switch (d.who) {
+      case 'all': return { fams: msgFamilies(en), group: true };
+      case 'class': return { fams: msgFamilies((s) => en(s) && s.classroom_id === d.cls), group: true };
+      case 'owe': return { fams: msgFamilies(anyKid).filter((g) => g.owes > 0), group: true };
+      case 'late': return { fams: msgFamilies(anyKid).filter((g) => g.late > 0), group: true };
+      case 'docs': return { fams: msgFamilies((s) => en(s) && missingDocs(s).length > 0), group: true };
+      case 'waitlist': return { fams: msgFamilies((s) => s.status === 'waitlist'), group: true };
+      case 'pick': return { fams: msgFamilies(pickable).filter((g) => d.picked.includes(g.key)), group: false };
+      case 'one': return { fams: [], extra: d.onePhone.trim() ? [{ name: d.oneName.trim(), phone: d.onePhone.trim() }] : [], group: false };
+      default: return { fams: [], group: true };
+    }
   }
   function msgRecipients(d) {
-    let fams = msgFamilies();
-    if (d.who === 'all') fams = fams.filter((g) => g.kids.some((s) => s.status === 'enrolled'));
-    if (d.who === 'class') fams = fams.filter((g) => g.kids.some((s) => s.status === 'enrolled' && s.classroom_id === d.cls));
-    if (d.who === 'owe') fams = fams.filter((g) => g.owes > 0);
-    if (d.who === 'late') fams = fams.filter((g) => g.late > 0);
-    if (d.who === 'pick') fams = fams.filter((g) => d.picked.includes(g.key));
+    const a = msgAudience(d);
     const body = d.body.trim() + (d.stop && d.body.trim() && !/STOP/i.test(d.body) ? `\n${STOP_LINE}` : '');
     const send = [], skipped = [], used = new Set();
-    fams.forEach((g) => {
-      const phones = msgPhones(g, d.secondary);
-      if (!phones.length) return skipped.push({ g, why: 'no cell number' });
-      phones.forEach((to) => {
-        if (textsStopped(to.phone)) return skipped.push({ g, why: `${to.name || to.phone} replied STOP` });
-        if (used.has(to.phone)) return;
-        used.add(to.phone);
-        if (d.skip.includes(to.phone)) return skipped.push({ g, why: 'you took them off', phone: to.phone });
-        const own = d.edits[to.phone];
-        send.push({ g, to, text: own ?? msgText(body, g, to), edited: own != null });
-      });
+    const add = (g, to) => {
+      if (textsStopped(to.phone)) return skipped.push({ g, why: `${to.name || to.phone} replied STOP` });
+      if (used.has(to.phone)) return;
+      used.add(to.phone);
+      if (d.skip.includes(to.phone)) return skipped.push({ g, why: 'you took them off', phone: to.phone });
+      const own = d.edits[to.phone];
+      send.push({ g, to, text: own ?? msgText(body, g, to), edited: own != null });
+    };
+    a.fams.forEach((g) => {
+      const phones = msgPhones(g, d.secondary || a.secondary, a.group);
+      if (!phones.length) {
+        const off = a.group && g.kids.some((s) => state.contacts.some((c) => c.student_id === s.id && c.group_texts === false));
+        return skipped.push({ g, why: off ? 'nobody set to get group texts' : 'no cell number' });
+      }
+      phones.forEach((to) => add(g, to));
     });
-    return { fams, send, skipped, body };
+    (a.extra || []).forEach((x) => {
+      const g = { key: `x:${x.phone}`, kids: [], name: x.name || x.phone, owes: 0, late: 0, other: true };
+      const phone = e164(x.phone);
+      if (!phone) return skipped.push({ g, why: 'not a cell number' });
+      add(g, { name: x.name || '', phone, sid: null });
+    });
+    return { fams: a.fams, list: msgList(d), send, skipped, body };
   }
   const smsParts = (t) => {   // how many texts Twilio bills for one message
     const wide = /[^\x00-\x7F]/.test(t);
     return t.length <= (wide ? 70 : 160) ? 1 : Math.ceil(t.length / (wide ? 67 : 153));
   };
-  async function loadMsgTpls() {   // null until 014 is run
-    const { data, error } = await sb.from('message_templates').select('*').order('sort').order('name');
-    state.msgTpls = error ? null : data;
+  async function loadMsgTpls() {   // null until 014 / 015 are run
+    const [t, l] = await Promise.all([sb.from('message_templates').select('*').order('sort').order('name'),
+      sb.from('message_lists').select('*').order('sort').order('name')]);
+    state.msgTpls = t.error ? null : t.data;
+    state.msgLists = l.error ? null : l.data;
+  }
+  const newMsgDraft = () => ({ who: 'all', cls: state.classrooms[0]?.id || '', secondary: false, body: '', stop: true, when: 'now', at: '',
+    picked: [], q: '', oneName: '', onePhone: '', tpl: null, tplName: '', edits: {}, skip: [], editing: null });
+  const famCount = (n, x) => `${n} famil${n === 1 ? 'y' : 'ies'}${x ? ` + ${x} other${x === 1 ? '' : 's'}` : ''}`;
+  function listSummary(l) {
+    const cls = l.classes.map(classroomName).filter(Boolean), extra = (l.extra || []).length;
+    return [cls.length ? cls.join(', ') : 'Every class', l.funding.length ? l.funding.map((f) => FUNDING[f] || f).join(', ') : '',
+      l.both_parents ? 'both parents' : '', l.families.length ? `+${l.families.length} added by hand` : '',
+      extra ? `+${extra} other${extra === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
   }
 
   function renderMessages(el) {
-    const d = state.msgDraft || (state.msgDraft = { who: 'owe', cls: state.classrooms[0]?.id || '', secondary: false, body: '', stop: true, when: 'now', at: '',
-      picked: [], q: '', tpl: null, tplName: '', edits: {}, skip: [], editing: null });
+    const d = state.msgDraft || (state.msgDraft = newMsgDraft());
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+    const whoOptions = () => (state.msgLists?.length ? `<optgroup label="My lists">${state.msgLists.map((l) => opt(`list:${l.id}`, l.name, d.who)).join('')}</optgroup>
+      <optgroup label="More">` : '<optgroup label="Who">') + Object.entries(MSG_WHO).map(([k, v]) => opt(k, v, d.who)).join('') + '</optgroup>';
     el.innerHTML = `<div class="msg-grid">
       <section class="panel msg-compose"><h2>New text</h2>
         <form id="msg-form" class="grid2" novalidate>
-          <label class="full">Who gets it<select name="who">${Object.entries(MSG_WHO).map(([k, v]) => opt(k, v, d.who)).join('')}</select></label>
+          <label class="full">Who gets it<select name="who">${whoOptions()}</select></label>
+          <p class="full muted small" id="msg-list-sum" hidden></p>
+          <div class="full grid2" id="msg-one" ${d.who === 'one' ? '' : 'hidden'}>
+            <label>Name<input name="oneName" maxlength="80" value="${esc(d.oneName)}" placeholder="e.g. Maria"></label>
+            <label>Cell number<input name="onePhone" type="tel" value="${esc(d.onePhone)}" placeholder="(305) 555-0123"></label></div>
           <label class="full" id="msg-cls" ${d.who === 'class' ? '' : 'hidden'}>Class<select name="cls">${state.classrooms.map((c) => opt(c.id, c.name, d.cls)).join('')}</select></label>
           <div class="full" id="msg-pick" ${d.who === 'pick' ? '' : 'hidden'}><input type="search" name="q" placeholder="Search families…" value="${esc(d.q)}">
             <div class="msg-pick" id="msg-pick-list"></div></div>
@@ -2795,6 +2911,12 @@
         </form></section>
       <section class="panel msg-preview"><h2>Who gets it <span class="muted small" id="msg-sum"></span></h2><div id="msg-list"></div></section>
     </div>
+    <section class="panel msg-lists"><div class="msg-lists-head"><h2>My lists</h2>
+        <button class="btn small" type="button" id="list-new" hidden>+ New list</button></div>
+      <p class="muted small">Like TextMagic’s lists, but the CRM keeps them up to date: a child who changes class or funding moves lists
+        by themselves. Each family gets the text at the contacts set to get group texts (the Primary contact, unless you change it
+        on the child’s page).</p>
+      <div id="msg-lists-body"><p class="muted">Loading…</p></div></section>
     <section class="panel msg-history"><h2>Texts sent</h2>
       <div class="table-wrap flat"><table><thead><tr><th>When</th><th>By</th><th>To</th><th>Message</th><th>Status</th></tr></thead>
         <tbody id="msg-hist"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div>
@@ -2836,6 +2958,7 @@
         d.tpl = saved ? t.id : null;
         d.tplName = saved ? t.name : '';
         if (/\{balance\}/i.test(t.body) && d.who === 'all') d.who = form.who.value = 'owe';
+        if (/\{missing\}/i.test(t.body) && d.who === 'all') d.who = form.who.value = 'docs';
         drawTpls();
         draw();
         if (!selectBlank(0)) form.body.focus();
@@ -2880,11 +3003,14 @@
       const r = msgRecipients(d);
       $('#msg-cls', el).hidden = d.who !== 'class';
       $('#msg-pick', el).hidden = d.who !== 'pick';
+      $('#msg-one', el).hidden = d.who !== 'one';
+      $('#msg-list-sum', el).hidden = !r.list;
+      if (r.list) $('#msg-list-sum', el).textContent = listSummary(r.list);
       $('#msg-at', el).hidden = d.when !== 'later';
       $('#msg-next-blank', el).hidden = !HAS_BLANK.test(d.body);
       if (d.who === 'pick') {
         const q = d.q.trim().toLowerCase();
-        $('#msg-pick-list', el).innerHTML = msgFamilies().filter((g) => !q || `${g.name} ${g.kids.map((s) => s.name).join(' ')}`.toLowerCase().includes(q))
+        $('#msg-pick-list', el).innerHTML = msgFamilies(pickable).filter((g) => !q || `${g.name} ${g.kids.map((s) => s.name).join(' ')}`.toLowerCase().includes(q))
           .map((g) => `<label class="pill-check"><input type="checkbox" class="check" data-fam="${esc(g.key)}" ${d.picked.includes(g.key) ? 'checked' : ''}>
             ${esc(g.name)} <span class="muted small">${esc(g.kids.map((s) => s.name.split(' ')[0]).join(', '))}</span></label>`).join('');
         $$('#msg-pick-list [data-fam]', el).forEach((b) => b.addEventListener('change', () => {
@@ -2970,7 +3096,8 @@
       if (!confirm(`${d.when === 'later' ? `Schedule ${r.send.length} text${r.send.length === 1 ? '' : 's'} for ${fmtDateTime(at.toISOString())}` : `Send ${r.send.length} text${r.send.length === 1 ? '' : 's'} now`}?`)) return;
       const btn = $('#msg-send', el);
       btn.disabled = true;
-      const audience = d.who === 'class' ? `${classroomName(d.cls)} families` : d.who === 'pick' ? `${r.fams.length} famil${r.fams.length === 1 ? 'y' : 'ies'} picked` : MSG_WHO[d.who];
+      const audience = r.list ? r.list.name : d.who === 'class' ? `${classroomName(d.cls)} families`
+        : d.who === 'pick' ? `${r.fams.length} famil${r.fams.length === 1 ? 'y' : 'ies'} picked` : d.who === 'one' ? (d.oneName.trim() || 'One person') : MSG_WHO[d.who];
       const { data: m, error } = await sb.from('messages').insert({ audience: `${audience} (${r.send.length})`, body: r.body, send_at: at.toISOString(), created_by: state.me.id })
         .select().single();
       if (error) { btn.disabled = false; return fail(error, 'Could not save the text'); }
@@ -3002,10 +3129,156 @@
       state.msgDraft = null;
       renderMessages(el);
     });
+    // My lists
+    const drawLists = () => {
+      const lists = state.msgLists, body = $('#msg-lists-body', el);
+      if (!body) return;
+      $('#list-new', el).hidden = !lists;
+      if (lists === undefined) return;
+      if (lists === null) { body.innerHTML = '<p class="muted small">To use lists, run <code>015_message_lists.sql</code> in Supabase.</p>'; return; }
+      body.innerHTML = lists.length ? `<ul class="msg-lists-ul">${lists.map((l) => {
+        const r = msgRecipients({ ...newMsgDraft(), listObj: l });
+        return `<li><div class="ml-name"><b>${esc(l.name)}</b><span class="muted small">${esc(listSummary(l))}</span></div>
+          <span class="muted small ml-count">${famCount(r.fams.length, (l.extra || []).length)} · ${r.send.length} text${r.send.length === 1 ? '' : 's'}</span>
+          <span class="ml-acts"><button class="btn small" type="button" data-list-text="${l.id}">Text this list</button>
+            <button class="btn ghost small" type="button" data-list-edit="${l.id}">Edit</button></span></li>`;
+      }).join('')}</ul>` : '<p class="muted">No lists yet.</p>';
+      $$('[data-list-text]', el).forEach((b) => b.addEventListener('click', () => {
+        d.who = form.who.value = `list:${b.dataset.listText}`;
+        d.edits = {}; d.skip = []; d.editing = null;
+        draw();
+        $('.msg-compose', el).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }));
+      $$('[data-list-edit]', el).forEach((b) => b.addEventListener('click', () => openList(lists.find((l) => l.id === b.dataset.listEdit))));
+    };
+    $('#list-new', el).addEventListener('click', () => openList(null));
+
     drawTpls();
     draw();
-    if (state.msgTpls === undefined) loadMsgTpls().then(() => { if ($('#msg-tpls', el)) drawTpls(); });
+    drawLists();
+    if (state.msgTpls === undefined) {
+      loadMsgTpls().then(() => {
+        if (!$('#msg-tpls', el)) return;
+        if (d.who.startsWith('list:') && !msgList(d)) d.who = 'all';
+        form.who.innerHTML = whoOptions();
+        drawTpls();
+        draw();
+        drawLists();
+      });
+    }
     loadMsgHistory(el);
+  }
+
+  // Make or change a list (015)
+  function openList(l) {
+    const L = l ? { ...l, classes: [...l.classes], funding: [...l.funding], families: [...l.families], extra: [...(l.extra || [])] }
+      : { name: '', classes: [], funding: [], both_parents: false, families: [], extra: [] };
+    const box = (attr, v, label, on) => `<label class="pill-check"><input type="checkbox" class="check" ${attr}="${esc(v)}" ${on ? 'checked' : ''}> ${esc(label)}</label>`;
+    const ctl = mountDrawer({
+      title: l ? esc(l.name) : 'New list',
+      sub: 'Kept up to date from each child’s class and funding',
+      body: `<div class="section"><label>Name<input name="name" maxlength="60" value="${esc(L.name)}" placeholder="e.g. VPK Moms"></label></div>
+        <div class="section"><h3>Children in these classes</h3><p class="muted small">None ticked = every class.</p>
+          <div class="funding-boxes">${state.classrooms.map((c) => box('data-cls', c.id, c.name, L.classes.includes(c.id))).join('')}</div></div>
+        <div class="section"><h3>With this funding</h3><p class="muted small">None ticked = any funding.</p>
+          <div class="funding-boxes">${Object.entries(FUNDING).map(([k, v]) => box('data-fund', k, v, L.funding.includes(k))).join('')}</div>
+          <label class="pill-check ls-both"><input type="checkbox" class="check" name="both_parents" ${L.both_parents ? 'checked' : ''}>
+            Also text the second parent (Secondary contact)</label></div>
+        <div class="section"><h3>Families added by hand</h3><p class="muted small">On the list whatever their class or funding.</p>
+          <ul class="chg-list mini" id="ls-fams"></ul>
+          <input type="search" id="ls-q" placeholder="Add a family: type a child’s or parent’s name…" autocomplete="off">
+          <div class="msg-pick" id="ls-found" hidden></div></div>
+        <div class="section"><h3>Other people</h3><p class="muted small">Not a family in the CRM: for example yourself, to get a copy, or a grandparent.</p>
+          <ul class="chg-list mini" id="ls-extra"></ul>
+          <div class="grid2 ls-add"><input id="ls-xname" placeholder="Name" maxlength="80"><input id="ls-xphone" type="tel" placeholder="Cell number"></div>
+          <button class="btn small" type="button" id="ls-xadd">+ Add person</button></div>
+        <div class="section"><h3>On this list now <span class="muted small" id="ls-count"></span></h3><ul class="chg-list mini" id="ls-now"></ul></div>`,
+      foot: `${l ? '<button class="btn danger" id="ls-del" type="button">Delete list</button>' : ''}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="ls-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    const drawNow = () => {
+      const r = msgRecipients({ ...newMsgDraft(), listObj: L });
+      $('#ls-count', drawer).textContent = `${famCount(r.fams.length, L.extra.length)} · ${r.send.length} text${r.send.length === 1 ? '' : 's'}`;
+      $('#ls-now', drawer).innerHTML = r.send.map((x) => `<li><span><b>${esc(x.to.name || x.g.name)}</b>
+          <span class="muted small">${esc(x.g.other ? 'other person' : x.g.kids.map((k) => k.name).join(', '))} · ${esc(x.to.phone)}</span></span></li>`).join('')
+        + r.skipped.map((x) => `<li class="muted"><span>${esc(x.g.name)} <span class="small">(${esc(x.why)})</span></span></li>`).join('')
+        || '<li class="muted small">Nobody yet.</li>';
+    };
+    const drawFams = () => {
+      $('#ls-fams', drawer).innerHTML = L.families.map((id) => state.students.find((s) => s.id === id)).filter(Boolean).map((s) => `<li>
+          <span><b>${esc(s.name)}</b> <span class="muted small">${esc(s.parent_name || '')}</span></span>
+          <button class="btn ghost small" type="button" data-unfam="${s.id}" aria-label="Take off">✕</button></li>`).join('');
+      $$('[data-unfam]', drawer).forEach((b) => b.addEventListener('click', () => {
+        L.families = L.families.filter((x) => x !== b.dataset.unfam);
+        ctl.dirty = true; drawFams(); drawNow();
+      }));
+    };
+    const drawExtra = () => {
+      $('#ls-extra', drawer).innerHTML = L.extra.map((x, i) => `<li><span><b>${esc(x.name || 'No name')}</b> <span class="muted small">${esc(x.phone)}</span></span>
+          <button class="btn ghost small" type="button" data-unx="${i}" aria-label="Take off">✕</button></li>`).join('');
+      $$('[data-unx]', drawer).forEach((b) => b.addEventListener('click', () => {
+        L.extra.splice(Number(b.dataset.unx), 1);
+        ctl.dirty = true; drawExtra(); drawNow();
+      }));
+    };
+    $$('[data-cls]', drawer).forEach((b) => b.addEventListener('change', () => {
+      L.classes = b.checked ? [...L.classes, b.dataset.cls] : L.classes.filter((x) => x !== b.dataset.cls); drawNow();
+    }));
+    $$('[data-fund]', drawer).forEach((b) => b.addEventListener('change', () => {
+      L.funding = b.checked ? [...L.funding, b.dataset.fund] : L.funding.filter((x) => x !== b.dataset.fund); drawNow();
+    }));
+    form.both_parents.addEventListener('change', () => { L.both_parents = form.both_parents.checked; drawNow(); });
+    $('#ls-q', drawer).addEventListener('input', () => {
+      const q = $('#ls-q', drawer).value.trim().toLowerCase(), found = $('#ls-found', drawer);
+      const hits = q.length < 2 ? [] : state.students.filter((s) => pickable(s) && !L.families.includes(s.id)
+        && `${s.name} ${s.parent_name || ''} ${state.contacts.filter((c) => c.student_id === s.id).map(contactName).join(' ')}`.toLowerCase().includes(q)).slice(0, 12);
+      found.hidden = !hits.length;
+      found.innerHTML = hits.map((s) => `<button class="btn ghost small" type="button" data-addfam="${s.id}">${esc(s.name)}
+          <span class="muted small">${esc([classroomName(s.classroom_id), STUDENT_STATUS[s.status]].filter(Boolean).join(' · '))}</span></button>`).join('');
+      $$('[data-addfam]', found).forEach((b) => b.addEventListener('click', () => {
+        L.families.push(b.dataset.addfam);
+        $('#ls-q', drawer).value = ''; found.hidden = true;
+        ctl.dirty = true; drawFams(); drawNow();
+      }));
+    });
+    $('#ls-xadd', drawer).addEventListener('click', () => {
+      const name = $('#ls-xname', drawer).value.trim(), phone = e164($('#ls-xphone', drawer).value);
+      if (!phone) { $('#ls-xphone', drawer).focus(); return toast('Type a US cell number, e.g. (305) 555-0123', true); }
+      if (L.extra.some((x) => x.phone === phone)) return toast('That number is already on the list', true);
+      L.extra.push({ name, phone });
+      $('#ls-xname', drawer).value = ''; $('#ls-xphone', drawer).value = '';
+      ctl.dirty = true; drawExtra(); drawNow();
+    });
+    $('#ls-save', drawer).addEventListener('click', async () => {
+      const name = form.name.value.trim();
+      if (!name) { form.name.focus(); return toast('Give the list a name', true); }
+      const row = { name, classes: L.classes, funding: L.funding, both_parents: L.both_parents, families: L.families, extra: L.extra };
+      const q = l ? sb.from('message_lists').update({ ...row, updated_at: new Date().toISOString() }).eq('id', l.id)
+        : sb.from('message_lists').insert({ ...row, sort: Math.max(0, ...state.msgLists.map((x) => x.sort)) + 1 });
+      const { data, error } = await q.select().single();
+      if (error) return fail(error, 'Could not save the list');
+      state.msgLists = l ? state.msgLists.map((x) => (x.id === data.id ? data : x)) : [...state.msgLists, data];
+      ctl.dirty = false;
+      closeDrawer();
+      toast(`Saved “${name}”`);
+      renderView();
+    });
+    $('#ls-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Delete the list “${l.name}”? (Nobody is removed from the CRM, and texts already sent stay in Texts sent.)`)) return;
+      const { error } = await sb.from('message_lists').delete().eq('id', l.id);
+      if (error) return fail(error, 'Could not delete the list');
+      state.msgLists = state.msgLists.filter((x) => x.id !== l.id);
+      if (state.msgDraft?.who === `list:${l.id}`) state.msgDraft.who = 'all';
+      ctl.dirty = false;
+      closeDrawer();
+      toast(`Deleted “${l.name}”`);
+      renderView();
+    });
+    drawFams();
+    drawExtra();
+    drawNow();
+    form.name.focus();
   }
 
   async function loadMsgHistory(el) {
@@ -3070,7 +3343,8 @@
     due_date: 'due', invoice_date: 'date', clock_in: 'clock in', clock_out: 'clock out', out_reason: 'left for', pay_rate: 'pay rate', position: 'position',
     lunch_minutes: 'lunch', schedule: 'schedule', active: 'active', first_name: 'first name', last_name: 'last name', relationship: 'relationship',
     role: 'role', cell_phone: 'cell', work_phone: 'work phone', home_phone: 'home phone', sms_phone: 'texts to', email: 'email', paid: 'paid',
-    needs_check: 'to check', finance: 'finances', payroll: 'payroll', capacity: 'capacity', teachers: 'teachers', sort: 'order', full_name: 'name' };
+    needs_check: 'to check', finance: 'finances', payroll: 'payroll', capacity: 'capacity', teachers: 'teachers', sort: 'order', full_name: 'name',
+    group_texts: 'group texts' };
   const MONEY_KEYS = new Set(['amount', 'tuition_amount', 'pay_rate', 'paid', 'balance', 'late_fee_amount']);
   function fmtVal(k, v) {
     if (v == null || v === '') return '—';
@@ -3126,6 +3400,7 @@
       case 'messages': return c.action === 'insert' ? `texted ${d.audience}: “${String(d.body || '').slice(0, 80)}${String(d.body || '').length > 80 ? '…' : ''}”`
         : c.diff?.canceled_at ? `canceled a text to ${d.audience}` : `changed a text to ${d.audience}`;
       case 'message_templates': return `${{ insert: 'saved', update: 'changed', delete: 'deleted' }[c.action]} the message “${d.name}” in My messages`;
+      case 'message_lists': return `${{ insert: 'made', update: 'changed', delete: 'deleted' }[c.action]} the list “${d.name}”`;
       case 'settings': return `changed settings: ${Object.keys(c.diff || {}).map((k) => FIELD_LABEL[k] || k.replace(/_/g, ' ')).join(', ')}`;
       case 'profiles': return c.action === 'update' ? `changed ${d.full_name || d.email}’s access: ${dt}` : `${act} login ${d.email}`;
       default: return `${act} ${c.table_name.replace(/_/g, ' ')}`;

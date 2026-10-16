@@ -21,3 +21,4 @@ psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/history.test.sql 2>&1 | grep -vE "^
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/changes.test.sql 2>&1 | grep -vE "^$"
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/messages.test.sql 2>&1 | grep -vE "^$"
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/templates.test.sql 2>&1 | grep -vE "^$"
+psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/lists.test.sql 2>&1 | grep -vE "^$"

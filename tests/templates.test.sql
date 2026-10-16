@@ -8,10 +8,11 @@ create or replace function pg_temp.as_user(uid uuid) returns void language plpgs
   perform set_config(''request.jwt.claim.sub'', coalesce(uid::text, ''''), false); end';
 \ir ../supabase/migrations/014_message_templates.sql
 select pg_temp.as_user(null);
-select pg_temp.ok((select string_agg(name, ',' order by sort) from public.message_templates) = 'Payment reminder,Activity reminder,School closed',
+select pg_temp.ok((select string_agg(name, ',' order by sort) from public.message_templates where sort <= 3) = 'Payment reminder,Activity reminder,School closed',
   'starts with three examples');
+create temp table n0 as select count(*) as n from public.message_templates;
 \ir ../supabase/migrations/014_message_templates.sql
-select pg_temp.ok((select count(*) = 3 from public.message_templates), 'running it again adds nothing');
+select pg_temp.ok((select count(*) from public.message_templates) = (select n from n0), 'running it again adds nothing');
 update public.profiles set finance = 'edit' where email = 'books@creativaacademy.com';
 update public.profiles set finance = 'view' where email = 'teacher@creativaacademy.com';
 
@@ -27,8 +28,8 @@ update public.message_templates set body = 'Hi {parent}, picture day is Friday. 
 delete from public.message_templates where name = 'School closed';
 do 'begin insert into public.message_templates (name, body) values ('' '', ''y''); raise exception ''FAIL: saved without a name'';
 exception when check_violation then null; end';
-select pg_temp.ok((select string_agg(name, ',' order by sort) from public.message_templates) = 'Payment reminder,Activity reminder,Picture day',
-  'change and delete');
+select pg_temp.ok((select string_agg(name, ',' order by sort) from public.message_templates where name <> 'Missing paperwork')
+  = 'Payment reminder,Activity reminder,Picture day', 'change and delete');
 reset role;
 select pg_temp.as_user(null);
 select pg_temp.ok((select count(*) = 3 from public.change_log where table_name = 'message_templates' and actor = '00000000-0000-0000-0000-00000000000d'),

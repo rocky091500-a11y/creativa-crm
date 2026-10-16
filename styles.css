@@ -54,8 +54,8 @@ label > input, label > select, label > textarea { margin-top: 4px; font-size: 15
 header.top { position: sticky; top: 0; z-index: 10; background: var(--cream); border-bottom: 1px solid var(--line);
   display: flex; align-items: center; gap: 16px; padding: 10px 20px; flex-wrap: wrap; }
 header.top img { height: 34px; width: auto; }
-header.top nav { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
-header.top nav button { border: 0; background: transparent; padding: 6px 12px; border-radius: 999px; cursor: pointer; font-weight: 500; color: var(--ink-soft); }
+header.top nav { display: flex; gap: 2px; flex: 1; flex-wrap: wrap; }
+header.top nav button { border: 0; background: transparent; padding: 6px 10px; border-radius: 999px; cursor: pointer; font-weight: 500; color: var(--ink-soft); }
 header.top nav button[aria-current="page"] { background: var(--cream-deep); color: var(--ink); }
 header.top .me { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 main { padding: 20px; max-width: 1500px; margin: 0 auto; }
@@ -477,3 +477,23 @@ table.roster tr.st-graduated td { color: var(--ink-soft); }
   .chg-list li { flex-wrap: wrap; gap: 2px 10px; }
   .chg-list .chg-time, .chg-list.mini .chg-time { width: auto; }
 }
+
+/* texts to families (013) */
+.msg-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.msg-grid + .panel { margin-top: 20px; }
+.msg-grid > .panel { margin-top: 0; }
+.msg-templates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.msg-help { margin: -4px 0 0; }
+.msg-help #msg-count { display: block; margin-top: 2px; color: var(--ink); }
+.msg-pick { max-height: 240px; overflow-y: auto; display: grid; gap: 4px; margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.msg-preview #msg-list { max-height: 640px; overflow-y: auto; }
+.msg-to { list-style: none; margin: 0; padding: 0; }
+.msg-to li { padding: 10px 0; border-top: 1px solid var(--line); display: grid; gap: 6px; font-size: 14px; }
+.msg-to li:first-child { border-top: 0; padding-top: 0; }
+.msg-to .muted.small { display: block; }
+.msg-bubble { background: #E3E8D6; color: var(--ink); border-radius: 14px 14px 14px 4px; padding: 8px 12px; font-size: 14px; line-height: 1.4;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-width: 420px; }
+.msg-history tbody tr { cursor: pointer; }
+.msg-history tbody tr:hover td { background: var(--cream); }
+.msg-history p.muted { margin: 10px 0 0; }
+@media (max-width: 900px) { .msg-grid { grid-template-columns: 1fr; } }

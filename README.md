@@ -27,6 +27,8 @@ contact form from creativaacademy.com lands here, and staff move each family fro
   nobody has heard from the family (English + Spanish)
 - **Tour texts** — the same reminders by text message through Twilio; families' replies land on their timeline,
   STOP is honored automatically
+- **Messages** (admins and staff who record payments) — texts to enrolled families: everyone, one class, families
+  who owe or are late (their balance filled in), or families you pick; send now or later, see who got it
 
 Plain HTML/CSS/JS, no build step. Data and logins live in Supabase; hosted on Netlify.
 
@@ -53,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql` and `012_change_log.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql` and `013_family_texts.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -245,6 +247,31 @@ period before Oct 5 looks like a CRM period: one row per child with class and fu
 (siblings share one), Step Up pending children, and nothing to bill. The same migration adds the **Graduated** status:
 like Withdrawn, with the last day at school; graduated children are billed only through that day.
 
+## Texts to families (013)
+
+**Messages** (tab; admins, and staff with finance "View & record") texts enrolled families through the same Twilio
+number as the tour texts:
+
+- **Who gets it**: all enrolled families, one class, families who owe money, families with a late balance (past the
+  Friday grace day), or families you tick. Each family gets one text per number (the primary contact's cell, or the
+  second parent's too if ticked; brothers and sisters on one family account share a text).
+- **Wording**: start from *Payment reminder*, *Activity reminder* or *School closed*, or write your own.
+  `{parent}`, `{child}` and `{balance}` are filled in for each family, and the preview shows every text before it
+  goes. Parts in `[brackets]` must be filled in first. “Reply STOP to opt out.” is added unless you untick it.
+- **When**: now, or a date and time. Texts only go out between 8am and 9pm Miami time; one sent later waits until 8am.
+- Numbers that replied STOP are skipped (and a STOP Twilio reports while sending is recorded). **Texts sent** lists
+  every text with who sent it and what happened to each family; one that hasn't gone out can be canceled. Each
+  child's page lists the texts their family got.
+
+`supabase/migrations/013_family_texts.sql` holds the texts (`messages`, `message_recipients`);
+`netlify/functions/family-texts.mjs` sends them through Twilio when **Send** is pressed, and
+`family-texts-hourly.mjs` sends scheduled ones every hour. It needs `SUPABASE_SERVICE_ROLE_KEY`,
+`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_MESSAGING_SERVICE_SID` (or `TWILIO_FROM`), the same variables
+as the tour texts; without them texts wait as *Waiting* and go out once they are set. Carriers only allow texts to
+parents who agreed to them: register the A2P campaign as *Mixed* with a payment reminder and an activity reminder as
+sample messages, and keep the consent line (“I agree to receive text messages from Creativa Academy about my child,
+tuition and school events. Reply STOP to opt out.”) in the enrollment packet.
+
 ## Who changed what (012)
 
 Every change a signed-in person makes to children, contacts, classes, tuition, payments, invoices, the old sheets'
@@ -309,11 +336,12 @@ email. Moving them back to *Tour scheduled* asks for the new date and time.
 # Database rules (intake mapping, spam handling, who can see/change what, calendar feed,
 # roster/finance access, receipts, which tour emails and texts are due, opt-outs, Turnstile, reschedule,
 # Telegram alerts, blocked senders and the per-device limit, billing periods and invoices,
-# late fees, receipt signature, payroll access, PINs, the time clock, overtime, locked pay periods)
+# late fees, receipt signature, payroll access, PINs, the time clock, overtime, locked pay periods,
+# change log, texts to families: who can send, quiet hours, opt-outs, sending once)
 PGHOST=... PGPORT=... PGUSER=postgres tests/run-db-tests.sh
 
-# Tour email and text jobs, incoming texts (fake Supabase, Resend and Twilio)
-node --test tests/tour-emails.test.mjs tests/tour-texts.test.mjs
+# Tour email and text jobs, family texts, incoming texts (fake Supabase, Resend and Twilio)
+node --test tests/tour-emails.test.mjs tests/tour-texts.test.mjs tests/family-texts.test.mjs
 
 # Full browser walkthrough: Postgres + PostgREST + headless Chromium
 POSTGREST=/path/to/postgrest SUPABASE_JS=/path/to/supabase.min.js \

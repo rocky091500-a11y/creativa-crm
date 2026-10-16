@@ -774,6 +774,42 @@ try {
   await page.locator('.drawer [data-close]').first().click();
   ok('Changes: everyone sees who changed what (in their areas), a count of new changes by others, and each child’s history');
 
+  // ── texts to families ──
+  await page.click('header nav button[data-view=messages]');
+  await page.click('[data-tpl=payment]');
+  const alphaTo = page.locator('#msg-list li', { hasText: 'Test Kid Alpha' });
+  await alphaTo.waitFor();
+  const owes = (await alphaTo.textContent()).match(/\+13055550101 · owes (\$[\d,.]+)/)[1];
+  assert.equal(await alphaTo.locator('.msg-bubble').textContent(),
+    `Hi Alpha, this is Creativa Academy. A friendly reminder that Test's tuition balance is ${owes}. You can pay by Zelle, card or cash. Thank you! Reply STOP to opt out.`);
+  assert.equal(await page.locator('#msg-list li', { hasText: 'Test Kid Gamma' }).count(), 0, 'only families who owe');
+  await page.click('[data-tpl=activity]');
+  await page.click('#msg-send');
+  await page.waitForSelector('#toast:has-text("Fill in the parts in [brackets] first")');
+  await page.selectOption('#msg-form select[name=who]', 'pick');
+  await page.fill('#msg-form input[name=q]', 'alpha');
+  await page.locator('#msg-pick-list [data-fam]').check();
+  await page.fill('#msg-form textarea[name=body]', 'Hi {parent}, picture day for {child} is Friday.');
+  assert.equal(await page.locator('#msg-send').textContent(), 'Send 1 text');
+  await shot(page, '28-messages');
+  await page.click('#msg-send');
+  await page.waitForSelector('#toast:has-text("Saved")');
+  const sentRow = page.locator('#msg-hist tr', { hasText: '1 famil' });
+  await sentRow.locator('text=1 waiting').waitFor();
+  assert.match(await sentRow.textContent(), /You[\s\S]*Hi \{parent\}, picture day/);
+  await sentRow.click();
+  assert.equal(await page.locator('.drawer .msg-bubble').textContent(), 'Hi {parent}, picture day for {child} is Friday. Reply STOP to opt out.');
+  await page.locator('.drawer li', { hasText: 'Alpha Parent' }).locator('text=Waiting').waitFor();
+  await page.click('#msg-cancel');
+  await page.waitForSelector('#toast:has-text("Canceled for 1 family")');
+  await sentRow.locator('text=1 canceled').waitFor();
+  await page.click('header nav button[data-view=roster]');
+  await page.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' }).locator('td').first().click();
+  await page.locator('.drawer #st-texts li', { hasText: 'Hi Alpha, picture day for Test is Friday. Reply STOP to opt out.' }).locator('text=Canceled').waitFor();
+  await page.locator('.drawer [data-close]').first().click();
+  assert.equal(await p2.locator('header nav button[data-view=messages]').count(), 0, 'no Messages without finance access');
+  ok('Messages: text families who owe (their balance filled in), a class or families you pick; [blanks] must be filled; cancel before it goes out');
+
   const p3 = await newPage();
   await login(p3, 'teacher@creativaacademy.com', 'teacher-pass-1');
   await p3.click('header nav button[data-view=tuition]');
@@ -781,6 +817,7 @@ try {
   assert.equal(await p3.locator('#t-add').count(), 0);
   assert.equal(await p3.locator('[data-pay-for], [data-pay-inv], [data-bill-one], #t-bill').count(), 0);
   assert.equal(await p3.locator('header nav button[data-view=payroll]').count(), 0, 'no Payroll without payroll access');
+  assert.equal(await p3.locator('header nav button[data-view=messages]').count(), 0, 'no Messages with view-only finance');
   ok('view-only finance: sees Tuition, cannot record payments; no Payroll');
 
   // ── phone ──

@@ -1612,6 +1612,7 @@
   function renderTuition(el) {
     if (!state.hasV6) return renderTuitionMonthly(el);
     const p = state.period || (state.period = periodOf(todayStr()));
+    if (p < billing().anchor) return renderTuitionBefore(el, p);
     const f = state.tuitionFilters, edit = canEditFinance();
     const rows = billRows(p);
     const billed = round2(rows.reduce((t, r) => t + (r.inv ? Number(r.inv.amount) : 0), 0));
@@ -1780,6 +1781,53 @@
         openStudent(tr.dataset.id);
       }));
     }
+  }
+
+  // A billing period before the CRM's first billing Monday was billed in the old billing system: show what its
+  // Balance Summary sheet said (010), and nothing to bill or pay here.
+  function renderTuitionBefore(el, p) {
+    const rows = state.history.filter((h) => h.period_start === p).sort((a, b) => (a.family_account || a.customer).localeCompare(b.family_account || b.customer));
+    const earliest = state.history.reduce((m, h) => (h.period_start && h.period_start < m ? h.period_start : m), p);
+    const total = round2(rows.reduce((t, h) => t + Number(h.balance), 0));
+    const credits = round2(rows.filter((h) => Number(h.balance) < 0).reduce((t, h) => t - Number(h.balance), 0));
+    const kidsOf = (h) => state.students.filter((s) => histKey(s.family_account) === histKey(h.family_account || h.customer));
+    el.innerHTML = `<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period" ${p <= earliest ? 'disabled' : ''}>‹</button>
+        <b>${esc(fmtPeriod(p))}, ${p.slice(0, 4)}</b>
+        <button class="btn small" id="p-next" type="button" aria-label="Next billing period">›</button>
+        <button class="btn small ghost" id="p-now" type="button">This period</button>
+        <span class="muted small">Before the CRM: billed in the billing system.</span></div>
+      <section class="panel before-crm"><h2>Tuition ${esc(fmtPeriod(p))} · billing system sheet</h2>
+        ${rows.length ? `<p class="muted small">What each family owed on the Balance Summary printed ${esc(longDate(rows[0].as_of))} for this period
+          (a minus is a credit). These bills and payments are in the billing system, not the CRM, so there is nothing to bill or record here.</p>
+        <div class="stats">
+          <div class="stat"><b>${money(total)}</b><span>Total balances on the sheet</span></div>
+          <div class="stat"><b>${rows.filter((h) => Number(h.balance) > 0).length}</b><span>Families owing</span></div>
+          <div class="stat"><b>${money(credits)}</b><span>Credits</span></div>
+          <div class="stat"><b>${rows.length}</b><span>Families on the sheet</span></div>
+        </div>
+        <div class="toolbar"><input type="search" id="tb-q" placeholder="Search family or child…"></div>
+        <div class="table-wrap flat"><table><thead><tr><th>Family</th><th>Children</th><th class="num">Balance on the sheet</th><th>Note</th></tr></thead>
+          <tbody id="tb-rows"></tbody></table></div>`
+          : `<p class="muted">There’s no billing system sheet for this period in the CRM.</p>`}</section>`;
+    const go = (np) => { state.period = np; renderTuition(el); };
+    $('#p-prev', el).addEventListener('click', () => go(addDays(p, -billing().days)));
+    $('#p-next', el).addEventListener('click', () => go(addDays(p, billing().days)));
+    $('#p-now', el).addEventListener('click', () => go(periodOf(todayStr())));
+    const draw = () => {
+      const q = $('#tb-q', el)?.value.trim().toLowerCase() || '';
+      const shown = rows.filter((h) => !q || `${h.customer} ${kidsOf(h).map((s) => s.name).join(' ')}`.toLowerCase().includes(q));
+      const body = $('#tb-rows', el);
+      if (!body) return;
+      body.innerHTML = shown.map((h) => {
+        const kids = kidsOf(h);
+        return `<tr ${kids.length ? `data-sid="${kids[0].id}"` : ''}><td><b>${esc(h.customer)}</b></td>
+          <td>${kids.length ? esc(kids.map((s) => s.name).join(', ')) : '<span class="muted small">not in the CRM</span>'}</td>
+          <td class="num${Number(h.balance) < 0 ? ' ok-text' : ''}">${money(h.balance)}</td><td class="small">${esc(h.note || '')}</td></tr>`;
+      }).join('') || '<tr><td colspan="4" class="muted">Nobody matches.</td></tr>';
+      $$('#tb-rows tr[data-sid]', el).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.sid)));
+    };
+    $('#tb-q', el)?.addEventListener('input', draw);
+    draw();
   }
 
   // ───────────── Reports ─────────────

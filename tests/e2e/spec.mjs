@@ -351,8 +351,18 @@ try {
   await page.click('#p-next');
   await tRow('Test Kid Alpha').locator('.pay-pill', { hasText: 'Not billed yet' }).waitFor();
   await page.click('#p-now');
+  // Periods before the CRM's first billing Monday (Oct 5) show the billing system's sheet, with nothing to bill.
+  for (let i = 0; i < 40 && !(await page.locator('.month-bar b', { hasText: 'Aug 10 – Aug 21' }).count()); i++) await page.click('#p-prev');
+  await page.locator('.before-crm', { hasText: 'billing system sheet' }).waitFor();
+  assert.equal(await page.locator('#t-bill, [data-bill-one], #t-add, #t-late').count(), 0, 'nothing to bill before the CRM');
+  assert.match(await page.locator('#tb-rows tr', { hasText: 'ALPHA, TEST' }).textContent(), /Test Kid Alpha[\s\S]*\$560\.00/);
+  assert.ok(await page.locator('#p-prev').isDisabled(), 'no earlier sheets');
+  await page.click('#p-next');
+  await page.locator('#tb-rows tr', { hasText: 'ALPHA, TEST' }).locator('td', { hasText: '-$40.00' }).waitFor();   // Aug 24 – Sep 4
+  await page.click('#p-now');
+  await tRow('Test Kid Alpha').waitFor();
   await shot(page, '12-tuition');
-  ok('credits: keep a payment as a credit, apply it to an invoice; owed list; FES-UA receipts; next period');
+  ok('credits: keep a payment as a credit, apply it to an invoice; owed list; FES-UA receipts; next period; Aug–Sep periods show the old sheets');
 
   // ── late fee: tuition still unpaid after the Friday grace day ──
   {

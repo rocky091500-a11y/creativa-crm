@@ -366,13 +366,18 @@ try {
   // Periods before the CRM's first billing Monday (Oct 5) show the billing system's sheet, with nothing to bill.
   for (let i = 0; i < 40 && !(await page.locator('.month-bar b', { hasText: 'Aug 10 – Aug 21' }).count()); i++) await page.click('#p-prev');
   await page.locator('.month-bar', { hasText: 'billed and paid in the billing system' }).waitFor();
-  assert.equal(await page.locator('#t-bill, [data-bill-one], #t-add, #t-late').count(), 0, 'nothing to bill before the CRM');
-  assert.match(await tRow('Test Kid Alpha').textContent(), /FES-UA[\s\S]*\$560\.00[\s\S]*Paid \(billing system\)/, 'one row per child, with funding');
+  assert.equal(await page.locator('#t-bill, [data-bill-one], [data-pay-inv], [data-pay-for], #t-late, #t-fes').count(), 0, 'nothing to bill or collect before the CRM');
+  assert.deepEqual(await page.locator('table.tuition thead th').allTextContents(), ['Student', 'Funding', 'Rate', 'Billed', 'Paid', 'Balance', 'Status', ''],
+    'same columns as a CRM period');
+  assert.match(await tRow('Test Kid Alpha').textContent(), /FES-UA[\s\S]*\$560\.00[\s\S]*\$560\.00[\s\S]*\$560\.00[\s\S]*Paid/, 'rate, billed, paid, Paid');
   assert.match(await tRow('Test Kid Beta').textContent(), /Not on the sheet/);
-  assert.match(await page.locator('#t-rows tr', { hasText: 'GONE, KID' }).textContent(), /not in the CRM[\s\S]*\$100\.00/);
+  assert.equal(await page.locator('.stat', { hasText: 'Billed this period' }).locator('b').textContent(), '$560.00');
+  assert.equal(await page.locator('.stat', { hasText: 'Still owed this period' }).locator('b').textContent(), '$0.00');
+  assert.match(await page.locator('#t-gone tr', { hasText: 'GONE, KID' }).textContent(), /\$100\.00[\s\S]*Paid/);
   assert.ok(await page.locator('#p-prev').isDisabled(), 'no earlier sheets');
+  await shot(page, '12b-tuition-aug-10');
   await page.click('#p-next');   // Aug 24 – Sep 4: a credit on the sheet, paid amount still to check
-  assert.match(await tRow('Test Kid Alpha').textContent(), /\$520\.00[\s\S]*-\$40\.00[\s\S]*Check amount/);
+  assert.match(await tRow('Test Kid Alpha').textContent(), /\$520\.00[\s\S]*Check amount[\s\S]*sheet -\$40\.00/);
   await page.click('#p-now');
   await tRow('Test Kid Alpha').waitFor();
   await shot(page, '12-tuition');

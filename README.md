@@ -255,13 +255,14 @@ number as the tour texts:
 - **Who gets it**: one of **My lists**, all enrolled families, one class, families who owe money, families with a late
   balance (past the Friday grace day), families missing paperwork, the waiting list, families you tick, or someone
   else by typing a number (also **Text this family** on a child's page). Each family gets one text per number;
-  brothers and sisters on one family account share a text.
+  brothers and sisters (the same family account, or a parent with the same cell number) are one family and
+  share a text that names them all. **Copy from a brother or sister** on a child's page copies the parents over.
 - **My lists** (`015_message_lists.sql`), like TextMagic's lists but kept up to date by the CRM: a list is children in
   some classes (none ticked = every class) with some funding (none = any), plus families added by hand and other
   people (a name and a cell number, e.g. yourself for a copy). A child who changes class or funding moves lists by
   themselves. It starts with FES Moms (FES-UA/EO), Kinder Moms (Kindergarten), Moms 1st Floor (18–23 months, Early 2s,
-  Late 2s), Moms 2nd Floor (Early 3s, Late 3s), VPK Moms (VPK), School Readiness, Step Up (pending) and Private pay
-  families; change, add or delete any.
+  Late 2s), Moms 2nd Floor (Early 3s, Late 3s), VPK Moms (VPK), School Readiness and Private pay families
+  (Step Up pending is all Kindergarten, so Kinder Moms covers it); change, add or delete any.
 - **Who in a family gets group texts** (lists, classes, everyone, reminders): each contact's **Gets group texts** box on
   the child's page; by default the Primary contact yes, others no. A list can also text the second parent. Texts to
   families picked by hand go to the Primary contact.

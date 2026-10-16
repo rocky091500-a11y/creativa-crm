@@ -4,7 +4,7 @@
 --   message_lists        a name and who is on it: children in some classes (none = every class) with some funding
 --                        (none = any), plus families added by hand and other people (a name and a cell number).
 --                        A child who changes class or funding moves lists by themselves. Starts with the school's
---                        lists (FES, Kinder, 1st floor, 2nd floor, VPK) and a few more; edit or delete any of them.
+--                        lists (FES, Kinder, 1st floor, 2nd floor, VPK), School Readiness and Private pay; edit or delete any of them.
 --   student_contacts.group_texts   whether this contact gets texts sent to lists, classes or all families.
 --                        Empty = the usual: the Primary contact yes, everyone else no.
 --   Also adds a "Missing paperwork" saved message (014) that uses the {missing} block.
@@ -51,8 +51,7 @@ with c as (
   ('Moms 2nd Floor',              '{early3s,late3s}',              '{}',                      4),
   ('VPK Moms',                    '{vpk}',                         '{}',                      5),
   ('School Readiness families',   '{}',                            '{sr,sr_bpiece}',          6),
-  ('Step Up (pending) families',  '{}',                            '{stepup_pending}',        7),
-  ('Private pay families',        '{}',                            '{private}',               8)
+  ('Private pay families',        '{}',                            '{private}',               7)
 )
 insert into public.message_lists (name, classes, funding, sort, created_by)
 select x.name, coalesce((select array_agg(c.id) from c where c.k = any (x.ks)), '{}'), x.funding, x.sort, null

@@ -1064,7 +1064,10 @@
             ${c.email ? `<div class="c-phones"><a href="mailto:${esc(c.email)}">${esc(c.email)}</a></div>` : ''}
             ${c.notes ? `<div class="muted small">${esc(c.notes)}</div>` : ''}</li>`;
         }).join('') || '<li class="muted small">No contacts yet.</li>'}</ul>
-          <button class="btn small" type="button" id="contact-add">+ Add contact</button>` : ''}</div>
+          <button class="btn small" type="button" id="contact-add">+ Add contact</button>
+          <button class="btn ghost small" type="button" id="contact-copy">Copy from a brother or sister</button>
+          <div id="contact-copy-box" hidden><input type="search" id="cc-q" placeholder="Brother’s or sister’s name…" autocomplete="off">
+            <div class="msg-pick" id="cc-found" hidden></div></div>` : ''}</div>
         <div class="section"><h3>Support & registration</h3><div class="grid2">
           ${fSelect('rbt', 'RBT', [['', 'No'], ['yes', 'Yes'], ['in_process', 'In process']], s.rbt)}
           ${fInput('therapy', 'Therapies', s.therapy, 'text', 'placeholder="Speech, OT…"')}
@@ -1174,6 +1177,32 @@
       if (!ctl.dirty || confirm('Discard your changes?')) openPayment({ studentId: id, invoiceId: b.dataset.payInv, back });
     }));
     $('#contact-add', drawer)?.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openContact({ studentId: id, back }); });
+    // Brothers and sisters: copy the parents from a sibling's page (their Primary and Secondary contacts) onto this one.
+    $('#contact-copy', drawer)?.addEventListener('click', () => {
+      $('#contact-copy-box', drawer).hidden = false;
+      $('#cc-q', drawer).focus();
+    });
+    $('#cc-q', drawer)?.addEventListener('input', () => {
+      const q = $('#cc-q', drawer).value.trim().toLowerCase(), found = $('#cc-found', drawer);
+      const hits = q.length < 2 ? [] : state.students.filter((x) => x.id !== id && x.name.toLowerCase().includes(q)
+        && state.contacts.some((c) => c.student_id === x.id && c.role !== 'emergency')).slice(0, 8);
+      found.hidden = !hits.length;
+      found.innerHTML = hits.map((x) => `<button class="btn ghost small" type="button" data-cc="${x.id}">${esc(x.name)}
+        <span class="muted small">${esc(state.contacts.filter((c) => c.student_id === x.id && c.role !== 'emergency').map(contactName).join(', '))}</span></button>`).join('');
+      $$('[data-cc]', found).forEach((b) => b.addEventListener('click', async () => {
+        const have = new Set(contacts.map((c) => digits(c.sms_phone || c.cell_phone)).filter(Boolean));
+        const copy = state.contacts.filter((c) => c.student_id === b.dataset.cc && c.role !== 'emergency' && !have.has(digits(c.sms_phone || c.cell_phone)))
+          .map(({ id: _, created_at: __, student_id: ___, ...c }) => ({ ...c, student_id: id }));
+        if (!copy.length) return toast('Those parents are already on this page', true);
+        if (ctl.dirty && !confirm('Discard your changes?')) return;
+        const { data, error } = await sb.from('student_contacts').insert(copy).select();
+        if (error) return fail(error, 'Could not copy the contacts');
+        state.contacts = [...state.contacts, ...data];
+        toast(`Copied ${data.map(contactName).join(' and ')}`);
+        ctl.dirty = false;
+        openStudent(id);
+      }));
+    });
     $$('[data-contact]', drawer).forEach((b) => b.addEventListener('click', () => {
       if (!ctl.dirty || confirm('Discard your changes?')) openContact({ contactId: b.dataset.contact, back });
     }));
@@ -2766,14 +2795,28 @@
   const andList = (xs) => (xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}` : xs[0] || '');
   const anyKid = (s) => s.status === 'enrolled' || openInvoices(s.id).length > 0;          // enrolled, or still owes
   const pickable = (s) => !LEFT.has(s.status) || openInvoices(s.id).length > 0;             // ... or on the waiting list
-  function msgFamilies(keep = anyKid) {   // the children kept, grouped by family
+  // The children kept, grouped by family: brothers and sisters are one family when they share a family account or a
+  // parent (the same Primary or Secondary contact's cell number), so they get one text that names them all.
+  function msgFamilies(keep = anyKid) {
+    const kids = state.students.filter(keep), up = new Map();
+    const root = (k) => { while (up.get(k) !== k) k = up.get(k); return k; };
+    const join = (a, b) => { const [x, y] = [root(a), root(b)].sort(); if (x !== y) up.set(y, x); };
+    kids.forEach((s) => up.set(familyKey(s), familyKey(s)));
+    const byId = new Map(kids.map((s) => [s.id, s])), byPhone = new Map();
+    state.contacts.forEach((c) => {
+      const s = c.role !== 'emergency' && byId.get(c.student_id);
+      const ph = s && e164(c.sms_phone || c.cell_phone);
+      if (!ph) return;
+      if (byPhone.has(ph)) join(byPhone.get(ph), familyKey(s)); else byPhone.set(ph, familyKey(s));
+    });
     const groups = new Map();
-    state.students.filter(keep).forEach((s) => {
-      const k = familyKey(s);
-      if (!groups.has(k)) groups.set(k, { key: k, kids: [] });
+    kids.forEach((s) => {
+      const k = root(familyKey(s));
+      if (!groups.has(k)) groups.set(k, { key: k, keys: new Set(), kids: [] });
+      groups.get(k).keys.add(familyKey(s));
       groups.get(k).kids.push(s);
     });
-    return [...groups.values()].map((g) => ({ ...g, name: familyName(g.kids), owes: familyOwes(g.kids), late: familyLate(g.kids) }))
+    return [...groups.values()].map((g) => ({ ...g, keys: [...g.keys], name: familyName(g.kids), owes: familyOwes(g.kids), late: familyLate(g.kids) }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
   // A list (015): children in its classes (none = every class) with its funding (none = any; "private" = no program).
@@ -2825,7 +2868,7 @@
       case 'late': return { fams: msgFamilies(anyKid).filter((g) => g.late > 0), group: true };
       case 'docs': return { fams: msgFamilies((s) => en(s) && missingDocs(s).length > 0), group: true };
       case 'waitlist': return { fams: msgFamilies((s) => s.status === 'waitlist'), group: true };
-      case 'pick': return { fams: msgFamilies(pickable).filter((g) => d.picked.includes(g.key)), group: false };
+      case 'pick': return { fams: msgFamilies(pickable).filter((g) => g.keys.some((k) => d.picked.includes(k))), group: false };
       case 'one': return { fams: [], extra: d.onePhone.trim() ? [{ name: d.oneName.trim(), phone: d.onePhone.trim() }] : [], group: false };
       default: return { fams: [], group: true };
     }
@@ -3011,10 +3054,11 @@
       if (d.who === 'pick') {
         const q = d.q.trim().toLowerCase();
         $('#msg-pick-list', el).innerHTML = msgFamilies(pickable).filter((g) => !q || `${g.name} ${g.kids.map((s) => s.name).join(' ')}`.toLowerCase().includes(q))
-          .map((g) => `<label class="pill-check"><input type="checkbox" class="check" data-fam="${esc(g.key)}" ${d.picked.includes(g.key) ? 'checked' : ''}>
+          .map((g) => `<label class="pill-check"><input type="checkbox" class="check" data-fam="${esc(g.keys.join('|'))}" ${g.keys.some((k) => d.picked.includes(k)) ? 'checked' : ''}>
             ${esc(g.name)} <span class="muted small">${esc(g.kids.map((s) => s.name.split(' ')[0]).join(', '))}</span></label>`).join('');
         $$('#msg-pick-list [data-fam]', el).forEach((b) => b.addEventListener('change', () => {
-          d.picked = b.checked ? [...new Set([...d.picked, b.dataset.fam])] : d.picked.filter((k) => k !== b.dataset.fam);
+          const keys = b.dataset.fam.split('|');
+          d.picked = b.checked ? [...new Set([...d.picked, ...keys])] : d.picked.filter((k) => !keys.includes(k));
           draw();
         }));
       }

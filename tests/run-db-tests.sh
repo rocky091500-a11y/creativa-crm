@@ -18,3 +18,4 @@ psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/reschedule_telegram_spam.test.sql 2
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/billing.test.sql 2>&1 | grep -vE "^$"
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/payroll.test.sql 2>&1 | grep -vE "^$"
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/history.test.sql 2>&1 | grep -vE "^$"
+psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/changes.test.sql 2>&1 | grep -vE "^$"

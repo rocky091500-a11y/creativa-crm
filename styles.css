@@ -454,3 +454,26 @@ table.roster tr.st-graduated td { color: var(--ink-soft); }
 .hc-fam .btn { justify-self: start; }
 .pay-pill.ps-check { background: #F6E7C8; color: var(--warn); }
 .pay-pill.ps-missing { color: var(--ink-soft); }
+
+/* who changed what (012) */
+.nav-badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--danger); color: var(--white);
+  font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; margin-left: 2px; }
+.changes-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; border-left: 4px solid var(--sage); }
+.changes-note .btn { margin-left: auto; }
+.changes-help { margin-bottom: 16px; }
+.changes-help p { margin: 0; }
+.chg-day + .chg-day { margin-top: 16px; }
+.chg-list { list-style: none; margin: 0; padding: 0; }
+.chg-list li { display: flex; gap: 12px; align-items: baseline; padding: 8px 6px; border-top: 1px solid var(--line); font-size: 14px; border-radius: 6px; }
+.chg-list li:first-child { border-top: 0; }
+.chg-list li.new { background: #EEF1E6; }
+.chg-list .chg-time { flex: none; width: 70px; color: var(--ink-soft); font-size: 13px; font-variant-numeric: tabular-nums; }
+.chg-list .chg-what { flex: 1; }
+.chg-list .chg-what .tag { margin-left: 6px; }
+.chg-list .btn { flex: none; padding: 2px 10px; font-size: 12px; }
+.chg-list.mini li { padding: 6px 0; font-size: 13px; }
+.chg-list.mini .chg-time { width: 120px; }
+@media (max-width: 720px) {
+  .chg-list li { flex-wrap: wrap; gap: 2px 10px; }
+  .chg-list .chg-time, .chg-list.mini .chg-time { width: auto; }
+}

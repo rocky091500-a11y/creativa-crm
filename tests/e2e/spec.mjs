@@ -366,7 +366,12 @@ try {
   // Periods before the CRM's first billing Monday (Oct 5) show the billing system's sheet, with nothing to bill.
   for (let i = 0; i < 40 && !(await page.locator('.month-bar b', { hasText: 'Aug 10 – Aug 21' }).count()); i++) await page.click('#p-prev');
   await page.locator('.month-bar', { hasText: 'billed and paid in the billing system' }).waitFor();
-  assert.equal(await page.locator('#t-bill, [data-bill-one], [data-pay-inv], [data-pay-for], #t-late, #t-fes').count(), 0, 'nothing to bill or collect before the CRM');
+  assert.equal(await page.locator('#t-bill, [data-bill-one], [data-pay-inv], [data-pay-for], #t-late').count(), 0, 'nothing to bill or collect before the CRM');
+  await page.click('#t-fes');   // FES-UA receipts for an old period: what the family paid through the billing system
+  await page.locator('.print-sheet .receipt').first().waitFor();
+  assert.equal(await page.locator('.print-sheet .receipt').count(), 1);
+  assert.match(await page.locator('.print-sheet .receipt').textContent(), /Paid through the billing system[\s\S]*Test Kid Alpha[\s\S]*Tuition — Aug 10 – August 21, 2026[\s\S]*Billing system[\s\S]*\$560\.00[\s\S]*FES-UA/);
+  await page.locator('#rc-close').click();
   assert.deepEqual(await page.locator('table.tuition thead th').allTextContents(), ['Student', 'Funding', 'Rate', 'Billed', 'Paid', 'Balance', 'Status', ''],
     'same columns as a CRM period');
   assert.match(await tRow('Test Kid Alpha').textContent(), /FES-UA[\s\S]*\$560\.00[\s\S]*\$560\.00[\s\S]*\$560\.00[\s\S]*Paid/, 'rate, billed, paid, Paid');
@@ -745,6 +750,29 @@ try {
   assert.equal(await p2.locator('.drawer input[name=award_id]').count(), 0);
   assert.equal(await p2.locator('#roster-rows').locator('.tag', { hasText: 'FES-UA' }).count(), 0);
   ok('staff without finance access: roster and documents yes, no tuition, payments or award IDs');
+
+  // ── who changed what ──
+  await p2.locator('.drawer [data-close]').first().click();
+  await p2.locator('header nav button[data-view=changes] .nav-badge').waitFor();
+  await p2.click('header nav button[data-view=changes]');
+  await p2.locator('.chg-list li', { hasText: 'Emily Owner added Walk-in Kid to Late 2s' }).waitFor();
+  assert.equal(await p2.locator('.chg-list li', { hasText: 'recorded a' }).count(), 0, 'no tuition changes without finance access');
+  assert.equal(await p2.locator('header nav button[data-view=changes] .nav-badge').count(), 0, 'opening Changes clears the count');
+  await p2.click('header nav button[data-view=roster]');
+  await p2.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' }).locator('input[data-doc=doc_yellow_form]').check();
+  await p2.waitForSelector('#toast:has-text("Yellow form received")');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.click('header nav button[data-view=today]');
+  await page.locator('.changes-note', { hasText: 'by New Hire' }).waitFor();
+  await page.click('#see-changes');
+  const mine = page.locator('.chg-list li.new', { hasText: 'New Hire changed Test Kid Alpha: yellow form' });
+  await mine.waitFor();
+  assert.ok(await page.locator('.chg-list li', { hasText: /^[\s\S]*You recorded a \$300\.00 Zelle payment for Test Kid Alpha/ }).count(), 'your own changes say You');
+  await shot(page, '27-changes');
+  await mine.locator('[data-cg-kid]').click();
+  await page.locator('.drawer #st-changes li', { hasText: 'New Hire' }).waitFor();
+  await page.locator('.drawer [data-close]').first().click();
+  ok('Changes: everyone sees who changed what (in their areas), a count of new changes by others, and each child’s history');
 
   const p3 = await newPage();
   await login(p3, 'teacher@creativaacademy.com', 'teacher-pass-1');

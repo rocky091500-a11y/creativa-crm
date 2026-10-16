@@ -853,7 +853,7 @@ try {
   const listRow = (name) => page.locator('.msg-lists-ul li', { hasText: name });
   await listRow('Moms 2nd Floor').waitFor();
   assert.deepEqual(await page.locator('.msg-lists-ul .ml-name b').allTextContents(), ['FES Moms', 'Kinder Moms', 'Moms 1st Floor', 'Moms 2nd Floor',
-    'VPK Moms', 'School Readiness families', 'Step Up (pending) families', 'Private pay families']);
+    'VPK Moms', 'School Readiness families', 'Private pay families']);
   assert.match(await listRow('Moms 2nd Floor').textContent(), /Early 3s, Late 3s[\s\S]*1 family · 1 text\b/);
   assert.match(await listRow('FES Moms').textContent(), /Every class · FES-UA, FES-EO[\s\S]*1 family · 1 text\b/);
   await listRow('Moms 2nd Floor').locator('[data-list-text]').click();
@@ -905,7 +905,20 @@ try {
   await page.selectOption('#msg-form select[name=who]', { label: 'FES Moms' });
   await page.locator('#msg-list li', { hasText: 'Beto Alpha' }).waitFor();
   assert.equal(await page.locator('#msg-list li', { hasText: '+13055550101' }).count(), 0, 'group texts skip a contact set not to get them');
-  ok('Group texts go to the contacts set to get them (the Primary contact unless changed); “Text this family” from a child’s page');
+  await page.click('header nav button[data-view=roster]');
+  await page.selectOption('#r-status', 'waitlist');
+  await page.locator('#roster-rows tr', { hasText: 'Test Kid Gamma' }).locator('td').first().click();
+  await drawer.locator('#contact-copy').click();
+  await drawer.locator('#cc-q').fill('alpha');
+  await drawer.locator('#cc-found [data-cc]').click();
+  await page.waitForSelector('#toast:has-text("Copied Alpha Parent and Beto Alpha")');
+  await drawer.locator('.contact-list li', { hasText: 'Beto Alpha' }).locator('.tag', { hasText: 'gets group texts' }).waitFor();
+  await drawer.locator('#st-text').click();
+  await page.locator('#msg-list li', { hasText: 'Test Kid Alpha, Test Kid Gamma' }).waitFor();   // brothers and sisters: one family, one text
+  await page.click('header nav button[data-view=roster]');
+  await page.selectOption('#r-status', 'enrolled');
+  await page.click('header nav button[data-view=messages]');
+  ok('Group texts go to the contacts set to get them (the Primary contact unless changed); “Text this family”; brothers and sisters share parents and a text');
 
   // missing paperwork, someone else, and a new website request while the CRM is open
   await page.click('#msg-tpls [data-tpl-new]');

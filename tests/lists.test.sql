@@ -10,13 +10,13 @@ create or replace function pg_temp.as_user(uid uuid) returns void language plpgs
 select pg_temp.as_user(null);
 create temp view lc as select l.name, l.funding, (select string_agg(c.name, ',' order by c.sort) from public.classrooms c where c.id = any (l.classes)) as cls
   from public.message_lists l order by l.sort;
-select pg_temp.ok((select count(*) = 8 from public.message_lists), 'starts with eight lists');
+select pg_temp.ok((select count(*) = 7 from public.message_lists), 'starts with seven lists');
 select pg_temp.ok((select cls = '18–23 months,Early 2s,Late 2s' from lc where name = 'Moms 1st Floor'), '1st floor: 18–23 months, Early 2s, Late 2s');
 select pg_temp.ok((select cls = 'Early 3s,Late 3s' from lc where name = 'Moms 2nd Floor'), '2nd floor: Early 3s, Late 3s');
 select pg_temp.ok((select cls = 'Kindergarten' from lc where name = 'Kinder Moms') and (select cls = 'VPK' from lc where name = 'VPK Moms'), 'Kinder, VPK');
 select pg_temp.ok((select cls is null and funding = '{fes_ua,fes_eo}' from lc where name = 'FES Moms'), 'FES Moms: by funding, any class');
 \ir ../supabase/migrations/015_message_lists.sql
-select pg_temp.ok((select count(*) = 8 from public.message_lists), 'running it again adds nothing');
+select pg_temp.ok((select count(*) = 7 from public.message_lists), 'running it again adds nothing');
 select pg_temp.ok((select count(*) = 1 from public.message_templates where name = 'Missing paperwork' and body like '%{missing}%'), 'a Missing paperwork message');
 select pg_temp.ok((select count(*) = 1 from information_schema.columns where table_name = 'student_contacts' and column_name = 'group_texts'), 'contacts: group texts');
 

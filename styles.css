@@ -592,3 +592,21 @@ h3.h-row .btn { font-family: var(--body); font-size: 12px; padding: 2px 10px; }
 .ccfp-table tfoot th { background: #F3F0E6; }
 @media (max-width: 900px) { .money-grid { grid-template-columns: 1fr; } .grid3 { grid-template-columns: 1fr 1fr; } }
 @media print { .ccfp-sheet { max-width: none; } }
+
+/* projection (019) */
+table.proj th:first-child { text-align: left; min-width: 220px; font-weight: 500; text-transform: none; letter-spacing: 0; font-size: 14px; }
+table.proj thead th:first-child { min-width: 220px; }
+table.proj td { font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.proj tr.proj-group th { background: var(--cream); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); padding-top: 10px; }
+table.proj tr.proj-total th, table.proj tr.proj-total td { font-weight: 700; }
+table.proj tr.proj-possible th, table.proj tr.proj-possible td { color: var(--sage-deep); }
+#proj-coming tr { cursor: pointer; }
+#proj-coming tr:hover td { background: var(--cream); }
+#proj-coming tr.proj-leave td { color: var(--ink-soft); }
+#proj-coming tr.proj-maybe td:nth-child(2) { color: var(--sage-deep); }
+.tag.start, .tag.paid { background: #E3E8D6; color: var(--sage-deep); }
+.card .tag.start { white-space: normal; }
+.col-note { font-size: 12px; color: var(--ink-soft); margin: -6px 4px 8px; }
+.inline-pair { display: flex; gap: 6px; }
+.inline-pair input { flex: 1 1 90px; min-width: 0; }
+.inline-pair select { flex: 1 1 120px; width: auto; }

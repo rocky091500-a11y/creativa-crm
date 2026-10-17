@@ -399,11 +399,13 @@ try {
       assert.match(await feeRow.textContent(), /Test Kid Alpha[\s\S]*\$30\.00/);
       await tRow('Test Kid Alpha').locator('text=+ $30.00 late fee').waitFor();
       assert.equal(await page.locator('#t-late').count(), 0, 'no second late fee');
-      await feeRow.locator('[data-waive]').click();
-      await page.waitForSelector('#toast:has-text("Late fee waived")');
+      assert.equal(await feeRow.locator('[data-waive]').textContent(), 'Take off');
+      await tRow('Test Kid Alpha').locator('[data-rm-fee]').click();   // added by mistake: take it off (confirm() accepted)
+      await page.waitForSelector('#toast:has-text("Late fee taken off")');
       assert.equal(await page.locator('#t-open tr', { hasText: 'Late fee' }).count(), 0);
-      assert.equal(await page.locator('#t-late').count(), 0, 'a waived fee stays waived');
-      ok('late fee: $30 on tuition unpaid after Friday, shown on the child, waived in one tap');
+      assert.equal(await tRow('Test Kid Alpha').locator('text=late fee').count(), 0);
+      assert.equal(await page.locator('#t-late').count(), 0, 'a fee taken off stays off');
+      ok('late fee: $30 on tuition unpaid after Friday, shown on the child, taken off in one tap');
     } else {
       assert.equal(await page.locator('#t-late').count(), 0, 'no late fees before Friday has passed');
       ok('late fee: none offered while the period is in its grace days');
@@ -440,18 +442,24 @@ try {
   await page.click('header nav button[data-view=list]');
   await page.locator('#rows tr', { hasText: 'Maria Lopez' }).click();
   assert.ok(await drawer.locator('input[name=auto_emails]').isChecked());
+  const nextMonth1 = (() => { const [y, mo] = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }).split('-').map(Number);
+    return mo === 12 ? `${y + 1}-01-01` : `${y}-${String(mo + 1).padStart(2, '0')}-01`; })();
+  await drawer.locator('input[name=start_on]').fill(nextMonth1);
+  await drawer.locator('input[name=expected_tuition]').fill('600');
   await drawer.locator('select[name=stage]').selectOption('enrolled');
   await drawer.locator('#save').click();
   await drawer.locator('#to-roster').click();
   await drawer.locator('#st-save').waitFor();
   assert.equal(await drawer.locator('input[name=name]').inputValue(), 'Sofia Lopez');
   assert.equal(await drawer.locator('select[name=classroom_id] option:checked').textContent(), 'Early 2s');
+  assert.equal(await drawer.locator('input[name=start_date]').inputValue(), nextMonth1, 'the start day carries over');
+  assert.equal(await drawer.locator('input[name=tuition_amount]').inputValue(), '600', 'and the tuition');
   await drawer.locator('#st-save').click();
   await page.waitForSelector('#toast:has-text("Sofia Lopez added")');
   await drawer.locator('#open-inq').click();
   await drawer.locator('#open-student', { hasText: 'Sofia Lopez' }).waitFor();
   await drawer.locator('[data-close]').first().click();
-  ok('an Enrolled inquiry becomes a student in one tap, linked both ways');
+  ok('an Enrolled inquiry becomes a student in one tap, linked both ways, with its start day and tuition');
 
   // ── settings ──
   await page.click('header nav button[data-view=staff]');
@@ -876,6 +884,70 @@ try {
   await page.locator('#mo-year tr.on').waitFor();
   await shot(page, '35-money');
   ok('Food program: a claim (total, costs from the receipts), pending → coming in, paid → money in; the monthly record prints with its columns');
+
+  // ── projection (019) ──
+  await page.click('header nav button[data-view=board]');
+  await page.click('#add');
+  await drawer.locator('input[name=parent_name]').fill('Delta Parent');
+  await drawer.locator('input[name=phone]').fill('305 555 0177');
+  await drawer.locator('input[name=child_name]').fill('Test Kid Delta');
+  await drawer.locator('input[name=program]').fill('Early 2s');
+  assert.equal(await drawer.locator('input[name=expected_tuition]').getAttribute('placeholder'), 'usually 600', 'the usual rate for the class as a hint');
+  await drawer.locator('input[name=start_on]').fill(nextMonth1);
+  await drawer.locator('input[name=expected_tuition]').fill('500');
+  await drawer.locator('#save').click();
+  await page.waitForSelector('#toast:has-text("Inquiry added")');
+  await drawer.locator('[data-close]').first().click();
+  await page.locator('.card', { hasText: 'Delta Parent' }).locator('.tag.start', { hasText: '$500.00' }).waitFor();
+  await page.click('header nav button[data-view=money]');
+  await page.click('[data-mtab=projection]');
+  const proj = page.locator('table.proj');
+  await proj.waitFor();
+  assert.equal(await proj.locator('thead th').count(), 7, 'six months by default');
+  const projRow = (label) => proj.locator('tr', { has: page.locator('th', { hasText: label }) }).first();
+  assert.match(await projRow('Tuition from families').textContent(), /\$[\d,]+\.\d\d/);
+  assert.match(await projRow('New families starting (possible)').locator('td').nth(1).textContent(), /\$1,000\.00|\$1,500\.00/, 'the new child from next month');
+  await page.locator('#proj-coming tr', { hasText: 'Sofia Lopez' }).locator('text=Starts').waitFor();
+  await page.locator('#proj-coming tr', { hasText: 'Test Kid Delta' }).locator('text=Could start').waitFor();
+  await page.click('[data-pm="12"]');
+  assert.equal(await proj.locator('thead th').count(), 13);
+  await shot(page, '36-projection');
+  await page.click('[data-pm="6"]');
+  ok('Projection: tuition from each child’s rate and start date, payroll and expenses from recent months, Pipeline families who could start');
+
+  // ── waiting list: registration paid is what holds the spot (019) ──
+  await page.click('header nav button[data-view=board]');
+  const waitCol = page.locator('.col[data-stage=waitlisted]');
+  await page.locator('.card', { hasText: 'Delta Parent' }).dragTo(waitCol);
+  await waitCol.locator('.card', { hasText: 'Delta Parent' }).locator('.tag.due', { hasText: 'registration not paid' }).waitFor();
+  const regNote = async () => (await waitCol.locator('.col-note').textContent()).match(/(\d+) of (\d+) paid registration/).slice(1).map(Number);
+  const [paid0, wait0] = await regNote();
+  await waitCol.locator('.card', { hasText: 'Delta Parent' }).click();
+  await drawer.locator('input[name=reg_amount]').fill('150');
+  await drawer.locator('#save').click();
+  await page.waitForSelector('#toast:has-text("Add the day registration was paid")');
+  await drawer.locator('input[name=reg_paid_on]').fill(todayStr);
+  await drawer.locator('#save').click();
+  await drawer.locator('#to-roster', { hasText: 'Add Test Kid Delta to the waiting list' }).click();
+  await drawer.locator('#st-save').waitFor();
+  assert.equal(await drawer.locator('select[name=status]').inputValue(), 'waitlist');
+  assert.equal(await drawer.locator('select[name=reg_fee]').inputValue(), 'paid', 'registration paid carries over');
+  await drawer.locator('#st-save').click();
+  await page.waitForSelector('#toast:has-text("Test Kid Delta added")');
+  await drawer.locator('#open-inq').click();
+  await drawer.locator('.enroll-link', { hasText: 'On the waiting list: Test Kid Delta' }).waitFor();
+  assert.match(await drawer.locator('p', { hasText: 'Registration:' }).textContent(), /Registration: paid/);
+  await drawer.locator('[data-close]').first().click();
+  await waitCol.locator('.card', { hasText: 'Delta Parent' }).locator('.tag.paid', { hasText: 'registration paid' }).waitFor();
+  assert.deepEqual(await regNote(), [paid0 + 1, wait0], 'the Waitlisted column counts who paid');
+  await shot(page, '37-waitlist-registration');
+  await page.click('header nav button[data-view=roster]');
+  await page.selectOption('#r-status', 'waitlist');
+  assert.equal(await page.locator('#roster-rows tr', { hasText: 'Test Kid Delta' }).locator('.tag.paid').textContent(), 'Paid');
+  assert.match(await page.locator('.class-card', { hasText: 'Early 2s' }).locator('.tag').textContent(), /\d+ waiting · [1-9]\d* paid/);
+  assert.match(await page.locator('.class-card.total').textContent(), /on waiting lists \([1-9]\d* paid registration\)/);
+  await page.selectOption('#r-status', 'enrolled');
+  ok('Waiting list: registration paid on the inquiry shows on its card and the column, carries over to the student, and shows on Enrollment');
 
   // ── activated staff, as a non-admin ──
   const p2 = await newPage();

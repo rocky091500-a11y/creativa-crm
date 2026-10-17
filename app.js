@@ -520,7 +520,16 @@
 
   // ───────────── Today ─────────────
   function renderToday(el) {
-    el.onclick = (e) => { if (e.target.closest('#see-changes')) { state.view = 'changes'; store.set('view', 'changes'); renderShell(); } };
+    el.onclick = (e) => {
+      if (e.target.closest('#see-changes')) { state.view = 'changes'; store.set('view', 'changes'); renderShell(); }
+      if (e.target.closest('#see-pay-guide, #pay-guide-ok')) store.set('payGuideSeen', true);
+      if (e.target.closest('#pay-guide-ok')) e.target.closest('.pay-note').remove();
+      if (e.target.closest('#see-pay-guide')) {
+        store.set('payGuideOpen', true);
+        state.view = 'payroll'; state.payTab = 'hours'; store.set('view', 'payroll'); store.set('payTab', 'hours');
+        renderShell();
+      }
+    };
     const today = todayStr();
     const open = state.inquiries.filter((i) => !CLOSED.has(i.stage));
     const due = open.filter((i) => i.next_follow_up && i.next_follow_up <= today)
@@ -540,7 +549,11 @@
         <span class="when ${cls}">${when}</span></div>`;
 
     const unseenBy = [...new Set(state.unseen.map((c) => staffName(c.actor) || 'Someone'))];
-    el.innerHTML = `${state.unseen.length ? `<div class="panel changes-note"><b>${state.unseen.length} change${state.unseen.length === 1 ? '' : 's'}</b>
+    el.innerHTML = `${canPayroll() && !store.get('payGuideSeen') ? `<div class="panel changes-note pay-note"><b>Payroll</b>
+        Step-by-step instructions for payroll and pay stubs are on the Payroll page.
+        <button class="btn small" type="button" id="see-pay-guide">Show me</button>
+        <button class="btn ghost small" type="button" id="pay-guide-ok">Got it</button></div>` : ''}
+      ${state.unseen.length ? `<div class="panel changes-note"><b>${state.unseen.length} change${state.unseen.length === 1 ? '' : 's'}</b>
         by ${esc(unseenBy.join(', '))} since you last looked. <button class="btn small" type="button" id="see-changes">See changes</button></div>` : ''}
       <div class="stats">
         <div class="stat"><b>${fresh.length}</b><span>New, not yet contacted</span></div>
@@ -2204,8 +2217,8 @@
 
   function renderPayroll(el) {
     if (!state.payPeriod) state.payPeriod = payPeriodOf(nyToday());
-    const tab = ['hours', 'people', 'setup'].includes(state.payTab) ? state.payTab : 'hours';
-    el.innerHTML = `<div class="seg" role="tablist" aria-label="Payroll">${[['hours', 'Hours'], ['people', 'Staff & PINs'], ['setup', 'Time clock']]
+    const tab = ['hours', 'paid', 'people', 'setup'].includes(state.payTab) ? state.payTab : 'hours';
+    el.innerHTML = `<div class="seg" role="tablist" aria-label="Payroll">${[['hours', 'Hours'], ['paid', 'Paychecks'], ['people', 'Staff & PINs'], ['setup', 'Time clock']]
         .map(([k, v]) => `<button type="button" role="tab" data-ptab="${k}" aria-selected="${tab === k}">${v}</button>`).join('')}</div>
       <div id="pay-body"><p class="muted">Loading…</p></div>`;
     $$('[data-ptab]', el).forEach((b) => b.addEventListener('click', () => {
@@ -2217,10 +2230,47 @@
     return loadPayroll(pp).then((loaded) => {
       const body = $('#pay-body', el);
       if (!loaded || !body || state.view !== 'payroll' || state.payPeriod !== pp) return;
-      ({ hours: drawPayHours, people: drawPayPeople, setup: drawPaySetup })[tab](body, el);
+      ({ hours: drawPayHours, paid: drawPayPaid, people: drawPayPeople, setup: drawPaySetup })[tab](body, el);
     });
   }
   const reloadPayroll = () => renderPayroll($('#view'));
+
+  // How to do payroll, step by step: on the Hours tab (open until closed once) and as a printable page.
+  const payGuideSteps = () => `<ol class="pay-steps">
+      <li><b>Check the hours.</b> On <b>Payroll → Hours</b>, use ‹ › to pick the pay period that just ended (two weeks, Friday to Thursday).
+        Fix any <i>Missing clock-outs</i> (tap <b>Fix</b>). Tap a name to see their timesheet, and use <b>+ Add time</b> for anyone who forgot to clock in.</li>
+      <li><b>Get the hours for Patriot.</b> Tap <b>Hours for Patriot</b>: everyone’s regular and overtime hours, by last name like Patriot. Print it or keep it open.</li>
+      <li><b>Run payroll in Patriot.</b> Sign in to Patriot Software, open <b>Payroll → Run Payroll</b> and pick the pay date.
+        <ul><li><i>Step 1:</i> type each person’s <b>Regular</b> and <b>Overtime</b> hours from the sheet.</li>
+          <li><i>Step 2:</i> check the totals (<b>View Details</b> shows taxes and deductions), then <b>Approve</b>.</li>
+          <li><i>Step 3:</i> print the <b>pay stubs</b> (plain paper is fine) or the <b>paychecks</b> (on check paper), or save them to print later.</li></ul></li>
+      <li><b>Mark it as done in the CRM.</b> Back on <b>Payroll → Hours</b>, tap <b>Mark as entered in Patriot</b>. That locks the pay period’s time
+        so it can’t change by accident (<b>Reopen</b> undoes it).</li>
+      <li><b>Keep a copy of the paychecks in the CRM.</b> In Patriot, open <b>Payroll → Print Payrolls</b> and tap <b>View Details</b> on that payroll.
+        Select from the pay date down to the <b>Totals</b> line and copy it. In the CRM, open <b>Payroll → Paychecks → Add a payroll from Patriot</b>,
+        paste, and tap <b>Save</b>.</li>
+    </ol>
+    <p class="small"><b>To reprint a pay stub later:</b> in Patriot, <b>Payroll → Print Payrolls → View Details</b>, tick the person and print
+      (or <b>Reprint All Paychecks</b>). Staff can also see and print their own pay stubs in Patriot’s employee portal, if it’s turned on in Patriot.</p>`;
+  function showPayGuide() {
+    const sheet = document.createElement('div');
+    sheet.className = 'print-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.innerHTML = `<div class="print-bar no-print"><b>How to do payroll</b><span class="spacer"></span>
+        <button class="btn primary" type="button" id="pg-print">Print / Save as PDF</button>
+        <button class="btn" type="button" id="pg-close">Close</button></div>
+      <article class="receipt pay-sheet pay-guide-sheet">
+        <header class="r-band"><img src="/assets/logo.png" alt="${esc(state.settings?.school_name || 'Creativa Academy')}">
+          <div class="r-title"><h1>How to do payroll</h1><span class="r-year">Every pay period, step by step</span></div></header>
+        ${payGuideSteps()}</article>`;
+    document.body.append(sheet);
+    document.body.classList.add('printing');
+    const close = () => { sheet.remove(); document.body.classList.remove('printing'); };
+    $('#pg-print', sheet).addEventListener('click', () => window.print());
+    $('#pg-close', sheet).addEventListener('click', close);
+    sheet.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') close(); });
+    $('#pg-close', sheet).focus();
+  }
 
   function drawPayHours(body, el) {
     const P = state.pay, pp = P.pp, T = payTotals(), closed = closedFor(pp);
@@ -2241,6 +2291,10 @@
         ${thisPeriod ? '' : '<button class="btn small ghost" id="pp-now" type="button">This pay period</button>'}
         <span class="muted small">Pay period · ${esc(PAY_FREQ[paySched().freq].toLowerCase())}</span>
         ${closed ? `<span class="pay-pill ps-paid">Entered in Patriot ${esc(fmtDate(closed.closed_at))}${closed.closed_by ? ' · ' + esc(staffName(closed.closed_by)) : ''}</span>` : ''}</div>
+      <details class="panel pay-guide" id="pay-guide" ${store.get('payGuideOpen', true) ? 'open' : ''}>
+        <summary><b>How to do payroll, step by step</b> <span class="muted small">hours, Patriot, pay stubs</span></summary>
+        ${payGuideSteps()}
+        <button class="btn small" type="button" id="pay-guide-print">Print these steps</button></details>
       <div class="stats">
         <div class="stat"><b>${hrs(sum('minutes'))}</b><span>Hours worked</span></div>
         <div class="stat"><b>${hrs(sum('overtime'))}</b><span>Overtime hours</span></div>
@@ -2280,6 +2334,8 @@
         Estimated gross is before taxes; Patriot works out the paychecks.</p>`;
 
     const go = (np) => { state.payPeriod = np; renderPayroll(el); };
+    $('#pay-guide', body).addEventListener('toggle', (ev) => { store.set('payGuideOpen', ev.target.open); store.set('payGuideSeen', true); });
+    $('#pay-guide-print', body).addEventListener('click', showPayGuide);
     $('#pp-prev', body).addEventListener('click', () => go(payPeriodOf(addDays(pp.start, -1))));
     $('#pp-next', body).addEventListener('click', () => go(payPeriodOf(addDays(pp.end, 1))));
     $('#pp-now', body)?.addEventListener('click', () => go(payPeriodOf(nyToday())));
@@ -2314,6 +2370,158 @@
     });
   }
 
+  // ───────────── Paychecks from Patriot (016) ─────────────
+  // Patriot has no way to connect other programs, so each payroll's paycheck list is pasted in from Patriot's
+  // Payroll → Print Payrolls → View Details: who was paid, their hours, gross and net pay, by pay date.
+  const normName = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z]+/g, ' ').trim();
+  function matchEmployee(name) {   // "PEÑA, ANA" or "SMITH, MARIA J" → that staff member
+    const [last, first = ''] = name.split(',').map(normName);
+    const same = state.pay.employees.filter((e) => normName(e.last_name) === last);
+    return same.find((e) => normName(e.first_name).split(' ')[0] === first.split(' ')[0]) || (same.length === 1 ? same[0] : null);
+  }
+  function parsePatriot(text) {
+    const out = { rows: [] }, num = (x) => Number(String(x).replace(/[$,\s]/g, ''));
+    const iso = (m) => { const [mo, d, y] = m.split('/').map(Number); return `${y}-${pad(mo)}-${pad(d)}`; };
+    text.split(/\r?\n/).forEach((line) => {
+      const l = line.replace(/\u00a0/g, ' ').trim();
+      const dates = l.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*[-–]\s*(\d{1,2}\/\d{1,2}\/\d{4})/);
+      if (dates) { if (!out.payDate) Object.assign(out, { payDate: iso(dates[1]), start: iso(dates[2]), end: iso(dates[3]) }); return; }
+      const tot = l.match(/^totals?:?\s+([\d,.]+)\s+\$?\s*([\d,]+\.\d{2})\s+\$?\s*([\d,]+\.\d{2})$/i);
+      if (tot) { out.totals = { hours: num(tot[1]), gross: num(tot[2]), net: num(tot[3]) }; return; }
+      const m = l.match(/^([^\d$\t]*,[^\d$\t]+?)\s+([\d,]+(?:\.\d+)?)\s+\$?\s*([\d,]+\.\d{2})\s+\$?\s*([\d,]+\.\d{2})$/);
+      if (m) out.rows.push({ name: m[1].replace(/^[^A-Za-zÀ-ÿ]+/, '').replace(/\s+/g, ' ').trim().toUpperCase(), hours: num(m[2]), gross: num(m[3]), net: num(m[4]) });
+    });
+    return out;
+  }
+  const sumBy = (rows, k) => round2(rows.reduce((t, x) => t + Number(x[k] || 0), 0));
+
+  async function drawPayPaid(body, el) {
+    const r = await selectAll('paychecks', 'pay_date', false);
+    if (!$('#pay-body', el) || state.payTab !== 'paid') return;
+    if (r.error) { body.innerHTML = '<p class="muted">To keep paychecks here, run <code>016_paychecks.sql</code> in Supabase.</p>'; return; }
+    const all = r.data, years = [...new Set(all.map((x) => x.pay_date.slice(0, 4)))].sort().reverse();
+    const year = state.paidYear && years.includes(state.paidYear) ? state.paidYear : years[0] || nyToday().slice(0, 4);
+    const rows = all.filter((x) => x.pay_date.startsWith(year));
+    const runs = [...new Set(rows.map((x) => x.pay_date))].map((d) => ({ date: d, rows: rows.filter((x) => x.pay_date === d) }));
+    const people = new Map();
+    rows.forEach((x) => {
+      const k = x.employee_id || x.name;
+      if (!people.has(k)) people.set(k, { id: x.employee_id, name: x.name, rows: [] });
+      people.get(k).rows.push(x);
+    });
+    const empOf = (id) => state.pay.employees.find((e) => e.id === id);
+    const who = (p) => (p.id && empOf(p.id) ? empName(empOf(p.id)) : p.name);
+    body.innerHTML = `<div class="month-bar">${years.length > 1 ? years.map((y) => `<button class="btn small ${y === year ? 'primary' : ''}" type="button" data-pyear="${y}">${y}</button>`).join('') : `<b>${esc(year)}</b>`}
+        <span class="muted small">Paychecks from Patriot Software, by pay date</span><span class="spacer"></span>
+        <button class="btn small primary" id="pc-add" type="button">+ Add a payroll from Patriot</button></div>
+      <div class="stats">
+        <div class="stat"><b>${runs.length}</b><span>Payrolls in ${esc(year)}</span></div>
+        <div class="stat"><b>${sumBy(rows, 'hours').toFixed(2)}</b><span>Hours paid</span></div>
+        <div class="stat"><b>${money(sumBy(rows, 'gross'))}</b><span>Gross pay</span></div>
+        <div class="stat"><b>${money(sumBy(rows, 'net'))}</b><span>Net pay</span></div>
+      </div>
+      <section class="panel"><h2>Payrolls</h2><div class="table-wrap flat"><table><thead><tr><th>Pay date</th><th>Pay period</th><th class="num">People</th>
+        <th class="num">Hours</th><th class="num">Gross</th><th class="num">Net</th></tr></thead><tbody id="pc-runs">${runs.map((u) => `<tr data-run="${u.date}">
+          <td class="nowrap"><b>${esc(fmtDate(u.date))}</b></td><td>${esc(fmtPayPeriod({ start: u.rows[0].period_start, end: u.rows[0].period_end }))}</td>
+          <td class="num">${u.rows.length}</td><td class="num">${sumBy(u.rows, 'hours').toFixed(2)}</td><td class="num">${money(sumBy(u.rows, 'gross'))}</td>
+          <td class="num">${money(sumBy(u.rows, 'net'))}</td></tr>`).join('')
+          || '<tr><td colspan="6" class="muted">No paychecks yet. Add a payroll from Patriot.</td></tr>'}</tbody></table></div></section>
+      ${people.size ? `<section class="panel"><h2>By person, ${esc(year)}</h2><div class="table-wrap flat"><table><thead><tr><th>Name</th><th class="num">Paychecks</th>
+        <th class="num">Hours</th><th class="num">Gross</th><th class="num">Net</th></tr></thead><tbody id="pc-people">${[...people.values()].sort((a, b) => who(a).localeCompare(who(b))).map((p) => `<tr ${p.id && empOf(p.id) ? `data-pemp="${p.id}"` : ''}>
+          <td><b>${esc(who(p))}</b>${p.id && empOf(p.id) ? '' : '<div class="muted small">not on the staff list</div>'}</td><td class="num">${p.rows.length}</td>
+          <td class="num">${sumBy(p.rows, 'hours').toFixed(2)}</td><td class="num">${money(sumBy(p.rows, 'gross'))}</td><td class="num">${money(sumBy(p.rows, 'net'))}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><th>Total</th><th class="num">${rows.length}</th><th class="num">${sumBy(rows, 'hours').toFixed(2)}</th><th class="num">${money(sumBy(rows, 'gross'))}</th>
+          <th class="num">${money(sumBy(rows, 'net'))}</th></tr></tfoot></table></div></section>` : ''}
+      <p class="muted small">Patriot can’t connect to other programs, so each payroll is copied over from Patriot (Payroll → Print Payrolls → View Details).
+        Gross is before taxes and deductions; net is the take-home pay.</p>`;
+    $$('[data-pyear]', body).forEach((b) => b.addEventListener('click', () => { state.paidYear = b.dataset.pyear; drawPayPaid(body, el); }));
+    $('#pc-add', body).addEventListener('click', () => openPaychecksAdd(body, el));
+    $$('#pc-runs tr[data-run]', body).forEach((tr) => tr.addEventListener('click', () => openPayrollRun(runs.find((u) => u.date === tr.dataset.run), body, el)));
+    $$('#pc-people tr[data-pemp]', body).forEach((tr) => tr.addEventListener('click', () => openTimesheet(tr.dataset.pemp)));
+  }
+
+  function openPayrollRun(u, body, el) {
+    const empOf = (id) => state.pay.employees.find((e) => e.id === id);
+    const rows = u.rows.slice().sort((a, b) => a.name.localeCompare(b.name));
+    const ctl = mountDrawer({
+      title: `Paid ${esc(fmtDate(u.date))}`,
+      sub: esc(`Pay period ${fmtPayPeriod({ start: rows[0].period_start, end: rows[0].period_end })} · ${rows.length} people`),
+      body: `<div class="table-wrap flat"><table><thead><tr><th>Name</th><th class="num">Hours</th><th class="num">Gross</th><th class="num">Net</th></tr></thead>
+        <tbody>${rows.map((x) => `<tr><td><b>${esc(x.employee_id && empOf(x.employee_id) ? empName(empOf(x.employee_id)) : x.name)}</b>
+          ${x.employee_id && empOf(x.employee_id) ? '' : '<div class="muted small">not on the staff list</div>'}</td>
+          <td class="num">${x.hours != null ? Number(x.hours).toFixed(2) : ''}</td><td class="num">${money(x.gross)}</td><td class="num">${x.net != null ? money(x.net) : ''}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><th>Total</th><th class="num">${sumBy(rows, 'hours').toFixed(2)}</th><th class="num">${money(sumBy(rows, 'gross'))}</th><th class="num">${money(sumBy(rows, 'net'))}</th></tr></tfoot></table></div>`,
+      foot: `<button class="btn danger" id="pc-del" type="button">Delete this payroll</button><span class="spacer"></span><button class="btn" data-close type="button">Close</button>`,
+    });
+    $('#pc-del', ctl.drawer).addEventListener('click', async () => {
+      if (!confirm(`Delete the payroll paid ${fmtDate(u.date)} from the CRM? (Nothing changes in Patriot.)`)) return;
+      const { error } = await sb.from('paychecks').delete().eq('pay_date', u.date);
+      if (error) return fail(error, 'Could not delete it');
+      closeDrawer();
+      toast('Payroll deleted');
+      drawPayPaid(body, el);
+    });
+  }
+
+  function openPaychecksAdd(body, el) {
+    const last = payPeriodOf(addDays(payPeriodOf(nyToday()).start, -1));   // the pay period that just ended
+    let parsed = { rows: [] };
+    const ctl = mountDrawer({
+      title: 'Add a payroll from Patriot',
+      sub: 'Patriot can’t connect to the CRM, so copy the paycheck list over',
+      body: `<div class="section"><ol class="small pc-steps">
+          <li>In Patriot, open <b>Payroll → Print Payrolls</b> and tap <b>View Details</b> on the payroll.</li>
+          <li>Select from the pay date down to the <b>Totals</b> line, copy it, and paste it here.</li></ol>
+        <label>Paste here<textarea name="paste" rows="6" placeholder="10/22/2026   10/2/2026 - 10/15/2026   2&#10;SMITH, ANA   80.00   $1,240.00   $1,145.14&#10;LEE, MARIA   40.00   $600.00   $554.10&#10;Totals:   120.00   $1,840.00   $1,699.24"></textarea></label></div>
+        <div class="section grid2">
+          <label>Pay date<input type="date" name="pay_date" value="${addDays(last.end, 7)}"></label><span></span>
+          <label>Pay period from<input type="date" name="period_start" value="${last.start}"></label>
+          <label>to<input type="date" name="period_end" value="${last.end}"></label></div>
+        <div class="section"><h3>Paychecks <span class="muted small" id="pc-count"></span></h3><div id="pc-preview"><p class="muted small">Nothing pasted yet.</p></div></div>`,
+      foot: `<span class="spacer"></span><button class="btn" data-close type="button">Cancel</button>
+        <button class="btn primary" id="pc-save" type="button" disabled>Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    form.paste.focus();
+    form.paste.addEventListener('input', () => {
+      parsed = parsePatriot(form.paste.value);
+      if (parsed.payDate) { form.pay_date.value = parsed.payDate; form.period_start.value = parsed.start; form.period_end.value = parsed.end; }
+      const rs = parsed.rows, T = parsed.totals;
+      const ok = T && Math.abs(sumBy(rs, 'gross') - T.gross) < 0.005 && Math.abs(sumBy(rs, 'net') - T.net) < 0.005 && Math.abs(sumBy(rs, 'hours') - T.hours) < 0.005;
+      $('#pc-count', drawer).textContent = rs.length ? `${rs.length} people` : '';
+      $('#pc-save', drawer).disabled = !rs.length;
+      $('#pc-preview', drawer).innerHTML = rs.length ? `<div class="table-wrap flat"><table><thead><tr><th>Patriot</th><th>Staff member</th><th class="num">Hours</th>
+          <th class="num">Gross</th><th class="num">Net</th></tr></thead><tbody>${rs.map((x) => { const e = matchEmployee(x.name); return `<tr><td>${esc(x.name)}</td>
+          <td>${e ? esc(empName(e)) : '<span class="check-warn small">not on the staff list</span>'}</td><td class="num">${x.hours.toFixed(2)}</td>
+          <td class="num">${money(x.gross)}</td><td class="num">${money(x.net)}</td></tr>`; }).join('')}</tbody>
+          <tfoot><tr><th colspan="2">Total</th><th class="num">${sumBy(rs, 'hours').toFixed(2)}</th><th class="num">${money(sumBy(rs, 'gross'))}</th><th class="num">${money(sumBy(rs, 'net'))}</th></tr></tfoot></table></div>
+          ${T ? (ok ? '<p class="small pc-ok">✓ Adds up to Patriot’s totals.</p>'
+            : `<p class="check-warn small">Doesn’t add up to Patriot’s totals (${money(T.gross)} gross): check that every person was copied.</p>`)
+            : '<p class="muted small">Copy the Totals line too, to check that nobody was left out.</p>'}`
+        : `<p class="muted small">${form.paste.value.trim() ? 'No paychecks found in what was pasted. Copy the rows with the names, hours and pay.' : 'Nothing pasted yet.'}</p>`;
+    });
+    $('#pc-save', drawer).addEventListener('click', async () => {
+      const payDate = form.pay_date.value, start = form.period_start.value, end = form.period_end.value;
+      if (!payDate || !start || !end) return toast('Fill in the pay date and pay period', true);
+      if (end < start) return toast('The pay period ends before it starts', true);
+      const { data: had } = await sb.from('paychecks').select('id').eq('pay_date', payDate).limit(1);
+      if (had?.length && !confirm(`There’s already a payroll paid ${fmtDate(payDate)} in the CRM. Replace it with this one?`)) return;
+      if (had?.length) {
+        const { error } = await sb.from('paychecks').delete().eq('pay_date', payDate);
+        if (error) return fail(error, 'Could not replace it');
+      }
+      const rows = parsed.rows.map((x) => ({ pay_date: payDate, period_start: start, period_end: end, employee_id: matchEmployee(x.name)?.id || null,
+        name: x.name, hours: x.hours, gross: x.gross, net: x.net }));
+      const { error } = await sb.from('paychecks').insert(rows);
+      if (error) return fail(error, 'Could not save the payroll');
+      ctl.dirty = false;
+      closeDrawer();
+      toast(`Saved the payroll paid ${fmtDate(payDate)}: ${rows.length} paychecks, ${money(sumBy(rows, 'gross'))} gross`);
+      state.paidYear = payDate.slice(0, 4);
+      drawPayPaid(body, el);
+    });
+  }
+
   function openTimesheet(empId) {
     const P = state.pay, e = P.employees.find((x) => x.id === empId);
     if (!e) return;
@@ -2345,9 +2553,19 @@
         <dl class="ts-total"><div><dt>Regular</dt><dd>${hrs(t.regular)}</dd></div><div><dt>Overtime</dt><dd>${hrs(t.overtime)}</dd></div>
           <div><dt>Total hours</dt><dd>${hrs(t.minutes)}</dd></div><div><dt>Est. gross</dt><dd>${money(grossOf(e, t))}</dd></div></dl>
         ${closed ? '<p class="muted small">This pay period was entered in Patriot, so its time is locked. Reopen it on the Hours tab to change it.</p>'
-          : '<p class="muted small">Tap a time to change it. ✎ = changed or added by the office (the time clock’s original is kept).</p>'}</div>`,
+          : '<p class="muted small">Tap a time to change it. ✎ = changed or added by the office (the time clock’s original is kept).</p>'}</div>
+        <div class="section" id="ts-paid-box" hidden><h3>Paychecks from Patriot</h3><ul class="chg-list mini" id="ts-paid"></ul></div>`,
       foot: `<span class="spacer"></span><button class="btn" data-close type="button">Close</button>
         ${closed ? '' : '<button class="btn primary" id="ts-add" type="button">+ Add time</button>'}`,
+    });
+    sb.from('paychecks').select('*').eq('employee_id', empId).order('pay_date', { ascending: false }).limit(8).then(({ data, error }) => {
+      const box = $('#ts-paid-box', ctl.drawer);
+      if (!box || error || !data?.length) return;
+      const year = data[0].pay_date.slice(0, 4), ytd = data.filter((x) => x.pay_date.startsWith(year));
+      box.hidden = false;
+      $('#ts-paid', ctl.drawer).innerHTML = data.map((x) => `<li><span class="chg-time">${esc(fmtDate(x.pay_date))}</span>
+          <span>${esc(fmtPayPeriod({ start: x.period_start, end: x.period_end }))} · ${x.hours != null ? `${Number(x.hours).toFixed(2)} h · ` : ''}<b>${money(x.gross)}</b> gross${x.net != null ? ` · ${money(x.net)} net` : ''}</span></li>`).join('')
+        + `<li class="muted small"><span>Shown: ${ytd.length} paycheck${ytd.length === 1 ? '' : 's'} in ${year}, ${money(ytd.reduce((t, x) => t + Number(x.gross), 0))} gross. All of them are on Payroll → Paychecks.</span></li>`;
     });
     const back = () => openTimesheet(empId);
     $$('[data-entry]', ctl.drawer).forEach((b) => b.addEventListener('click', () => openTimeEntry({ entryId: b.dataset.entry, back })));

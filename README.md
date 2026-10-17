@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql` and `015_message_lists.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql` and `016_paychecks.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -329,6 +329,22 @@ and paystubs. (Patriot has no file import for hours from other systems, so the C
 - **Hours for Patriot**: the sheet (and CSV) of regular and overtime hours by last name. After entering them in
   Patriot, **Mark as entered in Patriot** keeps the hours sent and locks that period's time (**Reopen** to change it).
 - Staff names and pay rates were loaded with a one-time SQL file kept outside this repository; never commit them.
+
+## Paychecks from Patriot (016)
+
+Patriot Software has no way to connect other programs (its only export is a CSV from the Payroll Details report), so
+each payroll is copied into the CRM: **Payroll → Paychecks → Add a payroll from Patriot**. In Patriot open
+**Payroll → Print Payrolls**, tap **View Details** on the payroll, select from the pay date down to the **Totals** line,
+copy and paste. The CRM reads the pay date, pay period and each person's hours, gross and net pay, matches them to the
+staff list (by last and first name, ignoring accents and middle initials), and checks they add up to Patriot's totals.
+Adding a pay date that's already there replaces it.
+
+**How to do payroll, step by step** (check hours → Hours for Patriot → run payroll and print pay stubs in Patriot → mark as
+entered → copy the paychecks back) is at the top of Payroll → Hours, and prints; Today points people with Payroll access
+to it until they've seen it.
+
+The tab lists each payroll and the year's totals, by pay date and by person; each person's timesheet shows their latest
+paychecks. Only admins and people with Payroll access see it, and every change shows on the Changes page under Payroll.
 
 ## Telegram alerts
 

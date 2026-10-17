@@ -530,3 +530,21 @@ h3.h-row .btn { font-family: var(--body); font-size: 12px; padding: 2px 10px; }
 .drawer #ls-found .btn { justify-content: flex-start; text-align: left; }
 .drawer .ls-add { margin: 6px 0; }
 .drawer .chg-list li .btn { margin-left: auto; }
+/* paychecks from Patriot (016) */
+.pc-steps { margin: 0 0 10px; padding-left: 20px; color: var(--ink-soft); display: grid; gap: 4px; }
+.pc-ok { color: var(--sage-deep); margin: 8px 0 0; }
+#pc-runs tr, #pc-people tr[data-pemp] { cursor: pointer; }
+#pc-runs tr:hover td, #pc-people tr[data-pemp]:hover td { background: var(--cream); }
+/* how to do payroll */
+.pay-guide { margin-bottom: 16px; }
+.pay-guide > summary { cursor: pointer; list-style: none; }
+.pay-guide > summary::-webkit-details-marker { display: none; }
+.pay-guide > summary::before { content: '▸ '; color: var(--ink-soft); }
+.pay-guide[open] > summary::before { content: '▾ '; }
+.pay-guide[open] > summary { margin-bottom: 10px; }
+.pay-steps { margin: 0 0 10px; padding-left: 22px; display: grid; gap: 8px; font-size: 14px; line-height: 1.45; }
+.pay-steps ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 2px; }
+.pay-guide > p.small { margin: 0 0 10px; color: var(--ink-soft); }
+.pay-guide-sheet .pay-steps { font-size: 15px; gap: 14px; margin-top: 18px; }
+.pay-guide-sheet > p.small { font-size: 14px; }
+.pay-note { border-left-color: var(--sage-deep); }

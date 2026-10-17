@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql` and `018_weekly_late_fees.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql` and `019_projection.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -211,8 +211,11 @@ children already billed, with no rate, marked *not billed to the family* (e.g. F
   `data/README.md`. The data files never go in this repository.
 - **Late fees** (`008_payroll_timeclock.sql`): tuition not fully paid by the Friday grace day gets one late fee
   (`settings.late_fee_amount`, $30; 0 turns them off). After that Friday, **Add $30 late fees** on Tuition adds it to
-  every unpaid invoice of the period (`create_late_fees`); a fee shows under the child's status and in *Owed*, and
-  **Waive** voids it for good. Receipts for it read “Late fee — tuition (period)”.
+  every unpaid invoice of the period (`create_late_fees`); a fee shows under the child's status and in *Owed*. One
+  added by mistake (or let go) comes off with **take off** next to it (on Tuition, in *Owed*, or on the child's page):
+  it's voided for good, with who took it off in its note, and anything paid toward it stays as a credit. Receipts for
+  it read “Late fee — tuition (period)”.
+- A child who starts in the **second week** of a period (019) is billed just that week, due their first Monday.
 
 ## Receipts
 
@@ -351,6 +354,22 @@ paychecks. Only admins and people with Payroll access see it, and every change s
 A child on a weekly rate gets a two-week bill each period like everyone else, but the family pays a week at a time: the
 first week is late after the period's first Friday, the second week after the second Friday. A weekly payer who paid the
 first week isn't shown as late, and gets no late fee, until then.
+
+## Projection, start dates and the waiting list (019)
+
+**Money → Projection** estimates the next 3, 6 or 12 months: tuition from each enrolled child's rate for every billing
+period they'll be here (from their start date until a last day set on their page), what scholarships and programs pay
+for children not billed to the family, the food program (average of the last 3 claims), and other money in, payroll
+and expenses from recent months. A second line shows what's added if the families starting do. Below it, who starts
+and leaves in those months.
+
+For a family in the **Pipeline**, open it and fill in **Starts on** and **Tuition** (with how often); the card shows
+"starts …" and they count from that day. Both move over when they become a student.
+
+The waiting list: **Registration paid on** (and the amount) on an inquiry, or a student's *Registration fee* = Paid (or a
+registration bill paid in full), is what holds a spot. Waitlisted cards say *registration paid* or *not paid*, the
+Waitlisted column counts who paid, and on Enrollment each class card shows how many are waiting and how many paid. A
+Waitlisted inquiry can be added to the waiting list in one tap, keeping that.
 
 ## Money, the Child Care Food Program and To do (017)
 

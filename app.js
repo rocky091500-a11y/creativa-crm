@@ -174,6 +174,7 @@
     view: store.get('view', 'today'),
     moneyTab: store.get('moneyTab', 'overview'),
     todoFilter: store.get('todoFilter', 'all'),
+    projMonths: store.get('projMonths', 6),
     filters: { q: '', stage: '', program: '', source: '', assigned: '', ...store.get('filters', {}) },
     openId: undefined, // undefined = closed, null = new inquiry
   };
@@ -224,12 +225,38 @@
     .sort((a, b) => a.invoice_date.localeCompare(b.invoice_date));
   const lateFeeFor = (inv) => (inv.late_fee_for && state.invoices.find((i) => i.id === inv.late_fee_for)) || null;   // the tuition it's for
   const lateFeeOf = (inv) => state.invoices.find((i) => i.late_fee_for === inv.id && !i.void) || null;
+  // Take a late fee off (added by mistake, or let go). If anything was paid toward it, that money stays as a credit.
+  async function removeLateFee(feeId, after) {
+    const inv = state.invoices.find((i) => i.id === feeId);
+    if (!inv) return;
+    const who = state.students.find((s) => s.id === inv.student_id)?.name || 'this child', paid = invoicePaid(inv);
+    if (!confirm(`Take off the ${money(inv.amount)} late fee for ${who}?${paid ? ` The ${money(paid)} paid toward it stays as a credit.` : ''}`)) return;
+    if (paid) {
+      const { error } = await sb.from('payments').update({ invoice_id: null }).eq('invoice_id', inv.id);
+      if (error) return fail(error, 'Could not take off the late fee');
+      state.payments = state.payments.map((x) => (x.invoice_id === inv.id ? { ...x, invoice_id: null } : x));
+    }
+    const { data, error } = await sb.from('invoices').update({ void: true,
+      note: [inv.note, `Taken off ${fmtDate(todayStr())} by ${state.me.full_name || state.me.email}`].filter(Boolean).join(' · ') }).eq('id', inv.id).select().single();
+    if (error) return fail(error, 'Could not take off the late fee');
+    state.invoices = state.invoices.map((i) => (i.id === data.id ? data : i));
+    toast(`Late fee taken off${paid ? `; ${money(paid)} kept as a credit` : ''}`);
+    after();
+  }
   function invoiceLabel(inv) {
     if (inv.kind === 'tuition') return `${inv.description} · ${fmtPeriod(inv.period_start)}`;
     const t = lateFeeFor(inv);
     return t ? `${inv.description} · ${fmtPeriod(t.period_start)}` : `${inv.description} · ${fmtDate(inv.invoice_date)}`;
   }
   const contactName = (c) => [c.first_name, c.last_name].filter(Boolean).join(' ');
+  // Registration is what holds a spot on the waiting list: marked Paid on the student, or a registration bill paid in full.
+  const regPaid = (s) => s.reg_fee === 'paid' || (state.invoices || []).some((i) => i.student_id === s.id && i.kind !== 'tuition' && !i.void
+    && /regist/i.test(i.description) && Number(i.amount) > 0 && invoiceBalance(i) <= 0);
+  // A family in the Pipeline: from their student record once they have one, or the day it was recorded on the inquiry.
+  const inqRegPaid = (i) => {
+    const s = state.students.find((x) => x.inquiry_id === i.id);
+    return s ? regPaid(s) : !!i.reg_paid_on;
+  };
 
   // ───────────── auth ─────────────
   sb.auth.onAuthStateChange((event, session) => {
@@ -329,7 +356,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -348,6 +375,7 @@
       sb.from('student_contacts').select('group_texts').limit(1),                                     // missing until 015
       fin ? sb.from('money_entries').select('id').limit(1) : Promise.resolve({ error: true }),        // missing until 017
       canOffice() ? selectAll('todos', 'due_on') : Promise.resolve({ error: true }),
+      sb.from('inquiries').select('start_on,reg_paid_on').limit(1),                                   // missing until 019
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -383,6 +411,7 @@
     state.hasMoney = fin && !mon.error;
     state.money = undefined;   // Money page data: loaded when it opens
     state.hasTodos = !td.error;
+    state.hasStartOn = !so.error;
     state.todos = td.error ? [] : td.data;
     watchInquiries();
     state.loadedAt = Date.now();
@@ -673,6 +702,12 @@
     }
     if (i.tour_at && i.stage === 'tour_scheduled') tags.push(`<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>`);
     if (i.tour_at && i.stage === 'reschedule') tags.push(`<span class="tag due">was ${esc(fmtDateTime(i.tour_at))}</span>`);
+    if (i.start_on && !CLOSED.has(i.stage)) tags.push(`<span class="tag start">starts ${esc(fmtDate(i.start_on))}${canViewFinance() && Number(i.expected_tuition) > 0
+      ? ` · ${esc(money(i.expected_tuition))}` : ''}</span>`);
+    if (state.hasStartOn && !CLOSED.has(i.stage)) {
+      if (inqRegPaid(i)) tags.push('<span class="tag paid">registration paid</span>');
+      else if (i.stage === 'waitlisted') tags.push('<span class="tag due">registration not paid</span>');
+    }
     tags.push(`<span class="tag">${esc(SOURCE_LABEL[i.source] || i.source)}</span>`);
     if (i.assigned_to) tags.push(`<span class="tag">${esc(staffName(i.assigned_to))}</span>`);
     return `<div class="card" draggable="true" data-id="${i.id}">
@@ -716,6 +751,7 @@
         const items = rows.filter((i) => i.stage === s);
         const shown = CLOSED.has(s) ? items.slice(0, CLOSED_COLUMN_LIMIT) : items;
         return `<section class="col" data-stage="${s}"><h3><span>${STAGE_LABEL[s]}</span><span>${items.length}</span></h3>
+          ${s === 'waitlisted' && state.hasStartOn && items.length ? `<p class="col-note">${items.filter(inqRegPaid).length} of ${items.length} paid registration</p>` : ''}
           ${shown.map(cardHtml).join('')}
           ${items.length > shown.length ? `<div class="more">+ ${items.length - shown.length} older in “All inquiries”</div>` : ''}</section>`;
       }).join('');
@@ -952,20 +988,20 @@
     const f = state.rosterFilters;
     const fin = canViewFinance();
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
-    const enrolled = state.students.filter((s) => s.status === 'enrolled');
+    const enrolled = state.students.filter((s) => s.status === 'enrolled'), waitAll = state.students.filter((s) => s.status === 'waitlist');
     el.innerHTML = `
       <div class="class-grid">${state.classrooms.map((c) => {
         const n = enrolled.filter((s) => s.classroom_id === c.id).length;
-        const wait = state.students.filter((s) => s.status === 'waitlist' && s.classroom_id === c.id).length;
+        const waitL = state.students.filter((s) => s.status === 'waitlist' && s.classroom_id === c.id), wait = waitL.length;
         const full = c.capacity && n >= c.capacity;
         return `<button class="class-card ${f.classroom === c.id ? 'on' : ''}" data-class="${c.id}" type="button">
           <span class="c-name">${esc(c.name)}</span>
           <span class="c-count ${full ? 'full' : ''}">${n}${c.capacity ? `<small> / ${c.capacity}</small>` : ''}</span>
           <span class="c-teachers">${esc(c.teachers || '')}</span>
-          ${wait ? `<span class="tag">${wait} waiting</span>` : ''}</button>`;
+          ${wait ? `<span class="tag">${wait} waiting · ${waitL.filter(regPaid).length} paid</span>` : ''}</button>`;
       }).join('')}
         <div class="class-card total"><span class="c-name">Whole school</span><span class="c-count">${enrolled.length}</span>
-          <span class="c-teachers">${state.students.filter((s) => s.status === 'waitlist').length} on waiting lists</span></div>
+          <span class="c-teachers">${waitAll.length} on waiting lists${waitAll.length ? ` (${waitAll.filter(regPaid).length} paid registration)` : ''}</span></div>
       </div>
       <div class="toolbar">
         <input type="search" id="r-q" placeholder="Search student, parent, phone…" value="${esc(f.q)}">
@@ -1010,7 +1046,7 @@
           const fr = state.finance[s.id] || {};
           return [s.name, s.dob, classroomName(s.classroom_id), STUDENT_STATUS[s.status], s.start_date, s.withdrawn_on,
             s.parent_name, s.parent_phone, s.parent_email, ...DOCS.map(([k]) => s[k] || 'missing'),
-            REG_FEE[s.reg_fee] || '', RBT[s.rbt] || '', s.therapy,
+            regPaid(s) ? REG_FEE.paid : REG_FEE[s.reg_fee] || (s.status === 'waitlist' ? REG_FEE.not_paid : ''), RBT[s.rbt] || '', s.therapy,
             ...(fin ? [fundingText(s.id), fr.award_id, fr.tuition_amount, fr.tuition_amount != null ? FREQ[fr.tuition_frequency] : ''] : []),
             s.notes];
         }));
@@ -1018,6 +1054,11 @@
     draw();
 
     function saveFilters() { store.set('rosterFilters', { ...f, q: '' }); }
+    // On the waiting list, registration not recorded counts as not paid (it's what holds the spot).
+    function regTag(s) {
+      const k = regPaid(s) ? 'paid' : s.reg_fee || (s.status === 'waitlist' ? 'not_paid' : '');
+      return k ? `<span class="tag ${k === 'not_paid' ? 'overdue' : k === 'paid' && s.status === 'waitlist' ? 'paid' : ''}">${REG_FEE[k]}</span>` : '';
+    }
     function draw() {
       const rows = rosterRows();
       $('#r-count').textContent = `${rows.length} student${rows.length === 1 ? '' : 's'}`;
@@ -1028,7 +1069,7 @@
           <td class="nowrap">${esc(ageOf(s.dob))}</td>
           ${DOCS.map(([k, long]) => `<td class="doc"><input type="checkbox" class="check" data-doc="${k}" ${s[k] ? 'checked' : ''}
             aria-label="${esc(long)} received" title="${esc(s[k] ? 'Received ' + fmtDate(s[k]) : long + ' missing')}"></td>`).join('')}
-          <td>${s.reg_fee ? `<span class="tag ${s.reg_fee === 'not_paid' ? 'overdue' : ''}">${REG_FEE[s.reg_fee]}</span>` : ''}</td>
+          <td>${regTag(s)}</td>
           <td>${[RBT[s.rbt], s.therapy].filter(Boolean).map((t) => `<span class="tag">${esc(t)}</span>`).join(' ')}</td>
           ${fin ? `<td>${fundingTags(s.id)}</td>` : ''}</tr>`).join('')
         || `<tr><td colspan="${fin ? 10 : 9}" class="muted">No students match.</td></tr>`;
@@ -1054,7 +1095,7 @@
     if (!s0) return;
     const s = { ...s0, ...preset };
     const fin = canViewFinance(), finEdit = canEditFinance();
-    const fr = (id && state.finance[id]) || { funding: [], tuition_frequency: state.hasV6 ? 'biweekly' : 'monthly', bill_family: true };
+    const fr = (id && state.finance[id]) || { funding: [], tuition_frequency: state.hasV6 ? 'biweekly' : 'monthly', bill_family: true, ...(preset.finance || {}) };
     const contacts = id ? state.contacts.filter((c) => c.student_id === id)
       .sort((a, b) => Object.keys(CONTACT_ROLE).indexOf(a.role) - Object.keys(CONTACT_ROLE).indexOf(b.role)) : [];
     const invs = id ? state.invoices.filter((i) => i.student_id === id).sort((a, b) => b.invoice_date.localeCompare(a.invoice_date)) : [];
@@ -1132,7 +1173,8 @@
               return `<li><span class="p-date">${esc(fmtDate(i.invoice_date))}</span>
                 <span class="p-what">${esc(invoiceLabel(i))}</span><b>${money(i.amount)}</b>
                 <span class="pay-pill ps-${st}">${INV_STATUS[st]}${['partial', 'overdue', 'open'].includes(st) ? ' · ' + money(invoiceBalance(i)) + ' due' : ''}</span>
-                ${finEdit && invoiceBalance(i) > 0 ? `<button class="btn ghost small" type="button" data-pay-inv="${i.id}">Record payment</button>` : ''}</li>`;
+                ${finEdit && invoiceBalance(i) > 0 ? `<button class="btn ghost small" type="button" data-pay-inv="${i.id}">Record payment</button>` : ''}
+                ${finEdit && i.late_fee_for && !i.void ? `<button class="btn ghost small" type="button" data-rm-fee="${i.id}">Take off</button>` : ''}</li>`;
             }).join('') || '<li class="muted">No invoices yet. Bill from the Tuition page.</li>'}</ul></div>` : ''}
           ${id ? `<div class="section"><h3>Payments</h3>
             ${finEdit ? '<button class="btn small" type="button" id="pay-add">+ Record payment</button>' : ''}
@@ -1214,6 +1256,9 @@
     });
     $$('[data-pay-inv]', drawer).forEach((b) => b.addEventListener('click', () => {
       if (!ctl.dirty || confirm('Discard your changes?')) openPayment({ studentId: id, invoiceId: b.dataset.payInv, back });
+    }));
+    $$('[data-rm-fee]', drawer).forEach((b) => b.addEventListener('click', () => {
+      if (!ctl.dirty || confirm('Discard your changes?')) removeLateFee(b.dataset.rmFee, () => { renderView(); back(); });
     }));
     $('#contact-add', drawer)?.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openContact({ studentId: id, back }); });
     // Brothers and sisters: copy the parents from a sibling's page (their Primary and Secondary contacts) onto this one.
@@ -1299,12 +1344,14 @@
     }
   }
 
-  // An inquiry marked Enrolled can be added to the enrollment list in one tap.
+  // An inquiry marked Enrolled (or Waitlisted) can be added to the enrollment list (or the waiting list) in one tap.
   function studentFromInquiry(inq) {
     const cls = state.classrooms.find((c) => c.name === inq.program);
     openStudent(null, {
-      name: inq.child_name || '', dob: inq.child_dob, classroom_id: cls?.id || null, status: 'enrolled',
-      parent_name: inq.parent_name, parent_phone: inq.phone, parent_email: inq.email, inquiry_id: inq.id,
+      name: inq.child_name || '', dob: inq.child_dob, classroom_id: cls?.id || null, status: inq.stage === 'waitlisted' ? 'waitlist' : 'enrolled',
+      ...(inq.reg_paid_on ? { reg_fee: 'paid' } : {}),
+      parent_name: inq.parent_name, parent_phone: inq.phone, parent_email: inq.email, inquiry_id: inq.id, start_date: inq.start_on || null,
+      ...(Number(inq.expected_tuition) > 0 ? { finance: { tuition_amount: inq.expected_tuition, tuition_frequency: inq.expected_freq || 'biweekly' } } : {}),
     });
   }
 
@@ -1799,6 +1846,12 @@
     });
   }
   const periodAmount = (fr) => round2(Number(fr.tuition_amount) * (fr.tuition_frequency === 'weekly' ? 2 : 1));
+  // A child who starts in the second week of a period is billed that one week, due their first Monday (019).
+  function periodBill(fr, s, p) {
+    const amount = periodAmount(fr), wk2 = addDays(p, 7);
+    return s.start_date && s.start_date >= wk2 ? { amount: round2(amount / 2), due_date: wk2, note: `Starts ${fmtDate(s.start_date)}: one week` }
+      : { amount, due_date: p };
+  }
 
   function renderTuition(el) {
     if (!state.hasV6) return renderTuitionMonthly(el);
@@ -1860,7 +1913,7 @@
           + ' Reports → Annual statements.' : 'There’s no billing system sheet for this period in the CRM.'} Step Up (pending) children aren’t billed and aren’t late.`
         : `Each child is billed their biweekly rate on the billing Monday. Step Up (pending) children aren’t billed and
         aren’t late. Set the rate, billing item and funding on each child’s page.${lateAmt ? ` Tuition not paid by Friday gets a
-        ${money(lateAmt)} late fee once you tap “Add late fees”; waive one from the list below.` : ''}`}</p>
+        ${money(lateAmt)} late fee once you tap “Add late fees”. Added one by mistake? Tap “take off” next to it.` : ''}`}</p>
       ${gone.length ? `<section class="panel"><h2>On the sheet but not in the CRM <span class="muted small">${gone.length}</span></h2>
         <div class="table-wrap flat"><table><thead><tr><th>Family</th><th class="num">Billed</th><th class="num">Paid</th><th>Status</th></tr></thead>
         <tbody id="t-gone">${gone.map((r) => { const st = r.status === 'check' ? 'check' : r.sh.amount ? 'paid' : 'none';
@@ -1872,7 +1925,7 @@
         <tbody id="t-open">${open.map((i) => `<tr data-inv="${i.id}" data-sid="${i.student_id}"><td>${esc(familyOf(i.student_id))}</td><td>${esc(nameOf(i.student_id))}</td>
           <td>${esc(invoiceLabel(i))}</td><td>${esc(fmtDate(i.due_date))}</td><td class="num">${money(invoiceBalance(i))}</td>
           <td>${i.late_fee_for ? '<span class="pay-pill ps-overdue">Late fee</span>' : hasFunding(i.student_id, 'stepup_pending') ? '<span class="pay-pill ps-stepup">Step Up pending</span>' : `<span class="pay-pill ${late(i) === 'current' ? 'ps-open' : 'ps-overdue'}">${late(i)}</span>`}</td>
-          ${edit ? `<td>${i.late_fee_for && !invoicePaid(i) ? `<button class="btn small ghost" type="button" data-waive="${i.id}">Waive</button>` : ''}</td>` : ''}</tr>`).join('')
+          ${edit ? `<td>${i.late_fee_for ? `<button class="btn small ghost" type="button" data-waive="${i.id}">Take off</button>` : ''}</td>` : ''}</tr>`).join('')
           || `<tr><td colspan="${edit ? 7 : 6}" class="muted">Nobody owes anything.</td></tr>`}</tbody></table></div>
       </section>
       <section class="panel"><h2>Credits: money not applied to an invoice <span class="muted small">${money(creditAll)}</span></h2>
@@ -1916,16 +1969,9 @@
       toast(`${data} late fee${data === 1 ? '' : 's'} added`);
       renderTuition(el);
     });
-    $$('[data-waive]', el).forEach((b) => b.addEventListener('click', async (e) => {
+    $$('[data-waive]', el).forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
-      const inv = state.invoices.find((i) => i.id === b.dataset.waive);
-      if (!confirm(`Waive the ${money(inv.amount)} late fee for ${nameOf(inv.student_id)}?`)) return;
-      const { data, error } = await sb.from('invoices').update({ void: true, note: [inv.note, `Waived ${fmtDate(todayStr())}`].filter(Boolean).join(' · ') })
-        .eq('id', inv.id).select().single();
-      if (error) return fail(error, 'Could not waive the late fee');
-      state.invoices = state.invoices.map((i) => (i.id === data.id ? data : i));
-      toast('Late fee waived');
-      renderTuition(el);
+      removeLateFee(b.dataset.waive, () => renderTuition(el));
     }));
     if (before) {
       // Old periods: one receipt per FES-UA child for what the family paid through the billing system.
@@ -1978,22 +2024,25 @@
           <td class="num">${r.paid ? money(r.paid) : ''}</td>
           <td class="num">${r.balance ? money(r.balance) : ''}</td>
           <td><span class="pay-pill ps-${r.status}">${INV_STATUS[r.status]}</span>${!r.pre && r.inv && lateFeeOf(r.inv)
-            ? `<div class="muted small">+ ${money(lateFeeOf(r.inv).amount)} late fee${invoiceBalance(lateFeeOf(r.inv)) ? '' : ' (paid)'}</div>` : ''}
+            ? `<div class="muted small">+ ${money(lateFeeOf(r.inv).amount)} late fee${invoiceBalance(lateFeeOf(r.inv)) ? '' : ' (paid)'}
+              ${edit ? `<button class="btn ghost small link-x" type="button" data-rm-fee="${lateFeeOf(r.inv).id}">take off</button>` : ''}</div>` : ''}
             ${r.pre?.h && r.pre.amount != null && round2(r.pre.h.balance) !== round2(r.pre.amount) ? `<div class="muted small">sheet ${money(r.pre.h.balance)}</div>` : ''}
             ${r.pre?.h?.note ? `<div class="muted small">${esc(r.pre.h.note)}</div>` : ''}</td>
           ${edit ? `<td>${r.pre ? '' : r.inv && r.balance > 0 ? `<button class="btn small" type="button" data-pay-inv="${r.inv.id}">Record payment</button>`
-            : r.status === 'not_invoiced' ? `<button class="btn small" type="button" data-bill-one="${r.s.id}">Bill ${money(periodAmount(r.fr))}</button>`
+            : r.status === 'not_invoiced' ? `<button class="btn small" type="button" data-bill-one="${r.s.id}">Bill ${money(periodBill(r.fr, r.s, p).amount)}</button>`
               : r.inv ? `<button class="btn small" type="button" data-pay-for="${r.s.id}">+ Payment</button>` : ''}</td>` : ''}</tr>`).join('')
         || `<tr><td colspan="${edit ? 8 : 7}" class="muted">Nobody matches.</td></tr>`;
       $$('#t-rows tr[data-id]', el).forEach((tr) => tr.addEventListener('click', async (e) => {
         const payInv = e.target.closest('[data-pay-inv]'), one = e.target.closest('[data-bill-one]'), payFor = e.target.closest('[data-pay-for]');
+        const rmFee = e.target.closest('[data-rm-fee]');
+        if (rmFee) return removeLateFee(rmFee.dataset.rmFee, () => renderTuition(el));
         if (payInv) return openPayment({ studentId: tr.dataset.id, invoiceId: payInv.dataset.payInv });
         if (payFor) return openPayment({ studentId: tr.dataset.id });
         if (one) {
           const r = rows.find((x) => x.s.id === tr.dataset.id);
           one.disabled = true;
           const { data, error } = await sb.from('invoices').insert({ student_id: r.s.id, kind: 'tuition', description: r.fr.billing_program || 'Tuition',
-            period_start: p, invoice_date: p, due_date: p, amount: periodAmount(r.fr), created_by: state.me.id }).select().single();
+            period_start: p, invoice_date: p, ...periodBill(r.fr, r.s, p), created_by: state.me.id }).select().single();
           if (error) { one.disabled = false; return fail(error, 'Could not create the invoice'); }
           state.invoices.push(data);
           toast(`${r.s.name} billed ${money(data.amount)}`);
@@ -3171,9 +3220,146 @@
     return { ins: ins.sort(byAmt), outs: outs.sort(byAmt), tin, tout, net: round2(tin - tout) };
   }
 
+  // ───── Projection (019): the coming months, from each child's rate and start date ─────
+  // Money in: every enrolled child's rate for each billing period they'll be here (from their start date, until a last day
+  // set on their page); the food program at the average of its last claims; other money in at its recent average.
+  // Possible: families in the Pipeline (and on the waiting list) with a start date and tuition. Money out: payroll at the
+  // last payrolls' average on its two-week schedule, and expenses at their recent average.
+  const monthShort = (m) => new Date(`${m}-01T00:00:00`).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+  const FREQ_TEXT = { weekly: 'a week', biweekly: 'every 2 weeks', monthly: 'a month' };
+  function usualRate(program) {   // the most common 2-week rate in that class, as a hint
+    const cls = state.classrooms.find((c) => c.name === program);
+    const rates = state.students.filter((s) => s.status === 'enrolled' && (!cls || s.classroom_id === cls.id))
+      .map((s) => state.finance[s.id]).filter((f) => f && f.tuition_frequency === 'biweekly' && Number(f.tuition_amount) > 0 && f.bill_family !== false)
+      .map((f) => Number(f.tuition_amount));
+    if (!rates.length) return 'e.g. 560';
+    const top = [...new Set(rates)].sort((a, b) => rates.filter((x) => x === b).length - rates.filter((x) => x === a).length)[0];
+    return `usually ${top}`;
+  }
+  function periodsIn(ym) {   // billing periods that start in the month
+    const { days } = billing(), first = monthStart(ym), last = monthEnd(ym), out = [];
+    let p = periodOf(first);
+    if (p < first) p = addDays(p, days);
+    for (; p <= last; p = addDays(p, days)) out.push(p);
+    return out;
+  }
+  function childInMonth(rate, freq, start, last, ym) {   // starting in a period's second week pays just that week
+    if (!(Number(rate) > 0)) return 0;
+    if (freq === 'monthly') return (!start || start <= monthEnd(ym)) && (!last || last >= monthStart(ym)) ? Number(rate) : 0;
+    const { days } = billing();
+    return round2(periodsIn(ym).reduce((t, p) => {
+      const end = addDays(p, days - 1);
+      if ((start && start > end) || (last && last < p)) return t;
+      const full = Number(rate) * (freq === 'weekly' ? 2 : 1);
+      return t + (start && start >= addDays(p, 7) ? full / 2 : full);
+    }, 0));
+  }
+  function projection(months) {
+    const M = state.money, from = monthStart(months[0]);
+    const lastDay = (s) => (LEFT.has(s.status) ? s.withdrawn_on : null);
+    const here = state.students.filter((s) => s.status === 'enrolled' || (LEFT.has(s.status) && s.withdrawn_on && s.withdrawn_on >= from));
+    const fin = (s) => state.finance[s.id] || {};
+    const per = (fn) => months.map(fn);
+    const kidsBy = (bill) => here.filter((s) => (fin(s).bill_family !== false) === bill && !(fin(s).funding || []).includes('stepup_pending'));
+    const tuition = (kids) => per((m) => round2(kids.reduce((t, s) => t + childInMonth(fin(s).tuition_amount, fin(s).tuition_frequency, s.start_date, lastDay(s), m), 0)));
+    const claims = M.claims.filter((c) => ccfpTotal(c) > 0).sort((a, b) => b.claim_month.localeCompare(a.claim_month)).slice(0, 3);
+    const ccfp = claims.length ? round2(claims.reduce((t, c) => t + ccfpTotal(c), 0) / claims.length) : 0;
+    const past = [1, 2, 3].map((k) => shiftMonth(thisMonth(), -k));
+    const recentAvg = (kind) => {   // average of the last 3 months that have any entries (this month, when only it has)
+      const has = (m) => M.entries.some((e) => e.kind === kind && e.in_totals && e.on_date.slice(0, 7) === m);
+      const ms = past.some(has) ? past.filter(has) : [thisMonth()].filter(has);
+      return ms.length ? round2(ms.reduce((t, m) => t + sumAmt(M.entries.filter((e) => e.kind === kind && e.in_totals && e.on_date.slice(0, 7) === m)), 0) / ms.length) : 0;
+    };
+    const pc = M.paychecks || [], runs = [...new Set(pc.map((p) => p.pay_date))].sort();
+    const gross = (d) => pc.filter((p) => p.pay_date === d).reduce((t, p) => t + Number(p.gross), 0);
+    const payAvg = runs.length ? round2(runs.slice(-2).reduce((t, d) => t + gross(d), 0) / runs.slice(-2).length) : 0;
+    const lastRun = runs[runs.length - 1];
+    const payDates = (m) => {   // the two-week pay schedule, through the last payroll's date
+      if (!lastRun) return [];
+      const out = [];
+      for (let d = addDays(lastRun, 14 * Math.ceil(daysBetween(lastRun, monthStart(m)) / 14)); d <= monthEnd(m); d = addDays(d, 14)) out.push(d);
+      return out;
+    };
+    const leads = state.inquiries.filter((i) => i.start_on && Number(i.expected_tuition) > 0 && !CLOSED.has(i.stage)
+      && !state.students.some((s) => s.inquiry_id === i.id));
+    const waiting = state.students.filter((s) => s.status === 'waitlist' && s.start_date && Number(fin(s).tuition_amount) > 0);
+    const possible = per((m) => round2(leads.reduce((t, i) => t + childInMonth(i.expected_tuition, i.expected_freq, i.start_on, null, m), 0)
+      + waiting.reduce((t, s) => t + childInMonth(fin(s).tuition_amount, fin(s).tuition_frequency, s.start_date, null, m), 0)));
+    const rows = {
+      families: tuition(kidsBy(true)), programs: tuition(kidsBy(false)), ccfp: per(() => ccfp), other: per(() => recentAvg('in')),
+      payroll: per((m) => round2(payAvg * payDates(m).length)), expenses: per(() => recentAvg('out')), possible,
+    };
+    const sumAt = (keys, i) => round2(keys.reduce((t, k) => t + rows[k][i], 0));
+    rows.tin = per((m, i) => sumAt(['families', 'programs', 'ccfp', 'other'], i));
+    rows.tout = per((m, i) => sumAt(['payroll', 'expenses'], i));
+    rows.net = per((m, i) => round2(rows.tin[i] - rows.tout[i]));
+    rows.netPossible = per((m, i) => round2(rows.net[i] + rows.possible[i]));
+    const end = monthEnd(months[months.length - 1]);
+    const coming = [
+      ...here.filter((s) => s.start_date && s.start_date >= from && s.start_date <= end)
+        .map((s) => ({ kind: 'start', who: s.name, on: s.start_date, where: 'Enrolled', rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
+      ...waiting.filter((s) => s.start_date <= end)
+        .map((s) => ({ kind: 'maybe', who: s.name, on: s.start_date, where: `Waiting list · registration ${regPaid(s) ? 'paid' : 'not paid'}`, rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
+      ...leads.filter((i) => i.start_on <= end).map((i) => ({ kind: 'maybe', who: i.child_name || i.parent_name || 'A family', on: i.start_on,
+        where: `Pipeline · ${STAGE_LABEL[i.stage]}${inqRegPaid(i) ? ' · registration paid' : ''}`, rate: i.expected_tuition, freq: i.expected_freq, iid: i.id })),
+      ...here.filter((s) => lastDay(s) && lastDay(s) <= end)
+        .map((s) => ({ kind: 'leave', who: s.name, on: lastDay(s), where: STUDENT_STATUS[s.status], rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
+    ].sort((a, b) => a.on.localeCompare(b.on));
+    return { rows, ccfp, claims: claims.length, payAvg, coming, noPayroll: !M.paychecks };
+  }
+
+  function drawProjection(body, el) {
+    const n = [3, 6, 12].includes(state.projMonths) ? state.projMonths : 6;
+    const months = Array.from({ length: n }, (_, i) => shiftMonth(thisMonth(), i));
+    const P = projection(months), R = P.rows;
+    const avg = (xs) => round2(xs.reduce((t, x) => t + x, 0) / xs.length);
+    const line = (label, xs, cls = '', sub = '') => `<tr class="${cls}"><th>${esc(label)}${sub ? `<div class="muted small">${esc(sub)}</div>` : ''}</th>
+      ${xs.map((x) => `<td class="num ${x < 0 ? 'neg' : ''}">${x ? money(x) : '<span class="muted">—</span>'}</td>`).join('')}</tr>`;
+    const head = (label) => `<tr class="proj-group"><th colspan="${n + 1}">${esc(label)}</th></tr>`;
+    body.innerHTML = `<div class="toolbar"><span class="muted small">An estimate for the coming months: what you can expect, not what’s been paid.</span>
+        <span class="spacer"></span><div class="seg" role="tablist" aria-label="How many months">
+        ${[3, 6, 12].map((k) => `<button type="button" data-pm="${k}" aria-selected="${n === k}">${k} months</button>`).join('')}</div></div>
+      <div class="stats">
+        <div class="stat"><b>${money(avg(R.tin))}</b><span>Money in a month</span></div>
+        <div class="stat"><b>${money(avg(R.tout))}</b><span>Money out a month</span></div>
+        <div class="stat"><b class="${avg(R.net) < 0 ? 'neg' : ''}">${money(avg(R.net))}</b><span>Left over a month</span></div>
+        <div class="stat"><b>${money(avg(R.possible))}</b><span>More a month if the families starting do</span></div>
+      </div>
+      <div class="table-wrap"><table class="proj"><thead><tr><th></th>${months.map((m) => `<th class="num">${esc(monthShort(m))}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${head('Money in')}
+          ${line('Tuition from families', R.families, '', 'each child’s rate, from their start date')}
+          ${line('Paid by scholarships and programs', R.programs, '', 'children not billed to the family (FES…), at their rate')}
+          ${line('Child Care Food Program', R.ccfp, '', P.claims ? `average of the last ${P.claims} claim${P.claims === 1 ? '' : 's'}` : 'no claims recorded yet')}
+          ${line('Other money in', R.other, '', 'average of recent months on Money')}
+          ${line('Money in', R.tin, 'proj-total')}
+          ${head('Money out')}
+          ${line('Payroll', R.payroll, '', P.noPayroll ? 'needs Payroll access to see' : P.payAvg ? `about ${money(P.payAvg)} gross every 2 weeks` : 'no paychecks recorded yet')}
+          ${line('Expenses', R.expenses, '', 'average of recent months on Money')}
+          ${line('Money out', R.tout, 'proj-total')}
+          ${head('Left over')}
+          ${line('Left over', R.net, 'proj-total')}
+          ${line('New families starting (possible)', R.possible, 'proj-possible', 'Pipeline and waiting list, with a start date and tuition')}
+          ${line('Left over if they start', R.netPossible, 'proj-total proj-possible')}
+        </tbody></table></div>
+      <section class="panel"><h2>Starting and leaving</h2>
+        <div class="table-wrap flat"><table><thead><tr><th>Child</th><th>When</th><th>From</th><th class="num">Tuition</th></tr></thead>
+          <tbody id="proj-coming">${P.coming.map((x) => `<tr ${x.sid ? `data-sid="${x.sid}"` : `data-iid="${x.iid}"`} class="proj-${x.kind}">
+            <td><b>${esc(x.who)}</b></td><td class="nowrap">${x.kind === 'leave' ? 'Last day ' : x.kind === 'maybe' ? 'Could start ' : 'Starts '}${esc(fmtDate(x.on))}</td>
+            <td>${esc(x.where)}</td><td class="num">${Number(x.rate) > 0 ? `${money(x.rate)} ${esc(FREQ_TEXT[x.freq] || '')}` : '<span class="muted small">no rate yet</span>'}</td></tr>`).join('')
+            || '<tr><td colspan="4" class="muted">Nobody starting or leaving in these months. Add a start date to families in the Pipeline to see them here.</td></tr>'}</tbody></table></div></section>
+      <p class="muted small">How it’s worked out: each enrolled child’s rate (Enrollment / Tuition) for every billing period they’ll be here, from their start date
+        until a last day set on their page; everyone else is assumed to stay. Payroll is gross pay from Patriot (taxes the school pays aren’t included unless
+        they’re added as an expense). The food program, other money in and expenses use recent months, so they get better as more is recorded on Money.
+        For a family in the Pipeline, open it and fill in <b>Starts on</b> and <b>Tuition</b>.</p>`;
+    $$('[data-pm]', body).forEach((b) => b.addEventListener('click', () => { state.projMonths = Number(b.dataset.pm); store.set('projMonths', state.projMonths); drawProjection(body, el); }));
+    $$('#proj-coming tr[data-sid]', body).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.sid)));
+    $$('#proj-coming tr[data-iid]', body).forEach((tr) => tr.addEventListener('click', () => openDrawer(tr.dataset.iid)));
+  }
+
   function renderMoney(el) {
-    const tab = state.moneyTab === 'food' ? 'food' : 'overview';
-    el.innerHTML = `<div class="seg" role="tablist" aria-label="Money">${[['overview', 'In & out'], ['food', 'Food program']]
+    const tab = ['food', 'projection'].includes(state.moneyTab) ? state.moneyTab : 'overview';
+    el.innerHTML = `<div class="seg" role="tablist" aria-label="Money">${[['overview', 'In & out'], ['food', 'Food program'], ['projection', 'Projection']]
         .map(([k, v]) => `<button type="button" role="tab" data-mtab="${k}" aria-selected="${tab === k}">${v}</button>`).join('')}</div>
       <div id="money-body"><p class="muted">Loading…</p></div>`;
     $$('[data-mtab]', el).forEach((b) => b.addEventListener('click', () => { state.moneyTab = b.dataset.mtab; store.set('moneyTab', state.moneyTab); renderMoney(el); }));
@@ -3181,7 +3367,7 @@
       const body = $('#money-body', el);
       if (!body || state.view !== 'money') return;
       if (!state.money) { body.innerHTML = '<p class="muted">To use this page, run <code>017_money_food_program_todos.sql</code> in Supabase.</p>'; return; }
-      (tab === 'food' ? drawFood : drawMoney)(body, el);
+      ({ food: drawFood, projection: drawProjection, overview: drawMoney })[tab](body, el);
     };
     if (state.money === undefined) loadMoney().then(go); else go();
   }
@@ -4578,8 +4764,9 @@
     const tel = digits(inq.phone);
     const student = id && state.hasEnrollment && state.students.find((s) => s.inquiry_id === id);
     const enrollLink = !id || !state.hasEnrollment ? ''
-      : student ? `<p class="small enroll-link">On the enrollment list: <a href="#" id="open-student">${esc(student.name)}</a></p>`
-        : inq.stage === 'enrolled' ? `<p class="enroll-link"><button class="btn small primary" type="button" id="to-roster">Add ${esc(inq.child_name || 'child')} to the enrollment list</button></p>` : '';
+      : student ? `<p class="small enroll-link">On the ${student.status === 'waitlist' ? 'waiting' : 'enrollment'} list: <a href="#" id="open-student">${esc(student.name)}</a></p>`
+        : inq.stage === 'enrolled' ? `<p class="enroll-link"><button class="btn small primary" type="button" id="to-roster">Add ${esc(inq.child_name || 'child')} to the enrollment list</button></p>`
+          : inq.stage === 'waitlisted' ? `<p class="enroll-link"><button class="btn small" type="button" id="to-roster">Add ${esc(inq.child_name || 'child')} to the waiting list</button></p>` : '';
 
     const scrim = document.createElement('div');
     scrim.className = 'scrim';
@@ -4605,6 +4792,11 @@
           ${inp('tour_at', 'Tour date & time', 'datetime-local')}
           ${inp('next_follow_up', 'Next follow-up', 'date')}
           <label class="full" id="lost-wrap" ${v.stage === 'lost' ? '' : 'hidden'}>Reason lost${inp('lost_reason', '').replace(/^<label>|<\/label>$/g, '')}</label>
+          ${!state.hasStartOn ? '' : student ? `<p class="full small">Registration: <b>${regPaid(student) ? 'paid' : 'not paid'}</b>
+            <span class="muted">(from ${esc(student.name)}’s page on Students)</span></p>`
+            : `${inp('reg_paid_on', 'Registration paid on', 'date')}
+              <label>Registration amount<input name="reg_amount" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(v.reg_amount ?? '')}"></label>
+              <p class="full muted small">Paying registration is what holds a family’s spot on the waiting list.</p>`}
           ${state.hasEnrollment ? `<label class="full pill-check"><input type="checkbox" class="check" name="auto_emails" ${v.auto_emails !== false ? 'checked' : ''}>
             Automatic tour ${'texts_enabled' in (state.settings || {}) ? 'emails &amp; texts' : 'emails'} (reminder the day before, check-in a week after)</label>
             ${inq.tour_reminder_sent_at || inq.followup_sent_at || inq.reminder_texted_at || inq.followup_texted_at || textsStopped(inq.phone) ? `<p class="full muted small">${[
@@ -4627,6 +4819,10 @@
           <label>Date of birth<input name="child_dob" type="date" value="${esc(v.child_dob)}">${v.child_dob ? `<span class="muted small">${esc(ageOf(v.child_dob))}</span>` : ''}</label>
           ${inp('program', 'Program', 'text', 'list="programs"')}
           ${inp('desired_start', 'Wants to start')}
+          ${state.hasStartOn ? `${inp('start_on', 'Starts on', 'date')}
+            <label>Tuition<span class="inline-pair"><input name="expected_tuition" type="number" min="0" step="0.01" inputmode="decimal"
+              value="${esc(v.expected_tuition ?? '')}" placeholder="${esc(usualRate(v.program))}">${sel('expected_freq', Object.entries(FREQ_TEXT), v.expected_freq || 'biweekly')}</span></label>
+            <p class="full muted small">With a start day and tuition, this family shows on Money → Projection from that day, and moves over when they become a student.</p>` : ''}
           <label class="full">Message / notes from family<textarea name="message" rows="3">${esc(v.message)}</textarea></label>
         </div></div>
         <datalist id="programs">${PROGRAMS.map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
@@ -4688,7 +4884,7 @@
 
     async function save() {
       const patch = {};
-      FIELDS.forEach((k) => {
+      [...FIELDS, ...(state.hasStartOn ? ['start_on', 'expected_tuition', 'expected_freq'] : []), ...(form.reg_paid_on ? ['reg_paid_on', 'reg_amount'] : [])].forEach((k) => {
         let val = form[k].value.trim();
         if (k === 'tour_at') val = val ? new Date(val).toISOString() : '';
         if (k === 'email') val = val.toLowerCase();
@@ -4697,6 +4893,7 @@
       if (!patch.parent_name && !patch.child_name) return toast('Add the parent’s or child’s name', true);
       if (!patch.phone && !patch.email) return toast('Add a phone number or email', true);
       if (patch.stage === 'lost' && !patch.lost_reason) { form.lost_reason.focus(); return toast('Add the reason this family was lost', true); }
+      if (patch.reg_amount && !patch.reg_paid_on) { form.reg_paid_on.focus(); return toast('Add the day registration was paid', true); }
       if (inq.stage === 'reschedule') {
         const changed = patch.tour_at && new Date(patch.tour_at).getTime() !== new Date(inq.tour_at || 0).getTime();
         // A new, future time typed in while still at Reschedule means the tour has been rescheduled.

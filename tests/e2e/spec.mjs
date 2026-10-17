@@ -732,6 +732,45 @@ try {
   await pr.waitForSelector('#toast:has-text("Pay period reopened")');
   ok('Payroll: change a time (kept as changed), add time, hours for Patriot (+ CSV), mark as entered (locks), reopen');
 
+  // ── paychecks from Patriot (016) ──
+  await pr.click('[data-ptab=paid]');
+  await pr.click('#pc-add');
+  await pr.fill('.drawer textarea[name=paste]', ['Pay Date\tPay Period\tEmployees', '10/22/2026\t10/2/2026 - 10/15/2026\t2\tHide Details\tReprint All Paychecks',
+    'PRINT\tEMPLOYEE\tHOURS\tGROSS PAY\tNET PAY', '\tSEED, CORA\t80.00\t$1,240.00\t$1,145.14', '\tNOBODY, PAT Q\t10.00\t$150.00\t$138.00',
+    'Totals:\t90.00\t$1,390.00\t$1,283.14', 'Select All Paychecks'].join('\n'));
+  assert.equal(await pr.inputValue('.drawer input[name=pay_date]'), '2026-10-22');
+  assert.equal(await pr.inputValue('.drawer input[name=period_start]'), '2026-10-02');
+  assert.match(await pr.locator('#pc-preview tbody tr', { hasText: 'SEED, CORA' }).textContent(), /Cora Seed[\s\S]*80\.00[\s\S]*\$1,240\.00[\s\S]*\$1,145\.14/);
+  await pr.locator('#pc-preview tbody tr', { hasText: 'NOBODY, PAT Q' }).locator('text=not on the staff list').waitFor();
+  await pr.locator('#pc-preview', { hasText: 'Adds up to Patriot’s totals' }).waitFor();
+  await shot(pr, '31-paychecks-add');
+  await pr.click('#pc-save');
+  await pr.waitForSelector('#toast:has-text("2 paychecks, $1,390.00 gross")');
+  assert.match(await pr.locator('#pc-runs tr').first().textContent(), /Oct 22[\s\S]*Oct 2 – Oct 15[\s\S]*2[\s\S]*90\.00[\s\S]*\$1,390\.00[\s\S]*\$1,283\.14/);
+  assert.match(await pr.locator('#pc-people tr', { hasText: 'Cora Seed' }).textContent(), /1[\s\S]*80\.00[\s\S]*\$1,240\.00/);
+  await pr.locator('#pc-people tr', { hasText: 'Cora Seed' }).click();
+  await pr.locator('.drawer #ts-paid li', { hasText: '$1,240.00' }).first().waitFor();
+  await pr.locator('.drawer [data-close]').first().click();
+  await pr.locator('#pc-runs tr').first().click();
+  await pr.locator('.drawer tbody tr', { hasText: 'NOBODY, PAT Q' }).waitFor();
+  await pr.locator('.drawer [data-close]').first().click();
+  await pr.click('[data-ptab=hours]');
+  ok('Paychecks: paste a payroll from Patriot (dates read, staff matched, totals checked); by pay date, by person, on each timesheet');
+
+  // ── how to do payroll: a note on Today points to the steps on the Payroll page, which print ──
+  await page.click('header nav button[data-view=today]');
+  await page.locator('.pay-note', { hasText: 'Step-by-step instructions for payroll and pay stubs' }).waitFor();
+  await page.click('#see-pay-guide');
+  await page.locator('#pay-guide[open]', { hasText: 'Run payroll in Patriot' }).waitFor();
+  assert.match(await page.locator('#pay-guide').textContent(), /Hours for Patriot[\s\S]*Approve[\s\S]*pay stubs[\s\S]*Mark as entered in Patriot[\s\S]*Add a payroll from Patriot/);
+  await page.click('#pay-guide-print');
+  await page.locator('.print-sheet h1', { hasText: 'How to do payroll' }).waitFor();
+  await shot(page, '32-pay-guide');
+  await page.click('#pg-close');
+  await page.click('header nav button[data-view=today]');
+  assert.equal(await page.locator('.pay-note').count(), 0, 'the note goes once the steps were seen');
+  ok('How to do payroll: a note on Today, the steps on the Payroll page (Hours → Patriot → pay stubs → paychecks), printable');
+
   // ── activated staff, as a non-admin ──
   const p2 = await newPage();
   await login(p2, 'newhire@creativaacademy.com', 'newhire-pass-1');

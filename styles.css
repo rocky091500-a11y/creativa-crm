@@ -548,3 +548,47 @@ h3.h-row .btn { font-family: var(--body); font-size: 12px; padding: 2px 10px; }
 .pay-guide-sheet .pay-steps { font-size: 15px; gap: 14px; margin-top: 18px; }
 .pay-guide-sheet > p.small { font-size: 14px; }
 .pay-note { border-left-color: var(--sage-deep); }
+
+/* to do (017) */
+.todo-list { list-style: none; margin: 0; padding: 0; }
+.todo-list li.todo { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); }
+.todo-list li.todo:first-child { border-top: 0; }
+.todo-list li.todo > input { margin-top: 3px; flex: none; }
+.todo-main { flex: 1; min-width: 0; }
+.todo-title { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--ink); cursor: pointer; text-align: left; }
+.todo-title:hover { text-decoration: underline; }
+.todo-when { color: var(--ink-soft); margin-top: 2px; }
+.todo-late .todo-when { color: var(--danger); font-weight: 500; }
+.todo-soon .todo-when { color: var(--warn); font-weight: 500; }
+.todo-done .todo-title { color: var(--ink-soft); text-decoration: line-through; }
+.todo-notes { margin-top: 4px; white-space: pre-wrap; }
+.today-todo { margin-bottom: 16px; border-left: 4px solid var(--warn); }
+.today-todo h2 { display: flex; align-items: center; gap: 8px; }
+.today-todo h2 .btn { margin-left: auto; font-family: var(--body); }
+
+/* money (017) */
+.money-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.money-grid > .panel { margin-top: 0; }
+.money-grid + .panel { margin-top: 20px; }
+.money-lines { list-style: none; margin: 0; padding: 0; }
+.money-lines li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.money-lines li:first-child { border-top: 0; }
+.money-lines li > span { display: grid; gap: 2px; }
+.money-lines li > b { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.neg { color: var(--danger); }
+#mo-rows tr:not(.ro), #mo-year tr, #cf-rows tr { cursor: pointer; }
+#mo-rows tr:not(.ro):hover td, #mo-year tr:hover td, #cf-rows tr:hover td { background: var(--cream); }
+#mo-year tr.on td { font-weight: 600; background: #EEF1E6; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.ccfp-sheet { max-width: 1100px; }
+.ccfp-h { font-size: 20px; text-align: center; margin: 0; }
+.ccfp-sub { text-align: center; font-size: 12px; margin: 2px 0 14px; color: var(--ink-soft); }
+.ccfp-head { display: grid; gap: 4px; font-size: 13px; margin-bottom: 12px; }
+.ccfp-table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
+.ccfp-table col.c-date { width: 7%; } .ccfp-table col.c-ref { width: 10%; } .ccfp-table col.c-payee { width: 16%; }
+.ccfp-table th { white-space: normal; overflow-wrap: anywhere; }
+.ccfp-table th, .ccfp-table td { border: 1px solid #999; padding: 3px 5px; vertical-align: bottom; }
+.ccfp-table thead th { font-weight: 600; font-size: 10.5px; text-transform: none; letter-spacing: 0; background: #F3F0E6; }
+.ccfp-table tfoot th { background: #F3F0E6; }
+@media (max-width: 900px) { .money-grid { grid-template-columns: 1fr; } .grid3 { grid-template-columns: 1fr 1fr; } }
+@media print { .ccfp-sheet { max-width: none; } }

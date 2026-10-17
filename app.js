@@ -172,6 +172,8 @@
     tuitionFilters: { q: '', status: '', funding: '' },
     loadedAt: 0,
     view: store.get('view', 'today'),
+    moneyTab: store.get('moneyTab', 'overview'),
+    todoFilter: store.get('todoFilter', 'all'),
     filters: { q: '', stage: '', program: '', source: '', assigned: '', ...store.get('filters', {}) },
     openId: undefined, // undefined = closed, null = new inquiry
   };
@@ -320,7 +322,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -337,6 +339,8 @@
         .gt('at', state.me.changes_seen_at || '1970-01-01').order('at', { ascending: false }).limit(200),
       isAdmin() || state.me.finance === 'edit' ? sb.from('messages').select('id').limit(1) : none,   // missing until 013
       sb.from('student_contacts').select('group_texts').limit(1),                                     // missing until 015
+      fin ? sb.from('money_entries').select('id').limit(1) : Promise.resolve({ error: true }),        // missing until 017
+      canOffice() ? selectAll('todos', 'due_on') : Promise.resolve({ error: true }),
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -369,6 +373,10 @@
     state.hasMsgs = (isAdmin() || state.me.finance === 'edit') && !msg.error;
     state.msgTpls = undefined;   // My messages and lists: loaded when Messages opens
     state.hasGroupTexts = !gt.error;
+    state.hasMoney = fin && !mon.error;
+    state.money = undefined;   // Money page data: loaded when it opens
+    state.hasTodos = !td.error;
+    state.todos = td.error ? [] : td.data;
     watchInquiries();
     state.loadedAt = Date.now();
   }
@@ -439,7 +447,9 @@
       ...(state.hasEnrollment ? { roster: 'Enrollment' } : {}),
       ...(state.hasEnrollment && canViewFinance() ? { tuition: 'Tuition', reports: 'Reports' } : {}),
       ...(canPayroll() ? { payroll: 'Payroll' } : {}),
+      ...(state.hasMoney ? { money: 'Money' } : {}),
       ...(state.hasMsgs ? { messages: 'Messages' } : {}),
+      ...(state.hasTodos ? { todo: 'To do' } : {}),
       ...(state.hasLog ? { changes: 'Changes' } : {}),
       ...(isAdmin() ? { staff: 'Settings' } : {}) };
     if (!views[state.view]) state.view = 'today';
@@ -461,6 +471,7 @@
       renderShell();
     }));
     drawInqBadge();
+    drawTodoBadge();
     $('#add').addEventListener('click', () => openDrawer(null));
     $('#signout').addEventListener('click', () => sb.auth.signOut());
     renderView();
@@ -470,7 +481,8 @@
     const el = $('#view');
     if (!el) return;
     ({ today: renderToday, board: renderBoard, list: renderList, staff: renderStaff,
-      roster: renderRoster, tuition: renderTuition, reports: renderReports, payroll: renderPayroll, changes: renderChanges, messages: renderMessages })[state.view](el);
+      roster: renderRoster, tuition: renderTuition, reports: renderReports, payroll: renderPayroll, changes: renderChanges, messages: renderMessages,
+      money: renderMoney, todo: renderTodo })[state.view](el);
   }
 
   // ───────────── filters ─────────────
@@ -549,7 +561,11 @@
         <span class="when ${cls}">${when}</span></div>`;
 
     const unseenBy = [...new Set(state.unseen.map((c) => staffName(c.actor) || 'Someone'))];
-    el.innerHTML = `${canPayroll() && !store.get('payGuideSeen') ? `<div class="panel changes-note pay-note"><b>Payroll</b>
+    const toDo = state.hasTodos ? todoSoon() : [];
+    el.innerHTML = `${toDo.length ? `<section class="panel today-todo"><h2>To do <span class="muted small">${toDo.length}</span>
+        <button class="btn ghost small" type="button" id="see-todo">All to-dos</button></h2>
+        <ul class="todo-list">${toDo.map(todoItem).join('')}</ul></section>` : ''}
+      ${canPayroll() && !store.get('payGuideSeen') ? `<div class="panel changes-note pay-note"><b>Payroll</b>
         Step-by-step instructions for payroll and pay stubs are on the Payroll page.
         <button class="btn small" type="button" id="see-pay-guide">Show me</button>
         <button class="btn ghost small" type="button" id="pay-guide-ok">Got it</button></div>` : ''}
@@ -587,6 +603,9 @@
       </div>`;
     $$('a.sms', el).forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
     $$('.row', el).forEach((r) => r.addEventListener('click', () => openDrawer(r.dataset.id)));
+    const todoBox = $('.today-todo', el);
+    if (todoBox) bindTodos(todoBox, renderView);
+    $('#see-todo', el)?.addEventListener('click', () => { state.view = 'todo'; store.set('view', 'todo'); renderShell(); });
   }
 
   // Day-before reminders and 1-week "how was your visit?" notes. The emails go out from the hourly
@@ -2987,6 +3006,444 @@
     draw();
   }
 
+  // ───────────── To do (017): the office's to-do list ─────────────
+  // Each to-do shows up on its person's Today page and in the To do tab's count from its reminder date (due date minus
+  // "remind me" days) until it's checked off. Repeating ones come back for their next date when checked off.
+  const canOffice = () => isAdmin() || state.me?.finance === 'edit' || state.me?.payroll === true;
+  const REPEAT = { none: 'Once', weekly: 'Every week', monthly: 'Every month', yearly: 'Every year' };
+  const REMIND = [[0, 'On the day'], [1, '1 day before'], [2, '2 days before'], [3, '3 days before'], [5, '5 days before'], [7, 'A week before'],
+    [10, '10 days before'], [14, 'Two weeks before'], [30, 'A month before']];
+  const officeStaff = () => state.staff.filter((p) => p.active && (p.role === 'admin' || p.finance === 'edit' || p.payroll));
+  const dayDiff = (a, b) => Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 864e5);
+  const todoMine = (t) => !t.assigned_to || t.assigned_to === state.me.id;
+  const todoSoon = (mineOnly = true) => (state.todos || []).filter((t) => !t.done_at && (!mineOnly || todoMine(t)) && addDays(t.due_on, -t.remind_days) <= nyToday())
+    .sort((a, b) => a.due_on.localeCompare(b.due_on) || a.title.localeCompare(b.title));
+  function todoWhen(t) {
+    const d = dayDiff(nyToday(), t.due_on);
+    if (t.done_at) return [`Done ${fmtDate(t.done_at.slice(0, 10))}${t.done_by ? ` by ${t.done_by === state.me.id ? 'you' : staffName(t.done_by)}` : ''}`, 'done'];
+    if (d < 0) return [`${-d} day${d === -1 ? '' : 's'} late (was due ${fmtDate(t.due_on)})`, 'late'];
+    if (d === 0) return ['Due today', 'late'];
+    return [`Due ${fmtDate(t.due_on)} · ${d === 1 ? 'tomorrow' : `in ${d} days`}`, addDays(t.due_on, -t.remind_days) <= nyToday() ? 'soon' : ''];
+  }
+  const todoItem = (t) => {
+    const [when, cls] = todoWhen(t);
+    const who = t.assigned_to ? (t.assigned_to === state.me.id ? 'You' : staffName(t.assigned_to) || 'Someone') : 'Anyone in the office';
+    return `<li class="todo ${cls ? 'todo-' + cls : ''}"><input type="checkbox" class="check" data-todo-done="${t.id}" ${t.done_at ? 'checked' : ''}
+        aria-label="${t.done_at ? 'Not done' : 'Done'}: ${esc(t.title)}">
+      <div class="todo-main"><button class="todo-title" type="button" data-todo="${t.id}">${esc(t.title)}</button>
+        <div class="small todo-when">${esc(when)} · ${esc(who)}${t.repeat !== 'none' ? ` · ${esc(REPEAT[t.repeat].toLowerCase())}` : ''}</div>
+        ${t.notes && !t.done_at ? `<div class="muted small todo-notes">${esc(t.notes)}</div>` : ''}</div></li>`;
+  };
+  async function reloadTodos() {
+    const r = await selectAll('todos', 'due_on');
+    if (!r.error) state.todos = r.data;
+  }
+  async function toggleTodo(box, after) {
+    box.disabled = true;
+    const t = state.todos.find((x) => x.id === box.dataset.todoDone);
+    const { data: next, error } = await sb.rpc(box.checked ? 'todo_done' : 'todo_undone', { p_id: box.dataset.todoDone });
+    if (error) { box.disabled = false; box.checked = !box.checked; return fail(error, 'Could not change it'); }
+    await reloadTodos();
+    const n = next && state.todos.find((x) => x.id === next);
+    toast(box.checked ? `Done: ${t?.title || 'to-do'}${n ? `. It’s back on ${fmtDate(n.due_on)}` : ''}` : 'Back on the list');
+    drawTodoBadge();
+    after();
+  }
+  function drawTodoBadge() {
+    const n = state.hasTodos ? todoSoon().length : 0, b = $('header nav button[data-view=todo]');
+    if (!b) return;
+    $('.nav-badge', b)?.remove();
+    if (n) b.insertAdjacentHTML('beforeend', ` <span class="nav-badge" aria-label="${n} to do">${n > 99 ? '99+' : n}</span>`);
+  }
+  // Today, the To do tab: check boxes and titles
+  function bindTodos(root, after) {
+    $$('[data-todo-done]', root).forEach((b) => b.addEventListener('change', () => toggleTodo(b, after)));
+    $$('[data-todo]', root).forEach((b) => b.addEventListener('click', () => openTodo(state.todos.find((x) => x.id === b.dataset.todo), after)));
+  }
+
+  function renderTodo(el) {
+    const f = state.todoFilter === 'mine' ? 'mine' : 'all';
+    const keep = (t) => f === 'all' || todoMine(t);
+    const open = state.todos.filter((t) => !t.done_at && keep(t)).sort((a, b) => a.due_on.localeCompare(b.due_on) || a.title.localeCompare(b.title));
+    const soon = open.filter((t) => addDays(t.due_on, -t.remind_days) <= nyToday()), later = open.filter((t) => !soon.includes(t));
+    const done = state.todos.filter((t) => t.done_at && keep(t)).sort((a, b) => b.done_at.localeCompare(a.done_at)).slice(0, 15);
+    el.innerHTML = `<div class="toolbar"><div class="seg" role="tablist" aria-label="Whose to-dos">
+        ${[['all', 'Everyone’s'], ['mine', 'Mine']].map(([k, v]) => `<button type="button" data-tf="${k}" aria-selected="${f === k}">${v}</button>`).join('')}</div>
+        <span class="spacer"></span><button class="btn primary" id="todo-add" type="button">+ New to-do</button></div>
+      <section class="panel"><h2>Now <span class="muted small">${soon.length}</span></h2>
+        <ul class="todo-list">${soon.map(todoItem).join('') || '<li class="muted small">Nothing right now.</li>'}</ul></section>
+      <section class="panel"><h2>Coming up</h2><ul class="todo-list">${later.map(todoItem).join('') || '<li class="muted small">Nothing else.</li>'}</ul></section>
+      ${done.length ? `<section class="panel"><h2>Done</h2><ul class="todo-list">${done.map(todoItem).join('')}</ul></section>` : ''}
+      <p class="muted small">A to-do moves to <b>Now</b>, and onto that person’s Today page, from the day you choose to be reminded until it’s checked off.
+        A repeating one comes back for its next date when it’s checked off; untick it to undo.</p>`;
+    $$('[data-tf]', el).forEach((b) => b.addEventListener('click', () => { state.todoFilter = b.dataset.tf; store.set('todoFilter', state.todoFilter); renderTodo(el); }));
+    $('#todo-add', el).addEventListener('click', () => openTodo(null, () => renderTodo(el)));
+    bindTodos(el, () => renderTodo(el));
+  }
+
+  function openTodo(t, after) {
+    const x = t || { title: '', notes: '', assigned_to: null, due_on: addDays(nyToday(), 7), repeat: 'none', remind_days: 3 };
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${String(v) === String(cur ?? '') ? 'selected' : ''}>${esc(label)}</option>`;
+    const ctl = mountDrawer({
+      title: t ? 'To-do' : 'New to-do',
+      sub: t ? esc(todoWhen(t)[0]) : '',
+      body: `<div class="section grid2">
+          <label class="full">What needs to be done<input name="title" maxlength="160" value="${esc(x.title)}" placeholder="e.g. Submit the VPK attendance"></label>
+          <label class="full">Notes<textarea name="notes" rows="3" maxlength="1000" placeholder="Where, how, what to check…">${esc(x.notes)}</textarea></label>
+          <label>For<select name="assigned_to">${opt('', 'Anyone in the office', x.assigned_to)}${officeStaff().map((p) => opt(p.id, p.full_name || p.email, x.assigned_to)).join('')}</select></label>
+          <label>Due<input type="date" name="due_on" value="${esc(x.due_on)}"></label>
+          <label>Repeats<select name="repeat">${Object.entries(REPEAT).map(([k, v]) => opt(k, v, x.repeat)).join('')}</select></label>
+          <label>Remind me<select name="remind_days">${REMIND.map(([k, v]) => opt(k, v, x.remind_days)).join('')}</select></label>
+        </div>`,
+      foot: `${t ? '<button class="btn danger" id="td-del" type="button">Delete</button>' : ''}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="td-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    form.title.focus();
+    const done = async (msg) => { ctl.dirty = false; closeDrawer(); await reloadTodos(); toast(msg); drawTodoBadge(); after(); };
+    $('#td-save', drawer).addEventListener('click', async () => {
+      const row = { title: form.title.value.trim(), notes: form.notes.value.trim() || null, assigned_to: form.assigned_to.value || null,
+        due_on: form.due_on.value, repeat: form.repeat.value, remind_days: Number(form.remind_days.value) };
+      if (!row.title) { form.title.focus(); return toast('Say what needs to be done', true); }
+      if (!row.due_on) return toast('Pick when it’s due', true);
+      const { error } = t ? await sb.from('todos').update(row).eq('id', t.id) : await sb.from('todos').insert(row);
+      if (error) return fail(error, 'Could not save it');
+      done(t ? 'Saved' : `Added: ${row.title}`);
+    });
+    $('#td-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Delete “${t.title}”?${t.repeat !== 'none' ? ' It won’t come back next time either.' : ''}`)) return;
+      const { error } = await sb.from('todos').delete().eq('id', t.id);
+      if (error) return fail(error, 'Could not delete it');
+      done('Deleted');
+    });
+  }
+
+  // ───────────── Money (017): what comes in and what goes out ─────────────
+  // Money in: tuition and program payments recorded on Tuition (by who paid), the food program once a claim is paid, and
+  // anything added here. Money out: paychecks from Patriot (gross pay) and expenses added here. Nothing is typed twice.
+  const CCFP_COL = { food: ['d', 'Food purchases'], labor: ['e', 'Food service labor and benefits'], services: ['f', 'Non-contracted purchased services'],
+    supplies: ['g', 'Non-food supplies and expendable equipment'], equipment: ['h', 'Food service equipment'], transport: ['i', 'Transportation'],
+    other: ['j', 'Other costs'] };
+  const MONEY_CATS = {
+    in: ['FES / Step Up deposit', 'School Readiness (ELC) deposit', 'VPK (ELC) deposit', 'Registration fees', 'Fundraising', 'Other income'],
+    out: ['Food', 'Food service labor', 'Supplies', 'Classroom materials', 'Rent', 'Utilities', 'Insurance', 'Maintenance & repairs', 'Payroll taxes',
+      'Bank & card fees', 'Other'],
+  };
+  const CCFP_STATUS = { draft: 'Not sent yet', submitted: 'Submitted · pending', paid: 'Paid' };
+  const CCFP_PILL = { draft: 'none', submitted: 'open', paid: 'paid' };
+  const ccfpTotal = (c) => round2(Number(c.meal_earnings || 0) + Number(c.cash_in_lieu || 0) + Number(c.adjustments || 0));
+  const ccfpMeals = (c) => ['breakfasts', 'am_snacks', 'lunches', 'pm_snacks', 'suppers', 'eve_snacks'].reduce((t, k) => t + Number(c[k] || 0), 0);
+  const sumAmt = (xs) => round2(xs.reduce((t, x) => t + Number(x.amount), 0));
+  async function loadMoney() {
+    const [m, c, pc] = await Promise.all([selectAll('money_entries', 'on_date'), sb.from('ccfp_claims').select('*').order('claim_month', { ascending: false }),
+      canPayroll() ? selectAll('paychecks', 'pay_date') : Promise.resolve({ error: true })]);
+    state.money = m.error || c.error ? null : { entries: m.data, claims: c.data, paychecks: pc.error ? null : pc.data };
+  }
+  function moneyMonth(ym) {
+    const M = state.money, inMonth = (d) => !!d && d.slice(0, 7) === ym, ins = [], outs = [];
+    const add = (arr, key, label, amount, sub = '') => {
+      if (!amount) return;
+      const x = arr.find((r) => r.key === key);
+      if (x) x.amount = round2(x.amount + amount); else arr.push({ key, label, amount: round2(amount), sub });
+    };
+    const pays = (state.payments || []).filter((p) => inMonth(p.paid_on));
+    Object.keys(PAYER).forEach((k) => {
+      const ps = pays.filter((p) => p.payer === k);
+      add(ins, `pay:${k}`, k === 'parent' ? 'Tuition and fees from families' : `${PAYER[k]} (recorded on Tuition)`, sumAmt(ps),
+        Object.keys(METHOD).map((mk) => [METHOD[mk], sumAmt(ps.filter((p) => p.method === mk))]).filter(([, v]) => v).map(([l, v]) => `${l} ${money(v)}`).join(' · '));
+    });
+    M.claims.filter((c) => c.status === 'paid' && inMonth(c.paid_on))
+      .forEach((c) => add(ins, 'ccfp', 'Child Care Food Program', Number(c.paid_amount ?? ccfpTotal(c)), `claim for ${fmtMonth(c.claim_month.slice(0, 7))}`));
+    if (M.paychecks) add(outs, 'payroll', 'Payroll (gross pay, from Patriot)', round2(M.paychecks.filter((p) => inMonth(p.pay_date)).reduce((t, p) => t + Number(p.gross), 0)));
+    M.entries.filter((e) => inMonth(e.on_date) && e.in_totals).forEach((e) => add(e.kind === 'in' ? ins : outs, `${e.kind}:${e.category}`, e.category, Number(e.amount)));
+    const tin = round2(ins.reduce((t, x) => t + x.amount, 0)), tout = round2(outs.reduce((t, x) => t + x.amount, 0));
+    const byAmt = (a, b) => b.amount - a.amount;
+    return { ins: ins.sort(byAmt), outs: outs.sort(byAmt), tin, tout, net: round2(tin - tout) };
+  }
+
+  function renderMoney(el) {
+    const tab = state.moneyTab === 'food' ? 'food' : 'overview';
+    el.innerHTML = `<div class="seg" role="tablist" aria-label="Money">${[['overview', 'In & out'], ['food', 'Food program']]
+        .map(([k, v]) => `<button type="button" role="tab" data-mtab="${k}" aria-selected="${tab === k}">${v}</button>`).join('')}</div>
+      <div id="money-body"><p class="muted">Loading…</p></div>`;
+    $$('[data-mtab]', el).forEach((b) => b.addEventListener('click', () => { state.moneyTab = b.dataset.mtab; store.set('moneyTab', state.moneyTab); renderMoney(el); }));
+    const go = () => {
+      const body = $('#money-body', el);
+      if (!body || state.view !== 'money') return;
+      if (!state.money) { body.innerHTML = '<p class="muted">To use this page, run <code>017_money_food_program_todos.sql</code> in Supabase.</p>'; return; }
+      (tab === 'food' ? drawFood : drawMoney)(body, el);
+    };
+    if (state.money === undefined) loadMoney().then(go); else go();
+  }
+
+  function drawMoney(body, el) {
+    const M = state.money, ym = state.moneyMonth || thisMonth(), S = moneyMonth(ym), year = ym.slice(0, 4), edit = canEditFinance();
+    const lines = (xs) => `<ul class="money-lines">${xs.map((x) => `<li><span>${esc(x.label)}${x.sub ? `<span class="muted small">${esc(x.sub)}</span>` : ''}</span>
+        <b>${money(x.amount)}</b></li>`).join('') || '<li class="muted small">Nothing this month.</li>'}</ul>`;
+    const pending = M.claims.filter((c) => c.status === 'submitted');
+    const owed = round2(state.students.reduce((t, s) => t + openInvoices(s.id).reduce((u, i) => u + invoiceBalance(i), 0), 0));
+    const lastPay = M.paychecks?.length ? M.paychecks.reduce((m, p) => (p.pay_date > m ? p.pay_date : m), '') : '';
+    const lastGross = lastPay ? round2(M.paychecks.filter((p) => p.pay_date === lastPay).reduce((t, p) => t + Number(p.gross), 0)) : 0;
+    const rows = M.entries.filter((e) => e.on_date.slice(0, 7) === ym).sort((a, b) => b.on_date.localeCompare(a.on_date) || a.category.localeCompare(b.category));
+    const months = Array.from({ length: 12 }, (_, i) => `${year}-${pad(i + 1)}`).map((m) => ({ m, ...moneyMonth(m) }));
+    body.innerHTML = `<div class="month-bar"><button class="btn small" id="mo-prev" type="button" aria-label="Previous month">‹</button>
+        <b>${esc(fmtMonth(ym))}</b><button class="btn small" id="mo-next" type="button" aria-label="Next month">›</button>
+        ${ym !== thisMonth() ? '<button class="btn small ghost" id="mo-now" type="button">This month</button>' : ''}<span class="spacer"></span>
+        ${edit ? `<button class="btn small" id="mo-add-in" type="button">+ Money in</button>
+          <button class="btn small primary" id="mo-add-out" type="button">+ Expense</button>` : ''}</div>
+      <div class="stats">
+        <div class="stat"><b>${money(S.tin)}</b><span>Money in</span></div>
+        <div class="stat"><b>${money(S.tout)}</b><span>Money out</span></div>
+        <div class="stat"><b class="${S.net < 0 ? 'neg' : ''}">${money(S.net)}</b><span>${S.net < 0 ? 'More out than in' : 'Left over'}</span></div>
+      </div>
+      <div class="money-grid">
+        <section class="panel"><h2>Money in</h2>${lines(S.ins)}</section>
+        <section class="panel"><h2>Money out</h2>${lines(S.outs)}
+          ${M.paychecks ? '' : '<p class="muted small">Payroll isn’t included: it needs Payroll access.</p>'}</section>
+      </div>
+      <section class="panel"><h2>On its way</h2><ul class="money-lines">
+        ${pending.map((c) => `<li><span>Coming in: Child Care Food Program, ${esc(fmtMonth(c.claim_month.slice(0, 7)))}
+          <span class="muted small">${c.submitted_on ? `submitted ${esc(fmtDate(c.submitted_on))}, ` : ''}not paid yet</span></span><b>${money(ccfpTotal(c))}</b></li>`).join('')}
+        ${owed ? `<li><span>Coming in: tuition families still owe <span class="muted small">see Tuition</span></span><b>${money(owed)}</b></li>` : ''}
+        ${lastPay ? `<li><span>Going out: payroll every pay period <span class="muted small">the last one, paid ${esc(fmtDate(lastPay))}</span></span><b>${money(lastGross)}</b></li>` : ''}
+        ${pending.length || owed || lastPay ? '' : '<li class="muted small">Nothing pending.</li>'}</ul></section>
+      <section class="panel"><h2>Added this month <span class="muted small">${rows.length}</span></h2>
+        <div class="table-wrap flat"><table><thead><tr><th>Date</th><th>Category</th><th>From / paid to</th><th>Receipt / check</th><th class="num">In</th><th class="num">Out</th></tr></thead>
+          <tbody id="mo-rows">${rows.map((e) => `<tr data-entry="${e.id}" ${edit ? '' : 'class="ro"'}><td class="nowrap">${esc(fmtDate(e.on_date))}</td>
+            <td>${esc(e.category)}${e.ccfp_col ? ` <span class="tag" title="${esc(CCFP_COL[e.ccfp_col][1])}">food program ${esc(CCFP_COL[e.ccfp_col][0])}</span>` : ''}
+              ${e.in_totals ? '' : '<div class="muted small">only for the food program record</div>'}</td>
+            <td>${esc(e.party || '')}</td><td>${esc(e.reference || '')}</td>
+            <td class="num">${e.kind === 'in' ? money(e.amount) : ''}</td><td class="num">${e.kind === 'out' ? money(e.amount) : ''}</td></tr>`).join('')
+            || '<tr><td colspan="6" class="muted">Nothing added this month.</td></tr>'}</tbody></table></div>
+        <p class="muted small">Tuition and program payments recorded per child on <b>Tuition</b>, food program claims once paid, and paychecks from Patriot
+          are counted by themselves: add here only what isn’t in the CRM yet (receipts, rent, bills, deposits not recorded per child).</p></section>
+      <section class="panel"><h2>${esc(year)} by month</h2><div class="table-wrap flat"><table><thead><tr><th>Month</th><th class="num">Money in</th>
+          <th class="num">Money out</th><th class="num">Left over</th></tr></thead><tbody id="mo-year">${months.map((x) => `<tr data-month="${x.m}" ${x.m === ym ? 'class="on"' : ''}>
+            <td>${esc(fmtMonth(x.m))}</td><td class="num">${x.tin ? money(x.tin) : ''}</td><td class="num">${x.tout ? money(x.tout) : ''}</td>
+            <td class="num ${x.net < 0 ? 'neg' : ''}">${x.tin || x.tout ? money(x.net) : ''}</td></tr>`).join('')}</tbody>
+          <tfoot><tr><th>${esc(year)}</th><th class="num">${money(months.reduce((t, x) => t + x.tin, 0))}</th><th class="num">${money(months.reduce((t, x) => t + x.tout, 0))}</th>
+            <th class="num">${money(months.reduce((t, x) => t + x.net, 0))}</th></tr></tfoot></table></div></section>`;
+    const go = (m) => { state.moneyMonth = m; drawMoney(body, el); };
+    $('#mo-prev', body).addEventListener('click', () => go(shiftMonth(ym, -1)));
+    $('#mo-next', body).addEventListener('click', () => go(shiftMonth(ym, 1)));
+    $('#mo-now', body)?.addEventListener('click', () => go(thisMonth()));
+    $$('#mo-year tr[data-month]', body).forEach((tr) => tr.addEventListener('click', () => go(tr.dataset.month)));
+    const day = ym === thisMonth() ? nyToday() : monthStart(ym);
+    $('#mo-add-in', body)?.addEventListener('click', () => openMoneyEntry({ kind: 'in', on_date: day }, () => drawMoney(body, el)));
+    $('#mo-add-out', body)?.addEventListener('click', () => openMoneyEntry({ kind: 'out', on_date: day }, () => drawMoney(body, el)));
+    if (edit) $$('#mo-rows tr[data-entry]', body).forEach((tr) => tr.addEventListener('click', () =>
+      openMoneyEntry(M.entries.find((e) => e.id === tr.dataset.entry), () => drawMoney(body, el))));
+  }
+
+  function openMoneyEntry(e0, after) {
+    const isNew = !e0.id, e = { category: '', amount: '', party: '', reference: '', note: '', ccfp_col: null, in_totals: true, ...e0 };
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${String(v) === String(cur ?? '') ? 'selected' : ''}>${esc(label)}</option>`;
+    const ctl = mountDrawer({
+      title: isNew ? (e.kind === 'in' ? 'Money in' : 'Expense') : esc(e.category),
+      sub: isNew ? '' : esc(`${e.kind === 'in' ? 'Money in' : 'Expense'} · ${fmtDate(e.on_date)} · ${money(e.amount)}`),
+      body: `<div class="section grid2">
+          <label>Type<select name="kind">${opt('out', 'Expense (money out)', e.kind)}${opt('in', 'Money in', e.kind)}</select></label>
+          <label>Date<input type="date" name="on_date" value="${esc(e.on_date)}"></label>
+          <label>Category<input name="category" list="mo-cats" maxlength="60" value="${esc(e.category)}" placeholder="e.g. Food"></label>
+          <label>Amount<input name="amount" type="number" step="0.01" min="0.01" inputmode="decimal" value="${esc(e.amount)}"></label>
+          <label>${e.kind === 'in' ? 'From' : 'Paid to'}<input name="party" maxlength="120" value="${esc(e.party)}" placeholder="${e.kind === 'in' ? 'e.g. ELC of Miami-Dade' : 'e.g. Publix'}"></label>
+          <label>Receipt / check no.<input name="reference" maxlength="80" value="${esc(e.reference)}"></label>
+          <label class="full">Food program record<select name="ccfp_col">${opt('', 'Not for the food program', e.ccfp_col)}
+            ${Object.entries(CCFP_COL).map(([k, [c, l]]) => opt(k, `(${c}) ${l}`, e.ccfp_col)).join('')}</select></label>
+          <label class="full pill-check"><input type="checkbox" class="check" name="in_totals" ${e.in_totals ? 'checked' : ''}>
+            Count it in money ${e.kind === 'in' ? 'in' : 'out'} <span class="muted small">(untick for a line that’s only for the food program record,
+            like the cook’s labor, which payroll already counts)</span></label>
+          <label class="full">Note<input name="note" maxlength="500" value="${esc(e.note)}"></label>
+        </div><datalist id="mo-cats"></datalist>`,
+      foot: `${isNew ? '' : '<button class="btn danger" id="me-del" type="button">Delete</button>'}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button>
+        ${isNew ? '<button class="btn" id="me-again" type="button">Save and add another</button>' : ''}
+        <button class="btn primary" id="me-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    const cats = () => { const k = form.kind.value; $('#mo-cats', drawer).innerHTML = [...new Set([...MONEY_CATS[k], ...state.money.entries.filter((x) => x.kind === k).map((x) => x.category)])]
+      .map((c) => `<option value="${esc(c)}"></option>`).join(''); };
+    cats();
+    form.kind.addEventListener('change', cats);
+    form.ccfp_col.addEventListener('change', () => { if (form.ccfp_col.value === 'labor') form.in_totals.checked = false; });
+    (isNew ? form.category : form.amount).focus();
+    const save = async (again) => {
+      const row = { kind: form.kind.value, on_date: form.on_date.value, category: form.category.value.trim(), amount: round2(form.amount.value),
+        party: form.party.value.trim() || null, reference: form.reference.value.trim() || null, note: form.note.value.trim() || null,
+        ccfp_col: form.ccfp_col.value || null, in_totals: form.in_totals.checked };
+      if (!row.on_date) return toast('Pick the date', true);
+      if (!row.category) { form.category.focus(); return toast('Pick or type a category', true); }
+      if (!(row.amount > 0)) { form.amount.focus(); return toast('Type the amount', true); }
+      const { data, error } = await (isNew ? sb.from('money_entries').insert(row) : sb.from('money_entries').update(row).eq('id', e.id)).select().single();
+      if (error) return fail(error, 'Could not save it');
+      state.money.entries = [...state.money.entries.filter((x) => x.id !== data.id), data];
+      toast(`Saved: ${row.category} ${money(row.amount)}`);
+      ctl.dirty = false;
+      after();
+      if (again) { openMoneyEntry({ kind: row.kind, on_date: row.on_date, category: row.category, ccfp_col: row.ccfp_col, in_totals: row.in_totals }, after); $('[name=amount]').focus(); }
+      else closeDrawer();
+    };
+    $('#me-save', drawer).addEventListener('click', () => save(false));
+    $('#me-again', drawer)?.addEventListener('click', () => save(true));
+    $('#me-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Delete this ${e.kind === 'in' ? 'money in' : 'expense'} (${e.category}, ${money(e.amount)})?`)) return;
+      const { error } = await sb.from('money_entries').delete().eq('id', e.id);
+      if (error) return fail(error, 'Could not delete it');
+      state.money.entries = state.money.entries.filter((x) => x.id !== e.id);
+      ctl.dirty = false;
+      closeDrawer();
+      toast('Deleted');
+      after();
+    });
+  }
+
+  // ───── Child Care Food Program: claims, and the monthly record of operating expenditures ─────
+  function drawFood(body, el) {
+    const M = state.money, edit = canEditFinance();
+    const ym = state.ccfpMonth || shiftMonth(thisMonth(), -1);
+    const recs = M.entries.filter((e) => e.ccfp_col && e.on_date.slice(0, 7) === ym);
+    const food = sumAmt(recs.filter((e) => e.ccfp_col === 'food')), nonFood = sumAmt(recs.filter((e) => e.ccfp_col !== 'food'));
+    const year = thisMonth().slice(0, 4);
+    const paidYear = round2(M.claims.filter((c) => c.status === 'paid' && (c.paid_on || '').startsWith(year)).reduce((t, c) => t + Number(c.paid_amount ?? ccfpTotal(c)), 0));
+    const pending = round2(M.claims.filter((c) => c.status === 'submitted').reduce((t, c) => t + ccfpTotal(c), 0));
+    body.innerHTML = `<div class="toolbar"><span class="muted small">Florida Department of Health, Child Care Food Program: one claim a month.</span>
+        <span class="spacer"></span>${edit ? '<button class="btn small primary" id="cf-add" type="button">+ New claim</button>' : ''}</div>
+      <div class="stats">
+        <div class="stat"><b>${money(pending)}</b><span>Submitted, not paid yet</span></div>
+        <div class="stat"><b>${money(paidYear)}</b><span>Paid in ${esc(year)}</span></div>
+        <div class="stat"><b>${M.claims.length}</b><span>Claims recorded</span></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Claim month</th><th class="num">Meals &amp; snacks</th><th class="num">Reimbursement</th>
+          <th class="num">Costs</th><th>Status</th><th>Submitted</th><th>Paid</th></tr></thead>
+        <tbody id="cf-rows">${M.claims.map((c) => `<tr data-claim="${c.id}"><td><b>${esc(fmtMonth(c.claim_month.slice(0, 7)))}</b></td>
+          <td class="num">${ccfpMeals(c).toLocaleString()}</td><td class="num">${money(ccfpTotal(c))}</td>
+          <td class="num">${c.food_cost != null || c.non_food_cost != null ? money(Number(c.food_cost || 0) + Number(c.non_food_cost || 0)) : ''}</td>
+          <td><span class="pay-pill ps-${CCFP_PILL[c.status]}">${esc(CCFP_STATUS[c.status])}</span></td>
+          <td class="nowrap">${c.submitted_on ? esc(fmtDate(c.submitted_on)) : ''}</td>
+          <td class="nowrap">${c.paid_on ? `${esc(fmtDate(c.paid_on))}${c.paid_amount != null ? ` · ${money(c.paid_amount)}` : ''}` : ''}</td></tr>`).join('')
+          || '<tr><td colspan="7" class="muted">No claims yet.</td></tr>'}</tbody></table></div>
+      <section class="panel"><h2>Monthly record of operating expenditures</h2>
+        <div class="month-bar"><button class="btn small" id="cf-prev" type="button" aria-label="Previous month">‹</button><b>${esc(fmtMonth(ym))}</b>
+          <button class="btn small" id="cf-next" type="button" aria-label="Next month">›</button><span class="spacer"></span>
+          ${edit ? '<button class="btn small" id="cf-receipt" type="button">+ Add a receipt</button>' : ''}
+          <button class="btn small primary" id="cf-print" type="button" ${recs.length ? '' : 'disabled'}>Print the record</button></div>
+        <p class="small">${recs.length} receipt${recs.length === 1 ? '' : 's'} · Food costs <b>${money(food)}</b> · Non-food costs <b>${money(nonFood)}</b> ·
+          Total <b>${money(round2(food + nonFood))}</b></p>
+        <p class="muted small">Receipts are the expenses on <b>In &amp; out</b> marked for the food program (column d–j). The record prints like the
+          state’s form, ready to sign and keep with the claim.</p></section>`;
+    $$('#cf-rows tr[data-claim]', body).forEach((tr) => tr.addEventListener('click', () => openClaim(M.claims.find((c) => c.id === tr.dataset.claim), () => drawFood(body, el))));
+    $('#cf-add', body)?.addEventListener('click', () => openClaim(null, () => drawFood(body, el)));
+    const go = (m) => { state.ccfpMonth = m; drawFood(body, el); };
+    $('#cf-prev', body).addEventListener('click', () => go(shiftMonth(ym, -1)));
+    $('#cf-next', body).addEventListener('click', () => go(shiftMonth(ym, 1)));
+    $('#cf-print', body).addEventListener('click', () => showCcfpRecord(ym));
+    $('#cf-receipt', body)?.addEventListener('click', () => openMoneyEntry({ kind: 'out', on_date: monthStart(ym), category: 'Food', ccfp_col: 'food' }, () => drawFood(body, el)));
+  }
+
+  function openClaim(c0, after) {
+    const isNew = !c0, M = state.money;
+    const c = c0 || { claim_month: monthStart(shiftMonth(thisMonth(), -1)), status: 'draft', adjustments: 0 };
+    const num = (k, label, step = '1') => `<label>${label}<input name="${k}" type="number" min="0" step="${step}" inputmode="decimal" value="${esc(c[k] ?? '')}"></label>`;
+    const ctl = mountDrawer({
+      title: isNew ? 'New food program claim' : `Claim for ${esc(fmtMonth(c.claim_month.slice(0, 7)))}`,
+      sub: 'Copy the numbers from the Child Care Center Claim',
+      body: `<div class="section grid2">
+          <label>Claim month<input type="month" name="claim_month" value="${esc(c.claim_month.slice(0, 7))}"></label>
+          <label>Status<select name="status">${Object.entries(CCFP_STATUS).map(([k, v]) => `<option value="${k}" ${c.status === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
+          ${num('operating_days', 'Operating days')}${num('daily_avg', 'Average daily participation')}</div>
+        <div class="section"><h3>Children enrolled by category</h3><div class="grid3">${num('enrolled_free', 'Free')}${num('enrolled_reduced', 'Reduced')}${num('enrolled_paid', 'Non-needy')}</div></div>
+        <div class="section"><h3>Meals claimed</h3><div class="grid3">${num('breakfasts', 'Breakfast')}${num('am_snacks', 'Morning snack')}${num('lunches', 'Lunch')}
+          ${num('pm_snacks', 'Afternoon snack')}${num('suppers', 'Supper')}${num('eve_snacks', 'Evening snack')}</div></div>
+        <div class="section"><h3>Earnings</h3><div class="grid3">${num('meal_earnings', 'Meal earnings', '0.01')}${num('cash_in_lieu', 'Cash-in-lieu', '0.01')}
+          ${num('adjustments', 'Adjustments', '0.01')}</div><p class="small">Total reimbursement: <b id="cf-total"></b></p></div>
+        <div class="section"><h3>Costs</h3><div class="grid3">${num('food_cost', 'Food cost', '0.01')}${num('non_food_cost', 'Non-food cost', '0.01')}
+          ${num('admin_cost', 'Administrative', '0.01')}</div>
+          <button class="btn small" type="button" id="cf-fill">Fill food and non-food from the receipts</button> <span class="muted small" id="cf-fill-note"></span></div>
+        <div class="section grid2">
+          <label>Submitted on<input type="date" name="submitted_on" value="${esc(c.submitted_on || '')}"></label><span></span>
+          <label>Paid on<input type="date" name="paid_on" value="${esc(c.paid_on || '')}"></label>${num('paid_amount', 'Amount paid', '0.01')}
+          <label class="full">Note<input name="note" maxlength="500" value="${esc(c.note || '')}"></label></div>`,
+      foot: `${isNew ? '' : '<button class="btn danger" id="cf-del" type="button">Delete</button>'}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="cf-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    const v = (k) => (form[k].value === '' ? null : Number(form[k].value));
+    const total = () => { $('#cf-total', drawer).textContent = money(round2((v('meal_earnings') || 0) + (v('cash_in_lieu') || 0) + (v('adjustments') || 0))); };
+    total();
+    ['meal_earnings', 'cash_in_lieu', 'adjustments'].forEach((k) => form[k].addEventListener('input', total));
+    form.paid_on.addEventListener('change', () => {
+      if (form.paid_on.value && form.status.value !== 'paid') form.status.value = 'paid';
+      if (form.paid_on.value && form.paid_amount.value === '') form.paid_amount.value = round2((v('meal_earnings') || 0) + (v('cash_in_lieu') || 0) + (v('adjustments') || 0)).toFixed(2);
+    });
+    form.submitted_on.addEventListener('change', () => { if (form.submitted_on.value && form.status.value === 'draft') form.status.value = 'submitted'; });
+    $('#cf-fill', drawer).addEventListener('click', () => {
+      const ym = form.claim_month.value, recs = M.entries.filter((e) => e.ccfp_col && e.on_date.slice(0, 7) === ym);
+      form.food_cost.value = sumAmt(recs.filter((e) => e.ccfp_col === 'food')).toFixed(2);
+      form.non_food_cost.value = sumAmt(recs.filter((e) => e.ccfp_col !== 'food')).toFixed(2);
+      $('#cf-fill-note', drawer).textContent = `from ${recs.length} receipt${recs.length === 1 ? '' : 's'} in ${fmtMonth(ym)}`;
+      ctl.dirty = true;
+    });
+    $('#cf-save', drawer).addEventListener('click', async () => {
+      if (!form.claim_month.value) return toast('Pick the claim month', true);
+      const row = { claim_month: monthStart(form.claim_month.value), status: form.status.value, submitted_on: form.submitted_on.value || null,
+        paid_on: form.paid_on.value || null, note: form.note.value.trim() || null, adjustments: v('adjustments') || 0 };
+      ['operating_days', 'daily_avg', 'enrolled_free', 'enrolled_reduced', 'enrolled_paid', 'meal_earnings', 'cash_in_lieu', 'food_cost', 'non_food_cost',
+        'admin_cost', 'paid_amount'].forEach((k) => { row[k] = v(k); });
+      ['breakfasts', 'am_snacks', 'lunches', 'pm_snacks', 'suppers', 'eve_snacks'].forEach((k) => { row[k] = v(k) || 0; });
+      const { data, error } = await (isNew ? sb.from('ccfp_claims').insert(row) : sb.from('ccfp_claims').update(row).eq('id', c.id)).select().single();
+      if (error) return fail(error, error.code === '23505' ? 'There’s already a claim for that month' : 'Could not save the claim');
+      M.claims = [...M.claims.filter((x) => x.id !== data.id), data].sort((a, b) => b.claim_month.localeCompare(a.claim_month));
+      ctl.dirty = false;
+      closeDrawer();
+      toast(`Saved the claim for ${fmtMonth(data.claim_month.slice(0, 7))}`);
+      after();
+    });
+    $('#cf-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Delete the claim for ${fmtMonth(c.claim_month.slice(0, 7))} from the CRM?`)) return;
+      const { error } = await sb.from('ccfp_claims').delete().eq('id', c.id);
+      if (error) return fail(error, 'Could not delete it');
+      M.claims = M.claims.filter((x) => x.id !== c.id);
+      ctl.dirty = false;
+      closeDrawer();
+      toast('Deleted');
+      after();
+    });
+  }
+
+  function showCcfpRecord(ym) {
+    const recs = state.money.entries.filter((e) => e.ccfp_col && e.on_date.slice(0, 7) === ym)
+      .sort((a, b) => a.on_date.localeCompare(b.on_date) || (a.reference || '').localeCompare(b.reference || ''));
+    const cols = Object.keys(CCFP_COL), col = (k) => sumAmt(recs.filter((e) => e.ccfp_col === k));
+    const food = col('food'), nonFood = round2(cols.filter((k) => k !== 'food').reduce((t, k) => t + col(k), 0));
+    const [y, mo] = ym.split('-');
+    const sheet = document.createElement('div');
+    sheet.className = 'print-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.innerHTML = `<div class="print-bar no-print"><b>Food program record</b><span class="spacer"></span>
+        <button class="btn primary" type="button" id="cr-print">Print / Save as PDF</button><button class="btn" type="button" id="cr-close">Close</button></div>
+      <article class="receipt ccfp-sheet">
+        <h1 class="ccfp-h">Monthly Record of CCFP Operating Expenditures</h1>
+        <p class="ccfp-sub">For Afterschool Nutrition Program, Affiliated Centers, Homeless Program, and Independent Child Care Centers</p>
+        <div class="ccfp-head"><div><b>Month</b> ${esc(new Date(`${ym}-01T00:00:00`).toLocaleDateString('en-US', { month: 'long' }).toUpperCase())} <b>Year</b> ${esc(y)}</div>
+          <div><b>Site name</b> ${esc((state.settings?.school_name || 'Creativa Academy').toUpperCase())}</div>
+          <div><b>Food costs</b> ${money(food)} · <b>Non-food costs</b> ${money(nonFood)} · <b>Grand total operating costs</b> ${money(round2(food + nonFood))}</div></div>
+        <table class="ccfp-table"><colgroup><col class="c-date"><col class="c-ref"><col class="c-payee">${cols.map(() => '<col>').join('')}</colgroup>
+          <thead><tr><th>(a) Day of month</th><th>(b) Invoice or receipt no. / check no.</th><th>(c) Name of payee for expenditures claimed</th>
+          ${cols.map((k) => `<th class="num">(${CCFP_COL[k][0]}) ${esc(CCFP_COL[k][1])}</th>`).join('')}</tr></thead>
+          <tbody>${recs.map((e) => `<tr><td class="nowrap">${esc(`${Number(mo)}.${Number(e.on_date.slice(8))}.${y.slice(2)}`)}</td><td>${esc(e.reference || 'N/A')}</td>
+            <td>${esc((e.party || e.category).toUpperCase())}</td>${cols.map((k) => `<td class="num">${e.ccfp_col === k ? money(e.amount) : ''}</td>`).join('')}</tr>`).join('')}</tbody>
+          <tfoot><tr><th colspan="3">Totals</th>${cols.map((k) => `<th class="num">${money(col(k))}</th>`).join('')}</tr></tfoot></table>
+        <p class="r-note">Printed ${esc(fmtDateTime(new Date().toISOString()))} from the Creativa CRM (Money → Food program).</p>
+      </article>`;
+    document.body.append(sheet);
+    document.body.classList.add('printing');
+    const close = () => { sheet.remove(); document.body.classList.remove('printing'); };
+    $('#cr-print', sheet).addEventListener('click', () => window.print());
+    $('#cr-close', sheet).addEventListener('click', close);
+    sheet.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') close(); });
+    $('#cr-close', sheet).focus();
+  }
+
   // ───────────── Messages (013): texts to families ─────────────
   // Staff pick who gets it (everyone, a class, families who owe or are late, or families they tick), write it once,
   // and each family gets its own text with {parent}, {child} and {balance} filled in. netlify/functions/family-texts.mjs
@@ -3663,6 +4120,9 @@
         : c.diff?.canceled_at ? `canceled a text to ${d.audience}` : `changed a text to ${d.audience}`;
       case 'message_templates': return `${{ insert: 'saved', update: 'changed', delete: 'deleted' }[c.action]} the message “${d.name}” in My messages`;
       case 'message_lists': return `${{ insert: 'made', update: 'changed', delete: 'deleted' }[c.action]} the list “${d.name}”`;
+      case 'money_entries': return `${act} ${d.kind === 'in' ? 'money in' : 'an expense'}: ${d.category} ${money(d.amount)}${d.party ? ` (${d.party})` : ''}, ${fmtDate(d.on_date)}`;
+      case 'ccfp_claims': return `${act} the food program claim for ${fmtMonth(String(d.claim_month).slice(0, 7))}${c.action === 'update' ? `: ${dt}` : ''}`;
+      case 'todos': return c.action === 'update' && c.diff?.done_at ? `${d.done_at ? 'checked off' : 'unchecked'} “${d.title}”` : `${act} the to-do “${d.title}”`;
       case 'settings': return `changed settings: ${Object.keys(c.diff || {}).map((k) => FIELD_LABEL[k] || k.replace(/_/g, ' ')).join(', ')}`;
       case 'profiles': return c.action === 'update' ? `changed ${d.full_name || d.email}’s access: ${dt}` : `${act} login ${d.email}`;
       default: return `${act} ${c.table_name.replace(/_/g, ' ')}`;

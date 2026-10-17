@@ -771,6 +771,106 @@ try {
   assert.equal(await page.locator('.pay-note').count(), 0, 'the note goes once the steps were seen');
   ok('How to do payroll: a note on Today, the steps on the Payroll page (Hours → Patriot → pay stubs → paychecks), printable');
 
+  // ── to do (017) ──
+  const nyDay = (n) => new Date(Date.now() + n * 864e5).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  await page.click('header nav button[data-view=todo]');
+  assert.match(await page.locator('li.todo', { hasText: 'Submit VPK attendance' }).textContent(), /Due [\s\S]* · Anyone in the office · every month/);
+  assert.equal(await page.locator('li.todo', { hasText: 'Submit the Child Care Food Program claim' }).count(), 1);
+  assert.equal(await page.locator('li.todo', { hasText: 'Submit School Readiness (SR) attendance' }).count(), 1);
+  await page.click('#todo-add');
+  await page.fill('.drawer input[name=title]', 'Order classroom supplies');
+  await page.locator('.drawer select[name=assigned_to]').selectOption({ label: 'Emily Owner' });
+  await page.fill('.drawer input[name=due_on]', nyDay(1));
+  await page.selectOption('.drawer select[name=repeat]', 'monthly');
+  await page.selectOption('.drawer select[name=remind_days]', '7');
+  await page.click('#td-save');
+  await page.waitForSelector('#toast:has-text("Added: Order classroom supplies")');
+  assert.match(await page.locator('li.todo', { hasText: 'Order classroom supplies' }).textContent(), /tomorrow · You · every month/);
+  await page.locator('header nav button[data-view=todo] .nav-badge').waitFor();
+  await page.click('header nav button[data-view=today]');
+  await page.locator('.today-todo li.todo', { hasText: 'Order classroom supplies' }).locator('[data-todo-done]').check();
+  await page.waitForSelector('#toast:has-text("Done: Order classroom supplies. It’s back on")');
+  assert.equal(await page.locator('.today-todo li.todo', { hasText: 'Order classroom supplies' }).count(), 0, 'checked off: off Today until next time');
+  await page.click('header nav button[data-view=todo]');
+  assert.equal(await page.locator('li.todo:not(.todo-done)', { hasText: 'Order classroom supplies' }).count(), 1, 'next month’s is on the list');
+  await page.locator('li.todo-done', { hasText: 'Order classroom supplies' }).locator('[data-todo-done]').uncheck();
+  await page.waitForSelector('#toast:has-text("Back on the list")');
+  assert.equal(await page.locator('li.todo', { hasText: 'Order classroom supplies' }).count(), 1, 'undo: open again, and next month’s copy is gone');
+  await shot(page, '33-todo');
+  ok('To do: monthly reports to start, add one for a person, it shows on their Today with a count; check off (comes back next month), undo');
+
+  // ── money (017) ──
+  await page.click('header nav button[data-view=money]');
+  const moneyCol = (h) => page.locator('.money-grid .panel', { has: page.locator('h2', { hasText: h }) });
+  assert.match(await moneyCol('Money in').locator('li', { hasText: 'Tuition and fees from families' }).textContent(), /Zelle \$300\.00/);
+  await page.click('#mo-add-out');
+  await page.fill('.drawer input[name=category]', 'Food');
+  await page.fill('.drawer input[name=amount]', '500');
+  await page.fill('.drawer input[name=party]', 'Test Market');
+  await page.fill('.drawer input[name=reference]', '1001');
+  await page.selectOption('.drawer select[name=ccfp_col]', 'food');
+  await page.click('#me-again');
+  await page.waitForSelector('#toast:has-text("Saved: Food $500.00")');
+  assert.equal(await page.inputValue('.drawer input[name=category]'), 'Food', 'add another keeps the category');
+  await page.fill('.drawer input[name=category]', 'Supplies');
+  await page.fill('.drawer input[name=amount]', '80');
+  await page.selectOption('.drawer select[name=ccfp_col]', 'supplies');
+  await page.click('#me-save');
+  await page.waitForSelector('#toast:has-text("Saved: Supplies $80.00")');
+  await page.click('#mo-add-out');
+  await page.fill('.drawer input[name=category]', 'Food service labor');
+  await page.fill('.drawer input[name=amount]', '1000');
+  await page.selectOption('.drawer select[name=ccfp_col]', 'labor');
+  assert.equal(await page.locator('.drawer input[name=in_totals]').isChecked(), false, 'labor is only for the food program record');
+  await page.click('#me-save');
+  await page.waitForSelector('#toast:has-text("Saved: Food service labor $1,000.00")');
+  assert.match(await moneyCol('Money out').textContent(), /Food[\s\S]*\$500\.00[\s\S]*Supplies[\s\S]*\$80\.00/);
+  assert.equal(await moneyCol('Money out').locator('li', { hasText: 'Food service labor' }).count(), 0, 'not counted twice with payroll');
+  await page.locator('#mo-rows tr', { hasText: 'Food service labor' }).locator('text=only for the food program record').waitFor();
+  ok('Money: tuition from Tuition by method; expenses and receipts (add another), marked for the food program; labor only on its record');
+
+  await page.click('[data-mtab=food]');
+  await page.click('#cf-add');
+  await page.fill('.drawer input[name=claim_month]', nyDay(0).slice(0, 7));
+  await page.fill('.drawer input[name=breakfasts]', '1000');
+  await page.fill('.drawer input[name=lunches]', '1200');
+  await page.fill('.drawer input[name=pm_snacks]', '1100');
+  await page.fill('.drawer input[name=meal_earnings]', '7000');
+  await page.fill('.drawer input[name=cash_in_lieu]', '400');
+  assert.equal(await page.locator('#cf-total').textContent(), '$7,400.00');
+  await page.click('#cf-fill');
+  assert.equal(await page.inputValue('.drawer input[name=food_cost]'), '500.00');
+  assert.equal(await page.inputValue('.drawer input[name=non_food_cost]'), '1080.00');
+  await page.fill('.drawer input[name=submitted_on]', nyDay(0));
+  await page.locator('.drawer input[name=submitted_on]').dispatchEvent('change');
+  assert.equal(await page.inputValue('.drawer select[name=status]'), 'submitted');
+  await page.click('#cf-save');
+  await page.waitForSelector('#toast:has-text("Saved the claim for")');
+  assert.match(await page.locator('#cf-rows tr').first().textContent(), /3,300[\s\S]*\$7,400\.00[\s\S]*\$1,580\.00[\s\S]*Submitted · pending/);
+  await page.locator('.stat', { hasText: 'Submitted, not paid yet' }).locator('text=$7,400.00').waitFor();
+  await page.click('#cf-next');
+  await page.click('#cf-print');
+  const rec = page.locator('.ccfp-sheet');
+  assert.equal(await rec.locator('tbody tr').count(), 3);
+  assert.match(await rec.locator('tfoot').textContent(), /\$500\.00[\s\S]*\$1,000\.00[\s\S]*\$0\.00[\s\S]*\$80\.00/);
+  assert.match(await rec.locator('.ccfp-head').textContent(), /Food costs \$500\.00 · Non-food costs \$1,080\.00 · Grand total operating costs \$1,580\.00/);
+  await shot(page, '34-ccfp-record');
+  await page.click('#cr-close');
+  await page.click('[data-mtab=overview]');
+  await page.locator('.panel', { hasText: 'On its way' }).locator('li', { hasText: 'Child Care Food Program' }).locator('text=$7,400.00').waitFor();
+  await page.click('[data-mtab=food]');
+  await page.locator('#cf-rows tr').first().click();
+  await page.fill('.drawer input[name=paid_on]', nyDay(0));
+  await page.locator('.drawer input[name=paid_on]').dispatchEvent('change');
+  assert.equal(await page.inputValue('.drawer input[name=paid_amount]'), '7400.00');
+  await page.click('#cf-save');
+  await page.waitForSelector('#toast:has-text("Saved the claim")');
+  await page.click('[data-mtab=overview]');
+  await moneyCol('Money in').locator('li', { hasText: 'Child Care Food Program' }).locator('text=$7,400.00').waitFor();
+  await page.locator('#mo-year tr.on').waitFor();
+  await shot(page, '35-money');
+  ok('Food program: a claim (total, costs from the receipts), pending → coming in, paid → money in; the monthly record prints with its columns');
+
   // ── activated staff, as a non-admin ──
   const p2 = await newPage();
   await login(p2, 'newhire@creativaacademy.com', 'newhire-pass-1');
@@ -885,6 +985,7 @@ try {
   await page.locator('.drawer #st-texts li', { hasText: /wear something blue\. - Emily\s+Reply STOP to opt out\./ }).locator('text=Canceled').waitFor();
   await page.locator('.drawer [data-close]').first().click();
   assert.equal(await p2.locator('header nav button[data-view=messages]').count(), 0, 'no Messages without finance access');
+  assert.equal(await p2.locator('header nav button[data-view=money], header nav button[data-view=todo]').count(), 0, 'no Money or To do without finance access');
   ok('Messages: write your own with blocks, save it to My messages, fill in its [blank], change one family’s text; history and cancel');
 
   // ── lists (015) ──
@@ -992,6 +1093,10 @@ try {
   assert.equal(await p3.locator('[data-pay-for], [data-pay-inv], [data-bill-one], #t-bill').count(), 0);
   assert.equal(await p3.locator('header nav button[data-view=payroll]').count(), 0, 'no Payroll without payroll access');
   assert.equal(await p3.locator('header nav button[data-view=messages]').count(), 0, 'no Messages with view-only finance');
+  assert.equal(await p3.locator('header nav button[data-view=todo]').count(), 0, 'no To do for view-only finance');
+  await p3.click('header nav button[data-view=money]');
+  await p3.locator('.money-grid').waitFor();
+  assert.equal(await p3.locator('#mo-add-out, #mo-add-in').count(), 0, 'view-only finance sees Money but can’t add');
   ok('view-only finance: sees Tuition, cannot record payments; no Payroll');
 
   // ── phone ──

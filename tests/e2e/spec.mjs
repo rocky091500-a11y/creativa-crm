@@ -827,6 +827,12 @@ try {
   assert.match(await moneyCol('Money out').textContent(), /Food[\s\S]*\$500\.00[\s\S]*Supplies[\s\S]*\$80\.00/);
   assert.equal(await moneyCol('Money out').locator('li', { hasText: 'Food service labor' }).count(), 0, 'not counted twice with payroll');
   await page.locator('#mo-rows tr', { hasText: 'Food service labor' }).locator('text=only for the food program record').waitFor();
+  const aug = page.locator('#mo-year tr[data-month="2026-08"]');
+  if (await aug.count()) {   // the old billing system's sheets (seed: Aug 2026) count as tuition paid that month
+    await aug.click();
+    await moneyCol('Money in').locator('li', { hasText: 'Tuition paid in the old billing system' }).waitFor();
+    await page.click('#mo-now');
+  }
   ok('Money: tuition from Tuition by method; expenses and receipts (add another), marked for the food program; labor only on its record');
 
   await page.click('[data-mtab=food]');

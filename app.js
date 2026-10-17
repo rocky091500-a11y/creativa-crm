@@ -213,6 +213,13 @@
     return todayStr() > addDays(inv.due_date, 4) ? 'overdue' : 'open';   // the billing system allows until Friday
   }
   const invoiceBalance = (inv) => (inv.void ? 0 : Math.max(round2(Number(inv.amount) - invoicePaid(inv)), 0));
+  // Late: money still owed after the Friday grace day. A weekly payer's two-week bill has a second Friday for its second
+  // week (018), so paying the first week on time isn't late.
+  function invoiceLate(inv) {
+    if (inv.void || invoiceBalance(inv) <= 0 || todayStr() <= addDays(inv.due_date, 4)) return false;
+    return !(inv.kind === 'tuition' && state.finance[inv.student_id]?.tuition_frequency === 'weekly'
+      && todayStr() <= addDays(inv.due_date, 11) && invoicePaid(inv) >= Number(inv.amount) / 2);
+  }
   const openInvoices = (sid) => state.invoices.filter((i) => i.student_id === sid && !i.void && invoiceBalance(i) > 0)
     .sort((a, b) => a.invoice_date.localeCompare(b.invoice_date));
   const lateFeeFor = (inv) => (inv.late_fee_for && state.invoices.find((i) => i.id === inv.late_fee_for)) || null;   // the tuition it's for
@@ -1814,7 +1821,7 @@
     const toBill = rows.filter((r) => r.status === 'not_invoiced').length;
     // Late fee: tuition still not fully paid after the Friday grace day (008).
     const lateAmt = state.hasV7 ? Number(state.settings?.late_fee_amount) || 0 : 0;
-    const lateDue = lateAmt ? rows.filter((r) => r.inv && r.balance > 0 && todayStr() > addDays(r.inv.due_date, 4)
+    const lateDue = lateAmt ? rows.filter((r) => r.inv && r.balance > 0 && invoiceLate(r.inv)
       && !state.invoices.some((i) => i.late_fee_for === r.inv.id)) : [];   // a waived (voided) fee stays waived
     const periodPays = state.payments.filter((x) => x.paid_on >= p && x.paid_on < addDays(p, billing().days))
       .sort((a, b) => a.paid_on.localeCompare(b.paid_on) || a.receipt_no - b.receipt_no);
@@ -3152,6 +3159,9 @@
       add(ins, `pay:${k}`, k === 'parent' ? 'Tuition and fees from families' : `${PAYER[k]} (recorded on Tuition)`, sumAmt(ps),
         Object.keys(METHOD).map((mk) => [METHOD[mk], sumAmt(ps.filter((p) => p.method === mk))]).filter(([, v]) => v).map(([l, v]) => `${l} ${money(v)}`).join(' · '));
     });
+    const anchor = state.settings?.billing_anchor || '9999-12-31';   // before the CRM billed: what the old system's sheets say was paid
+    add(ins, 'old', 'Tuition paid in the old billing system', round2((state.history || []).filter((h) => h.paid != null && h.period_start < anchor
+      && inMonth(h.period_start)).reduce((t, h) => t + Number(h.paid), 0)), 'Balance Summary sheets, by billing period');
     M.claims.filter((c) => c.status === 'paid' && inMonth(c.paid_on))
       .forEach((c) => add(ins, 'ccfp', 'Child Care Food Program', Number(c.paid_amount ?? ccfpTotal(c)), `claim for ${fmtMonth(c.claim_month.slice(0, 7))}`));
     if (M.paychecks) add(outs, 'payroll', 'Payroll (gross pay, from Patriot)', round2(M.paychecks.filter((p) => inMonth(p.pay_date)).reduce((t, p) => t + Number(p.gross), 0)));
@@ -3465,7 +3475,7 @@
   const STOP_LINE = 'Reply STOP to opt out.';
   const HAS_BLANK = /\[[^\]]*\]/;
   const familyOwes = (kids) => round2(kids.reduce((t, s) => t + openInvoices(s.id).reduce((u, i) => u + invoiceBalance(i), 0), 0));
-  const familyLate = (kids) => round2(kids.reduce((t, s) => t + openInvoices(s.id).filter((i) => todayStr() > addDays(i.due_date, 4))
+  const familyLate = (kids) => round2(kids.reduce((t, s) => t + openInvoices(s.id).filter(invoiceLate)
     .reduce((u, i) => u + invoiceBalance(i), 0), 0));
   const andList = (xs) => (xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}` : xs[0] || '');
   const anyKid = (s) => s.status === 'enrolled' || openInvoices(s.id).length > 0;          // enrolled, or still owes

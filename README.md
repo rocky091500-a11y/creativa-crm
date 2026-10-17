@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql` and `016_paychecks.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql` and `017_money_food_program_todos.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -345,6 +345,28 @@ to it until they've seen it.
 
 The tab lists each payroll and the year's totals, by pay date and by person; each person's timesheet shows their latest
 paychecks. Only admins and people with Payroll access see it, and every change shows on the Changes page under Payroll.
+
+## Money, the Child Care Food Program and To do (017)
+
+**Money** (admins and finance access; adding needs finance "View & record") shows each month what came in and what
+went out, what's left over, what's on its way, and the year by month:
+
+- **Money in**: tuition and program payments recorded per child on Tuition (by who paid: families, FES / Step Up, SR,
+  VPK, and by method), food program claims once paid, and anything added here (deposits not recorded per child...).
+- **Money out**: payroll (gross pay from the paychecks copied from Patriot, 016; needs Payroll access) and expenses
+  added here (food, supplies, rent, utilities...). Nothing that's already in the CRM is typed twice.
+- **On its way**: food program claims submitted but not paid, tuition families still owe, and the last payroll.
+
+Receipts can be marked for the food program's columns (d) food purchases to (j) other costs. **Money → Food program**
+keeps each month's claim (meals, earnings, costs, submitted, paid; "Fill food and non-food from the receipts") and
+prints the **Monthly Record of CCFP Operating Expenditures** from those receipts. A line that's only for that record,
+like the cook's labor that payroll already counts, is left out of money out.
+
+**To do** (admins, finance "View & record" and payroll access): each to-do has a due date, who it's for, whether it
+repeats, and how many days before to remind. From then until it's checked off it's on that person's **Today** page and
+counted on the To do tab; a repeating one comes back for its next date when checked off. It starts with the food
+program claim and the SR and VPK attendance, due the 1st of every month, reminded a week before. Reminders stay in the
+CRM.
 
 ## Telegram alerts
 

@@ -22,7 +22,9 @@ insert into public.payments (student_id, invoice_id, paid_on, covers_month, amou
     from public.invoices i join public.students s on s.id = i.student_id where s.name in ('Wendy Weekly', 'Bob Biweekly') and i.kind = 'tuition';
 set role authenticated;
 select pg_temp.as_user('00000000-0000-0000-0000-00000000000d');
-select pg_temp.ok(public.create_late_fees(((now() at time zone 'America/New_York')::date - 6)) = 2, 'after the first Friday: the unpaid weekly payer and the half-paid biweekly one');
+select pg_temp.ok(public.create_late_fees(((now() at time zone 'America/New_York')::date - 6)) >= 2, 'after the first Friday: late fees added');
+select pg_temp.ok((select count(distinct s.name) = 2 from public.invoices f join public.invoices i on i.id = f.late_fee_for join public.students s on s.id = i.student_id
+  where s.name in ('Wally Weekly', 'Bob Biweekly')), '... for the unpaid weekly payer and the half-paid biweekly one');
 select pg_temp.ok((select count(*) = 0 from public.invoices f join public.invoices i on i.id = f.late_fee_for join public.students s on s.id = i.student_id
   where s.name = 'Wendy Weekly'), 'a weekly payer who paid the first week isn''t late yet');
 reset role;
@@ -31,7 +33,7 @@ update public.invoices set period_start = period_start - 7, invoice_date = invoi
  where kind = 'tuition' and student_id = (select id from public.students where name = 'Wendy Weekly');
 set role authenticated;
 select pg_temp.as_user('00000000-0000-0000-0000-00000000000d');
-select pg_temp.ok(public.create_late_fees(((now() at time zone 'America/New_York')::date - 13)) = 1, 'after the second Friday the second week is late too');
+select pg_temp.ok(public.create_late_fees(((now() at time zone 'America/New_York')::date - 13)) >= 1, 'after the second Friday the second week is late too');   -- (other tests' bills can share that period)
 select pg_temp.ok((select note from public.invoices where kind = 'fee' and description = 'Late fee'
   and late_fee_for = (select i.id from public.invoices i join public.students s on s.id = i.student_id where s.name = 'Wendy Weekly' and i.kind = 'tuition'))
   like '%not paid by Friday%', 'the note says which Friday');

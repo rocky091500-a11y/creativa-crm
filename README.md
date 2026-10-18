@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql` and `019_projection.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql` and `020_class_rates_and_bills.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -358,10 +358,11 @@ first week isn't shown as late, and gets no late fee, until then.
 ## Projection, start dates and the waiting list (019)
 
 **Money → Projection** estimates the next 3, 6 or 12 months: tuition from each enrolled child's rate for every billing
-period they'll be here (from their start date until a last day set on their page), what scholarships and programs pay
-for children not billed to the family, the food program (average of the last 3 claims), and other money in, payroll
-and expenses from recent months. A second line shows what's added if the families starting do. Below it, who starts
-and leaves in those months.
+period they'll be here (from their start date until a last day set on their page), by who pays (private-pay families,
+FES / Step Up, School Readiness families' share, Kindergarten on Step Up pending), VPK and SR payments and the food
+program (recent averages), and other money in; payroll, rent and bills on their days (020), and other expenses from
+recent months. A second line shows what's added if the families starting do. Below it, children whose rate isn't one of
+their class's (one tap to use the class rate), and who starts and leaves. On a phone each month is a card.
 
 For a family in the **Pipeline**, open it and fill in **Starts on** and **Tuition** (with how often); the card shows
 "starts …" and they count from that day. Both move over when they become a student.
@@ -370,6 +371,19 @@ The waiting list: **Registration paid on** (and the amount) on an inquiry, or a 
 registration bill paid in full), is what holds a spot. Waitlisted cards say *registration paid* or *not paid*, the
 Waitlisted column counts who paid, and on Enrollment each class card shows how many are waiting and how many paid. A
 Waitlisted inquiry can be added to the waiting list in one tap, keeping that.
+
+## Class rates and monthly bills (020)
+
+**Settings → Classes → Tuition rates** keeps each class's rates from the Programs & Hours sheet: full time (7:00–3:00)
+and full time with after care (7:00–5:45), a week, or a school year for Kindergarten (10 payments, Aug–May), plus the
+registration and book fees. Each child's page has them as one-tap rates (kept to how the family pays: weekly or every
+2 weeks), with a place to write why a child's rate is different (a sibling discount). The Pipeline's tuition does the
+same from the program.
+
+**Money → Bills** keeps what the school pays on set days every month: rent (twice a month, with what a month is made
+of, like base rent and CAM), utilities (an estimate when the amount changes)... Each month lists every payment due,
+paid or not; **Mark paid** adds it to money out. Unpaid ones show under *On its way*, and the projection counts every
+bill on its days (other expenses leave out the bills' categories, so nothing is counted twice).
 
 ## Money, the Child Care Food Program and To do (017)
 

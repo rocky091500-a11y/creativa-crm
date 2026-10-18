@@ -34,12 +34,12 @@
   const CONTACT_ROLE = { primary: 'Primary', secondary: 'Secondary', emergency: 'Emergency / authorized' };
   const INV_STATUS = { paid: 'Paid', partial: 'Partly paid', open: 'Open', overdue: 'Late', void: 'Void',
     check: 'Check amount', missing: 'Not on the sheet',
-    not_invoiced: 'Not billed yet', stepup: 'Step Up pending', not_billed: 'Not billed to family', unset: 'No rate set',
+    not_invoiced: 'Not billed yet', stepup: 'Step Up pending', school_year: 'School-year tuition', not_billed: 'Not billed to family', unset: 'No rate set',
     none: 'Nothing due' };
   const FUNDING = { ...PROGRAMS_FUNDING, private: 'Private pay' };
-  const FREQ = { monthly: 'monthly', biweekly: 'biweekly', weekly: 'weekly' };
-  // How many payments of each kind make up a month's tuition on the Tuition page.
-  const PER_MONTH = { monthly: 1, biweekly: 2, weekly: 4 };
+  const FREQ = { monthly: 'monthly', biweekly: 'biweekly', weekly: 'weekly', school_year: 'a school year' };
+  // How many payments of each kind make up a month's tuition on the Tuition page (a school year: 10 months).
+  const PER_MONTH = { monthly: 1, biweekly: 2, weekly: 4, school_year: 0.1 };
   const PAYER = { parent: 'Parent', sr: 'School Readiness', fes: 'FES / Step Up', vpk: 'VPK', other: 'Other' };
   const METHOD = { cash: 'Cash', check: 'Check', zelle: 'Zelle', card: 'Credit / debit card', ach: 'Bank transfer', other: 'Other' };
   // Payroll time clock (008_payroll_timeclock.sql). Times are the school's (Miami) time.
@@ -257,6 +257,34 @@
     const s = state.students.find((x) => x.inquiry_id === i.id);
     return s ? regPaid(s) : !!i.reg_paid_on;
   };
+  // The school's rates for a class (020): full time and with after care, a week (Kindergarten: a school year).
+  const RATE_KIND = { full: 'Full time', after_care: 'Full time + After care' };
+  function classRates(classId) {
+    const c = state.classrooms.find((x) => x.id === classId);
+    if (!c || !(Number(c.rate_full) > 0)) return [];
+    return Object.keys(RATE_KIND).map((k) => ({ k, label: RATE_KIND[k], amt: Number(k === 'full' ? c.rate_full : c.rate_after_care), year: c.rate_per === 'school_year' }))
+      .filter((r) => r.amt > 0);
+  }
+  const rateText = (r) => `${money(r.amt)} ${r.year ? 'a school year' : 'a week'}`;
+  // A class rate as a child's rate, kept to how the family pays: weekly, or every 2 weeks (Kindergarten: the school year).
+  const rateAs = (r, freq) => (r.year ? { amount: r.amt, freq: 'school_year' } : freq === 'weekly' ? { amount: r.amt, freq: 'weekly' } : { amount: round2(r.amt * 2), freq: 'biweekly' });
+  // A child's rate next to their class's: which class rate it is, or how far from the nearest one. Null when the class has
+  // no rates, or for School Readiness (the rate there is the family's share).
+  function rateCheck(classId, fr) {
+    const rs = classRates(classId);
+    if (!rs.length || (fr.funding || []).includes('sr')) return null;
+    if (fr.tuition_amount == null || fr.tuition_amount === '') return { none: true, rs };
+    const amt = Number(fr.tuition_amount);
+    const match = rs.find((r) => { const a = rateAs(r, fr.tuition_frequency); return a.freq === fr.tuition_frequency && a.amount === amt; });
+    if (match) return { match, rs };
+    const per = rs[0].year ? (fr.tuition_frequency === 'school_year' ? amt : null)
+      : ({ weekly: amt, biweekly: amt / 2, monthly: (amt * 12) / 52 })[fr.tuition_frequency] ?? null;
+    if (per == null) return { diff: true, rs, text: 'not on the class’s rates' };
+    const near = rs.reduce((a, r) => (Math.abs(r.amt - per) < Math.abs(a.amt - per) ? r : a));
+    const pct = Math.round(((per - near.amt) / near.amt) * 100);
+    return { diff: true, rs, near, text: pct ? `${Math.abs(pct)}% ${pct < 0 ? 'less' : 'more'} than ${near.label.toLowerCase()} (${rateText(near)})` : `close to ${near.label.toLowerCase()} (${rateText(near)})` };
+  }
+  const rateCheckText = (c) => (!c ? '' : c.none ? 'No rate yet' : c.match ? `${c.match.label}, the class rate` : `Not the class rate: ${c.text}`);
 
   // ───────────── auth ─────────────
   sb.auth.onAuthStateChange((event, session) => {
@@ -387,6 +415,7 @@
         if (res.error) fail(res.error, `Could not load ${what}`);
       }
       state.classrooms = c.data;
+      state.hasClassRates = c.data.length > 0 && 'rate_full' in c.data[0];   // 020
       state.students = st.data || [];
       state.settings = set.data || null;
       state.hasV5 = !!state.settings && 'telegram_forms' in state.settings;
@@ -1160,7 +1189,10 @@
             Step Up (pending) = Kindergarten waiting on Step Up: nothing is billed and it doesn’t count as late.</p>
           <div class="grid2">
             ${fInput('tuition_amount', state.hasV6 ? 'Rate (family pays)' : 'Tuition (family pays)', fr.tuition_amount, 'number', `min="0" step="0.01" inputmode="decimal" ${dis}`)}
-            ${fSelect('tuition_frequency', 'Every', Object.entries(FREQ).map(([k, v]) => [k, v[0].toUpperCase() + v.slice(1)]), fr.tuition_frequency, dis)}
+            ${fSelect('tuition_frequency', 'Every', Object.entries(FREQ).filter(([k]) => k !== 'school_year' || state.hasClassRates || fr.tuition_frequency === k)
+              .map(([k, v]) => [k, k === 'school_year' ? 'School year' : v[0].toUpperCase() + v.slice(1)]), fr.tuition_frequency, dis)}
+            ${state.hasClassRates ? `<div class="full rate-opts" id="rate-opts"></div>
+              ${fInput('rate_note', 'Why the rate is different (if it is)', fr.rate_note, 'text', `placeholder="e.g. 10% sibling discount" maxlength="200" ${dis}`)}` : ''}
             ${state.hasV6 ? `${fInput('billing_program', 'Billing item', fr.billing_program, 'text', `placeholder="Preschool Full-Time" ${dis}`)}
               <label class="pill-check bill-family"><input type="checkbox" class="check" name="bill_family" ${fr.bill_family !== false ? 'checked' : ''} ${dis}>
                 Bill the family every period</label>` : ''}
@@ -1213,6 +1245,28 @@
     // BPIECE is a kind of School Readiness: ticking it ticks SR, unticking SR unticks it.
     form.fund_sr_bpiece?.addEventListener('change', () => { if (form.fund_sr_bpiece.checked) form.fund_sr.checked = true; });
     form.fund_sr?.addEventListener('change', () => { if (!form.fund_sr.checked) form.fund_sr_bpiece.checked = false; });
+    // The class's rates, one tap to use one (020).
+    const rateBox = $('#rate-opts', drawer);
+    const drawRates = () => {
+      if (!rateBox) return;
+      const rs = classRates(form.classroom_id.value);
+      const chk = rateCheck(form.classroom_id.value, { tuition_amount: form.tuition_amount.value.trim(), tuition_frequency: form.tuition_frequency.value,
+        funding: form.fund_sr?.checked ? ['sr'] : [] });
+      rateBox.innerHTML = rs.length ? `<span class="muted small">${esc(classroomName(form.classroom_id.value))} rates:</span>
+        ${rs.map((r) => `<button type="button" class="btn small ${chk?.match?.k === r.k ? 'primary' : ''}" data-rate="${r.k}" ${dis}>${esc(r.label)} · ${esc(rateText(r))}</button>`).join('')}
+        ${chk && !chk.match ? `<span class="small rate-off">${esc(rateCheckText(chk))}</span>` : ''}` : '';
+      $$('[data-rate]', rateBox).forEach((b) => b.addEventListener('click', () => {
+        const a = rateAs(rs.find((r) => r.k === b.dataset.rate), form.tuition_frequency.value);
+        form.tuition_amount.value = a.amount;
+        form.tuition_frequency.value = a.freq;
+        ctl.dirty = true;
+        drawRates();
+      }));
+    };
+    if (rateBox) {
+      drawRates();
+      ['classroom_id', 'tuition_amount', 'tuition_frequency', 'fund_sr'].forEach((k) => form[k]?.addEventListener(k === 'tuition_amount' ? 'input' : 'change', drawRates));
+    }
     $('#st-save', drawer).addEventListener('click', save);
     $('#st-del', drawer)?.addEventListener('click', remove);
     $('#open-inq', drawer)?.addEventListener('click', (e) => { e.preventDefault(); if (!ctl.dirty || confirm('Discard your changes?')) openDrawer(inq.id); });
@@ -1310,6 +1364,7 @@
           award_id: formVal(form, 'award_id'),
           notes: formVal(form, 'fin_notes'),
           ...(state.hasV6 ? { billing_program: formVal(form, 'billing_program'), bill_family: form.bill_family.checked } : {}),
+          ...(state.hasClassRates ? { rate_note: formVal(form, 'rate_note') } : {}),
         };
         const empty = !finPatch.funding.length && finPatch.tuition_amount == null && !finPatch.award_id && !finPatch.notes;
         if (empty && !(id && state.finance[id])) finPatch = null;
@@ -1840,6 +1895,7 @@
       else if (fr.bill_family === false) status = 'not_billed';
       else if (fr.tuition_amount == null) status = 'unset';
       else if (Number(fr.tuition_amount) === 0) status = 'none';
+      else if (fr.tuition_frequency === 'school_year') status = 'school_year';   // Kindergarten (020): not billed every two weeks
       else status = 'not_invoiced';
       const paid = inv ? invoicePaid(inv) : 0;
       return { s, fr, inv, status, paid, balance: inv ? invoiceBalance(inv) : 0 };
@@ -3191,9 +3247,10 @@
   const ccfpMeals = (c) => ['breakfasts', 'am_snacks', 'lunches', 'pm_snacks', 'suppers', 'eve_snacks'].reduce((t, k) => t + Number(c[k] || 0), 0);
   const sumAmt = (xs) => round2(xs.reduce((t, x) => t + Number(x.amount), 0));
   async function loadMoney() {
-    const [m, c, pc] = await Promise.all([selectAll('money_entries', 'on_date'), sb.from('ccfp_claims').select('*').order('claim_month', { ascending: false }),
-      canPayroll() ? selectAll('paychecks', 'pay_date') : Promise.resolve({ error: true })]);
-    state.money = m.error || c.error ? null : { entries: m.data, claims: c.data, paychecks: pc.error ? null : pc.data };
+    const [m, c, pc, bl] = await Promise.all([selectAll('money_entries', 'on_date'), sb.from('ccfp_claims').select('*').order('claim_month', { ascending: false }),
+      canPayroll() ? selectAll('paychecks', 'pay_date') : Promise.resolve({ error: true }),
+      sb.from('bills').select('*').order('sort').order('name')]);   // missing until 020
+    state.money = m.error || c.error ? null : { entries: m.data, claims: c.data, paychecks: pc.error ? null : pc.data, bills: bl.error ? null : bl.data };
   }
   function moneyMonth(ym) {
     const M = state.money, inMonth = (d) => !!d && d.slice(0, 7) === ym, ins = [], outs = [];
@@ -3222,13 +3279,18 @@
 
   // ───── Projection (019): the coming months, from each child's rate and start date ─────
   // Money in: every enrolled child's rate for each billing period they'll be here (from their start date, until a last day
-  // set on their page); the food program at the average of its last claims; other money in at its recent average.
+  // set on their page), by who pays (private, FES, SR's family share, Kindergarten on Step Up pending); VPK and SR payments,
+  // the food program at the average of its last claims, and other money in at their recent averages.
   // Possible: families in the Pipeline (and on the waiting list) with a start date and tuition. Money out: payroll at the
   // last payrolls' average on its two-week schedule, and expenses at their recent average.
   const monthShort = (m) => new Date(`${m}-01T00:00:00`).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-  const FREQ_TEXT = { weekly: 'a week', biweekly: 'every 2 weeks', monthly: 'a month' };
-  function usualRate(program) {   // the most common 2-week rate in that class, as a hint
+  const monthLong = (m) => new Date(`${m}-01T00:00:00`).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const money0 = (n) => `${n < 0 ? '-' : ''}$${Math.abs(Math.round(n)).toLocaleString('en-US')}`;   // projections: whole dollars
+  const FREQ_TEXT = { weekly: 'a week', biweekly: 'every 2 weeks', monthly: 'a month', school_year: 'a school year' };
+  function usualRate(program) {   // the class's 2-week rates (020), or the most common 2-week rate in that class, as a hint
     const cls = state.classrooms.find((c) => c.name === program);
+    const rs = cls ? classRates(cls.id) : [];
+    if (rs.length) return rs.map((r) => rateAs(r, 'biweekly').amount).join(' or ');
     const rates = state.students.filter((s) => s.status === 'enrolled' && (!cls || s.classroom_id === cls.id))
       .map((s) => state.finance[s.id]).filter((f) => f && f.tuition_frequency === 'biweekly' && Number(f.tuition_amount) > 0 && f.bill_family !== false)
       .map((f) => Number(f.tuition_amount));
@@ -3245,7 +3307,9 @@
   }
   function childInMonth(rate, freq, start, last, ym) {   // starting in a period's second week pays just that week
     if (!(Number(rate) > 0)) return 0;
-    if (freq === 'monthly') return (!start || start <= monthEnd(ym)) && (!last || last >= monthStart(ym)) ? Number(rate) : 0;
+    const here = (!start || start <= monthEnd(ym)) && (!last || last >= monthStart(ym));
+    if (freq === 'monthly') return here ? Number(rate) : 0;
+    if (freq === 'school_year') return here && !['06', '07'].includes(ym.slice(5, 7)) ? round2(Number(rate) / 10) : 0;   // 10 payments, Aug–May
     const { days } = billing();
     return round2(periodsIn(ym).reduce((t, p) => {
       const end = addDays(p, days - 1);
@@ -3254,22 +3318,32 @@
       return t + (start && start >= addDays(p, 7) ? full / 2 : full);
     }, 0));
   }
+  // Who pays a child's tuition, for the projection's lines.
+  const PROJ_PAYS = { private: 'Tuition from private-pay families', fes: 'FES / Step Up scholarships', sr: 'School Readiness (family’s share)',
+    kinder: 'Kindergarten, Step Up (pending)' };
+  function paysFor(fr) {
+    const f = fr.funding || [];
+    return f.includes('stepup_pending') ? 'kinder' : f.includes('fes_ua') || f.includes('fes_eo') ? 'fes' : f.includes('sr') ? 'sr' : 'private';
+  }
   function projection(months) {
     const M = state.money, from = monthStart(months[0]);
     const lastDay = (s) => (LEFT.has(s.status) ? s.withdrawn_on : null);
     const here = state.students.filter((s) => s.status === 'enrolled' || (LEFT.has(s.status) && s.withdrawn_on && s.withdrawn_on >= from));
     const fin = (s) => state.finance[s.id] || {};
     const per = (fn) => months.map(fn);
-    const kidsBy = (bill) => here.filter((s) => (fin(s).bill_family !== false) === bill && !(fin(s).funding || []).includes('stepup_pending'));
     const tuition = (kids) => per((m) => round2(kids.reduce((t, s) => t + childInMonth(fin(s).tuition_amount, fin(s).tuition_frequency, s.start_date, lastDay(s), m), 0)));
     const claims = M.claims.filter((c) => ccfpTotal(c) > 0).sort((a, b) => b.claim_month.localeCompare(a.claim_month)).slice(0, 3);
     const ccfp = claims.length ? round2(claims.reduce((t, c) => t + ccfpTotal(c), 0) / claims.length) : 0;
     const past = [1, 2, 3].map((k) => shiftMonth(thisMonth(), -k));
-    const recentAvg = (kind) => {   // average of the last 3 months that have any entries (this month, when only it has)
-      const has = (m) => M.entries.some((e) => e.kind === kind && e.in_totals && e.on_date.slice(0, 7) === m);
+    const avgOf = (rows, dateKey) => {   // average of the last 3 months that have any (this month, when only it has)
+      const has = (m) => rows.some((r) => r[dateKey].slice(0, 7) === m);
       const ms = past.some(has) ? past.filter(has) : [thisMonth()].filter(has);
-      return ms.length ? round2(ms.reduce((t, m) => t + sumAmt(M.entries.filter((e) => e.kind === kind && e.in_totals && e.on_date.slice(0, 7) === m)), 0) / ms.length) : 0;
+      return ms.length ? round2(ms.reduce((t, m) => t + sumAmt(rows.filter((r) => r[dateKey].slice(0, 7) === m)), 0) / ms.length) : 0;
     };
+    const bills = M.bills || [], billCats = new Set(bills.map((b) => b.category.toLowerCase()));
+    // Other expenses leave out bill payments and anything in a bill's category (so rent isn't counted twice).
+    const recentAvg = (kind) => avgOf(M.entries.filter((e) => e.kind === kind && e.in_totals && !(kind === 'out' && (e.bill_id || billCats.has(e.category.toLowerCase())))), 'on_date');
+    const programPays = avgOf((state.payments || []).filter((x) => x.payer === 'vpk' || x.payer === 'sr'), 'paid_on');
     const pc = M.paychecks || [], runs = [...new Set(pc.map((p) => p.pay_date))].sort();
     const gross = (d) => pc.filter((p) => p.pay_date === d).reduce((t, p) => t + Number(p.gross), 0);
     const payAvg = runs.length ? round2(runs.slice(-2).reduce((t, d) => t + gross(d), 0) / runs.slice(-2).length) : 0;
@@ -3285,13 +3359,16 @@
     const waiting = state.students.filter((s) => s.status === 'waitlist' && s.start_date && Number(fin(s).tuition_amount) > 0);
     const possible = per((m) => round2(leads.reduce((t, i) => t + childInMonth(i.expected_tuition, i.expected_freq, i.start_on, null, m), 0)
       + waiting.reduce((t, s) => t + childInMonth(fin(s).tuition_amount, fin(s).tuition_frequency, s.start_date, null, m), 0)));
+    const kids = (k) => here.filter((s) => paysFor(fin(s)) === k);
     const rows = {
-      families: tuition(kidsBy(true)), programs: tuition(kidsBy(false)), ccfp: per(() => ccfp), other: per(() => recentAvg('in')),
-      payroll: per((m) => round2(payAvg * payDates(m).length)), expenses: per(() => recentAvg('out')), possible,
+      ...Object.fromEntries(Object.keys(PROJ_PAYS).map((k) => [k, tuition(kids(k))])),
+      programs: per(() => programPays), ccfp: per(() => ccfp), other: per(() => recentAvg('in')),
+      payroll: per((m) => round2(payAvg * payDates(m).length)), bills: per((m) => round2(bills.reduce((t, b) => t + Number(b.amount) * billDues(b, m).length, 0))),
+      expenses: per(() => recentAvg('out')), possible,
     };
     const sumAt = (keys, i) => round2(keys.reduce((t, k) => t + rows[k][i], 0));
-    rows.tin = per((m, i) => sumAt(['families', 'programs', 'ccfp', 'other'], i));
-    rows.tout = per((m, i) => sumAt(['payroll', 'expenses'], i));
+    rows.tin = per((m, i) => sumAt([...Object.keys(PROJ_PAYS), 'programs', 'ccfp', 'other'], i));
+    rows.tout = per((m, i) => sumAt(['payroll', 'bills', 'expenses'], i));
     rows.net = per((m, i) => round2(rows.tin[i] - rows.tout[i]));
     rows.netPossible = per((m, i) => round2(rows.net[i] + rows.possible[i]));
     const end = monthEnd(months[months.length - 1]);
@@ -3305,61 +3382,110 @@
       ...here.filter((s) => lastDay(s) && lastDay(s) <= end)
         .map((s) => ({ kind: 'leave', who: s.name, on: lastDay(s), where: STUDENT_STATUS[s.status], rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
     ].sort((a, b) => a.on.localeCompare(b.on));
-    return { rows, ccfp, claims: claims.length, payAvg, coming, noPayroll: !M.paychecks };
+    const counts = Object.fromEntries(Object.keys(PROJ_PAYS).map((k) => [k, kids(k).filter((s) => s.status === 'enrolled').length]));
+    const meta = months.map((m) => ({ bills: periodsIn(m).length, paydays: payDates(m).length }));
+    return { rows, ccfp, claims: claims.length, payAvg, coming, counts, meta, noPayroll: !M.paychecks, bills, billCats: [...new Set(bills.map((b) => b.category))] };
+  }
+  // Enrolled children with no rate, or a rate that isn't their class's and no note saying why (020).
+  const ratesToCheck = () => state.students.filter((s) => s.status === 'enrolled')
+    .map((s) => ({ s, fr: state.finance[s.id] || {}, c: rateCheck(s.classroom_id, state.finance[s.id] || {}) }))
+    .filter(({ fr, c }) => c && (c.none || (c.diff && !fr.rate_note)))
+    .sort((a, b) => (state.classrooms.find((c) => c.id === a.s.classroom_id)?.sort || 0) - (state.classrooms.find((c) => c.id === b.s.classroom_id)?.sort || 0)
+      || a.s.name.localeCompare(b.s.name));
+  async function setClassRate(s, r) {
+    const fr = state.finance[s.id], a = rateAs(r, fr?.tuition_frequency);
+    const q = fr ? sb.from('student_finance').update({ tuition_amount: a.amount, tuition_frequency: a.freq }).eq('student_id', s.id)
+      : sb.from('student_finance').insert({ student_id: s.id, tuition_amount: a.amount, tuition_frequency: a.freq });
+    const { data, error } = await q.select().single();
+    if (error) { fail(error, 'Could not set the rate'); return false; }
+    state.finance[s.id] = data;
+    toast(`${s.name}: ${r.label.toLowerCase()}, ${money(a.amount)} ${FREQ_TEXT[a.freq]}`);
+    return true;
   }
 
   function drawProjection(body, el) {
     const n = [3, 6, 12].includes(state.projMonths) ? state.projMonths : 6;
     const months = Array.from({ length: n }, (_, i) => shiftMonth(thisMonth(), i));
-    const P = projection(months), R = P.rows;
+    const P = projection(months), R = P.rows, edit = canEditFinance();
     const avg = (xs) => round2(xs.reduce((t, x) => t + x, 0) / xs.length);
-    const line = (label, xs, cls = '', sub = '') => `<tr class="${cls}"><th>${esc(label)}${sub ? `<div class="muted small">${esc(sub)}</div>` : ''}</th>
-      ${xs.map((x) => `<td class="num ${x < 0 ? 'neg' : ''}">${x ? money(x) : '<span class="muted">—</span>'}</td>`).join('')}</tr>`;
-    const head = (label) => `<tr class="proj-group"><th colspan="${n + 1}">${esc(label)}</th></tr>`;
+    const kidsSub = (k, text) => `${P.counts[k]} child${P.counts[k] === 1 ? '' : 'ren'}, ${text}`;
+    const LINES = [
+      ['in', 'Money in'],
+      ['private', PROJ_PAYS.private, '', kidsSub('private', 'each one’s rate from their start date')],
+      ['fes', PROJ_PAYS.fes, '', kidsSub('fes', 'at their rate')],
+      ['sr', PROJ_PAYS.sr, '', kidsSub('sr', 'the family’s share only')],
+      ['kinder', PROJ_PAYS.kinder, '', kidsSub('kinder', 'at their school-year rate, 10 payments Aug–May')],
+      ['programs', 'VPK and School Readiness payments', '', 'average of recent months recorded on Tuition'],
+      ['ccfp', 'Child Care Food Program', '', P.claims ? `average of the last ${P.claims} claim${P.claims === 1 ? '' : 's'}` : 'no claims recorded yet'],
+      ['other', 'Other money in', '', 'average of recent months on Money'],
+      ['tin', 'Money in', 'proj-total'],
+      ['out', 'Money out'],
+      ['payroll', 'Payroll', '', P.noPayroll ? 'needs Payroll access to see' : P.payAvg ? `about ${money0(P.payAvg)} gross every 2 weeks` : 'no paychecks recorded yet'],
+      ['bills', 'Rent and bills', '', P.bills.length ? `${P.bills.map((b) => b.name).join(', ')}, on their days (Money → Bills)` : 'add rent and monthly bills on Money → Bills'],
+      ['expenses', P.bills.length ? 'Other expenses' : 'Expenses', '', `average of recent months on Money${P.billCats.length ? `, not counting ${P.billCats.join(', ')}` : ''}`],
+      ['tout', 'Money out', 'proj-total'],
+      ['left', 'Left over'],
+      ['net', 'Left over', 'proj-total'],
+      ['possible', 'New families starting (possible)', 'proj-possible', 'Pipeline and waiting list, with a start date and tuition'],
+      ['netPossible', 'Left over if they start', 'proj-total proj-possible'],
+    ].filter(([k]) => !R[k] || ['tin', 'tout', 'net', 'ccfp', 'payroll', 'bills', 'expenses', 'private'].includes(k) || R[k === 'netPossible' ? 'possible' : k].some((x) => x));
+    const note = (i) => [P.meta[i].bills === 3 && '3 billing periods', P.meta[i].paydays === 3 && '3 paydays'].filter(Boolean).join(' · ');
+    const cell = (x) => (x ? money0(x) : '<span class="muted">—</span>');
+    const check = state.hasClassRates ? ratesToCheck() : [];
     body.innerHTML = `<div class="toolbar"><span class="muted small">An estimate for the coming months: what you can expect, not what’s been paid.</span>
         <span class="spacer"></span><div class="seg" role="tablist" aria-label="How many months">
         ${[3, 6, 12].map((k) => `<button type="button" data-pm="${k}" aria-selected="${n === k}">${k} months</button>`).join('')}</div></div>
       <div class="stats">
-        <div class="stat"><b>${money(avg(R.tin))}</b><span>Money in a month</span></div>
-        <div class="stat"><b>${money(avg(R.tout))}</b><span>Money out a month</span></div>
-        <div class="stat"><b class="${avg(R.net) < 0 ? 'neg' : ''}">${money(avg(R.net))}</b><span>Left over a month</span></div>
-        <div class="stat"><b>${money(avg(R.possible))}</b><span>More a month if the families starting do</span></div>
+        <div class="stat"><b>${money0(avg(R.tin))}</b><span>Money in a month</span></div>
+        <div class="stat"><b>${money0(avg(R.tout))}</b><span>Money out a month</span></div>
+        <div class="stat"><b class="${avg(R.net) < 0 ? 'neg' : ''}">${money0(avg(R.net))}</b><span>Left over a month</span></div>
+        <div class="stat"><b>${money0(avg(R.possible))}</b><span>More a month if the families starting do</span></div>
       </div>
-      <div class="table-wrap"><table class="proj"><thead><tr><th></th>${months.map((m) => `<th class="num">${esc(monthShort(m))}</th>`).join('')}</tr></thead>
-        <tbody>
-          ${head('Money in')}
-          ${line('Tuition from families', R.families, '', 'each child’s rate, from their start date')}
-          ${line('Paid by scholarships and programs', R.programs, '', 'children not billed to the family (FES…), at their rate')}
-          ${line('Child Care Food Program', R.ccfp, '', P.claims ? `average of the last ${P.claims} claim${P.claims === 1 ? '' : 's'}` : 'no claims recorded yet')}
-          ${line('Other money in', R.other, '', 'average of recent months on Money')}
-          ${line('Money in', R.tin, 'proj-total')}
-          ${head('Money out')}
-          ${line('Payroll', R.payroll, '', P.noPayroll ? 'needs Payroll access to see' : P.payAvg ? `about ${money(P.payAvg)} gross every 2 weeks` : 'no paychecks recorded yet')}
-          ${line('Expenses', R.expenses, '', 'average of recent months on Money')}
-          ${line('Money out', R.tout, 'proj-total')}
-          ${head('Left over')}
-          ${line('Left over', R.net, 'proj-total')}
-          ${line('New families starting (possible)', R.possible, 'proj-possible', 'Pipeline and waiting list, with a start date and tuition')}
-          ${line('Left over if they start', R.netPossible, 'proj-total proj-possible')}
-        </tbody></table></div>
+      ${check.length ? `<p class="panel small proj-check-note">${check.length} child${check.length === 1 ? ' has' : 'ren have'} no rate or a rate that isn’t their class’s:
+        <a href="#proj-rates">check them below</a>.</p>` : ''}
+      <div class="table-wrap proj-wide"><table class="proj"><thead><tr><th></th>${months.map((m, i) => `<th class="num">${esc(monthShort(m))}${note(i) ? `<div class="muted small">${esc(note(i))}</div>` : ''}</th>`).join('')}</tr></thead>
+        <tbody>${LINES.map(([k, label, cls = '', sub = '']) => (!R[k] ? `<tr class="proj-group"><th colspan="${n + 1}">${esc(label)}</th></tr>`
+          : `<tr class="${cls}"><th>${esc(label)}${sub ? `<div class="muted small">${esc(sub)}</div>` : ''}</th>
+            ${R[k].map((x) => `<td class="num ${x < 0 ? 'neg' : ''}">${cell(x)}</td>`).join('')}</tr>`)).join('')}</tbody></table></div>
+      <div class="proj-cards">${months.map((m, i) => `<details class="panel proj-month" ${i === 0 ? 'open' : ''}><summary>
+          <span class="pm-head"><b>${esc(monthLong(m))}</b><b class="${R.net[i] < 0 ? 'neg' : ''}">${money0(R.net[i])}</b></span>
+          <span class="pm-sub muted small"><span>In ${money0(R.tin[i])} · out ${money0(R.tout[i])}${note(i) ? ` · ${esc(note(i))}` : ''}</span><span>left over</span></span></summary>
+        <ul class="money-lines">${LINES.map(([k, label, cls = '']) => (!R[k] ? `<li class="pm-group">${esc(label)}</li>`
+          : `<li class="${cls}"><span>${esc(label)}</span><b class="${R[k][i] < 0 ? 'neg' : ''}">${cell(R[k][i])}</b></li>`)).join('')}</ul></details>`).join('')}</div>
+      ${check.length ? `<section class="panel" id="proj-rates"><h2>Rates to check</h2>
+        <p class="muted small">Children with no rate, or a rate that isn’t one of their class’s (Settings → Classes). ${edit ? 'Tap the class rate to use it.' : ''}
+          A different rate on purpose (a sibling discount…)? Open the child and write why under <b>Why the rate is different</b>; they come off this list.</p>
+        <ul class="rate-check">${check.map(({ s, fr, c }) => `<li data-sid="${s.id}">
+          <a href="#" data-open-sid="${s.id}"><b>${esc(s.name)}</b></a> <span class="muted small">${esc(classroomName(s.classroom_id))}${(fr.funding || []).length ? ` · ${esc(fundingText(s.id))}` : ''}</span>
+          <div class="small">${c.none ? 'No rate yet' : `${money(fr.tuition_amount)} ${esc(FREQ_TEXT[fr.tuition_frequency] || '')}: ${esc(c.text)}`}</div>
+          ${edit ? `<div class="rate-opts">${c.rs.map((r) => `<button type="button" class="btn small" data-set-rate="${r.k}">${esc(r.label)} · ${esc(rateText(r))}</button>`).join('')}</div>` : ''}</li>`).join('')}</ul></section>` : ''}
       <section class="panel"><h2>Starting and leaving</h2>
-        <div class="table-wrap flat"><table><thead><tr><th>Child</th><th>When</th><th>From</th><th class="num">Tuition</th></tr></thead>
+        <div class="table-wrap flat"><table><thead><tr><th>Child</th><th>When</th><th class="num">Tuition</th></tr></thead>
           <tbody id="proj-coming">${P.coming.map((x) => `<tr ${x.sid ? `data-sid="${x.sid}"` : `data-iid="${x.iid}"`} class="proj-${x.kind}">
-            <td><b>${esc(x.who)}</b></td><td class="nowrap">${x.kind === 'leave' ? 'Last day ' : x.kind === 'maybe' ? 'Could start ' : 'Starts '}${esc(fmtDate(x.on))}</td>
-            <td>${esc(x.where)}</td><td class="num">${Number(x.rate) > 0 ? `${money(x.rate)} ${esc(FREQ_TEXT[x.freq] || '')}` : '<span class="muted small">no rate yet</span>'}</td></tr>`).join('')
-            || '<tr><td colspan="4" class="muted">Nobody starting or leaving in these months. Add a start date to families in the Pipeline to see them here.</td></tr>'}</tbody></table></div></section>
-      <p class="muted small">How it’s worked out: each enrolled child’s rate (Enrollment / Tuition) for every billing period they’ll be here, from their start date
-        until a last day set on their page; everyone else is assumed to stay. Payroll is gross pay from Patriot (taxes the school pays aren’t included unless
-        they’re added as an expense). The food program, other money in and expenses use recent months, so they get better as more is recorded on Money.
-        For a family in the Pipeline, open it and fill in <b>Starts on</b> and <b>Tuition</b>.</p>`;
+            <td><b>${esc(x.who)}</b><div class="muted small">${esc(x.where)}</div></td>
+            <td>${x.kind === 'leave' ? 'Last day ' : x.kind === 'maybe' ? 'Could start ' : 'Starts '}${esc(fmtDate(x.on))}</td>
+            <td class="num">${Number(x.rate) > 0 ? `${money(x.rate)}<div class="muted small">${esc(FREQ_TEXT[x.freq] || '')}</div>` : '<span class="muted small">no rate yet</span>'}</td></tr>`).join('')
+            || '<tr><td colspan="3" class="muted">Nobody starting or leaving in these months. Add a start date to families in the Pipeline to see them here.</td></tr>'}</tbody></table></div></section>
+      <p class="muted small">How it’s worked out: each enrolled child’s rate (on their page) for every billing period they’ll be here, from their start date
+        until a last day set on their page; everyone else is assumed to stay. A month where three billing periods start (or three paydays fall) is higher than
+        the others. Payroll is gross pay from Patriot (taxes the school pays aren’t included unless they’re added as an expense). The food program, program
+        payments, other money in and expenses use recent months, so they get better as more is recorded. For a family in the Pipeline, open it and fill in
+        <b>Starts on</b> and <b>Tuition</b>.</p>`;
     $$('[data-pm]', body).forEach((b) => b.addEventListener('click', () => { state.projMonths = Number(b.dataset.pm); store.set('projMonths', state.projMonths); drawProjection(body, el); }));
     $$('#proj-coming tr[data-sid]', body).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.sid)));
     $$('#proj-coming tr[data-iid]', body).forEach((tr) => tr.addEventListener('click', () => openDrawer(tr.dataset.iid)));
+    $$('[data-open-sid]', body).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openStudent(a.dataset.openSid); }));
+    $$('[data-set-rate]', body).forEach((b) => b.addEventListener('click', async () => {
+      const s = state.students.find((x) => x.id === b.closest('li').dataset.sid), r = classRates(s.classroom_id).find((x) => x.k === b.dataset.setRate);
+      b.disabled = true;
+      if (await setClassRate(s, r)) drawProjection(body, el); else b.disabled = false;
+    }));
+    $('.proj-check-note a', body)?.addEventListener('click', (e) => { e.preventDefault(); $('#proj-rates', body).scrollIntoView({ behavior: 'smooth' }); });
   }
 
   function renderMoney(el) {
-    const tab = ['food', 'projection'].includes(state.moneyTab) ? state.moneyTab : 'overview';
-    el.innerHTML = `<div class="seg" role="tablist" aria-label="Money">${[['overview', 'In & out'], ['food', 'Food program'], ['projection', 'Projection']]
+    const tab = ['bills', 'food', 'projection'].includes(state.moneyTab) ? state.moneyTab : 'overview';
+    el.innerHTML = `<div class="seg money-tabs" role="tablist" aria-label="Money">${[['overview', 'In & out'], ['bills', 'Bills'], ['food', 'Food program'], ['projection', 'Projection']]
         .map(([k, v]) => `<button type="button" role="tab" data-mtab="${k}" aria-selected="${tab === k}">${v}</button>`).join('')}</div>
       <div id="money-body"><p class="muted">Loading…</p></div>`;
     $$('[data-mtab]', el).forEach((b) => b.addEventListener('click', () => { state.moneyTab = b.dataset.mtab; store.set('moneyTab', state.moneyTab); renderMoney(el); }));
@@ -3367,7 +3493,7 @@
       const body = $('#money-body', el);
       if (!body || state.view !== 'money') return;
       if (!state.money) { body.innerHTML = '<p class="muted">To use this page, run <code>017_money_food_program_todos.sql</code> in Supabase.</p>'; return; }
-      ({ food: drawFood, projection: drawProjection, overview: drawMoney })[tab](body, el);
+      ({ bills: drawBills, food: drawFood, projection: drawProjection, overview: drawMoney })[tab](body, el);
     };
     if (state.money === undefined) loadMoney().then(go); else go();
   }
@@ -3381,6 +3507,7 @@
     const lastPay = M.paychecks?.length ? M.paychecks.reduce((m, p) => (p.pay_date > m ? p.pay_date : m), '') : '';
     const lastGross = lastPay ? round2(M.paychecks.filter((p) => p.pay_date === lastPay).reduce((t, p) => t + Number(p.gross), 0)) : 0;
     const rows = M.entries.filter((e) => e.on_date.slice(0, 7) === ym).sort((a, b) => b.on_date.localeCompare(a.on_date) || a.category.localeCompare(b.category));
+    const unpaidBills = billsDue(ym).filter((x) => !x.paid);
     const months = Array.from({ length: 12 }, (_, i) => `${year}-${pad(i + 1)}`).map((m) => ({ m, ...moneyMonth(m) }));
     body.innerHTML = `<div class="month-bar"><button class="btn small" id="mo-prev" type="button" aria-label="Previous month">‹</button>
         <b>${esc(fmtMonth(ym))}</b><button class="btn small" id="mo-next" type="button" aria-label="Next month">›</button>
@@ -3402,7 +3529,9 @@
           <span class="muted small">${c.submitted_on ? `submitted ${esc(fmtDate(c.submitted_on))}, ` : ''}not paid yet</span></span><b>${money(ccfpTotal(c))}</b></li>`).join('')}
         ${owed ? `<li><span>Coming in: tuition families still owe <span class="muted small">see Tuition</span></span><b>${money(owed)}</b></li>` : ''}
         ${lastPay ? `<li><span>Going out: payroll every pay period <span class="muted small">the last one, paid ${esc(fmtDate(lastPay))}</span></span><b>${money(lastGross)}</b></li>` : ''}
-        ${pending.length || owed || lastPay ? '' : '<li class="muted small">Nothing pending.</li>'}</ul></section>
+        ${unpaidBills.length ? `<li><span>Going out: bills not marked paid in ${esc(fmtMonth(ym))} <span class="muted small">${esc(unpaidBills.map((x) => `${x.b.name} ${fmtDate(x.due)}`).join(' · '))}</span></span>
+          <b>${money(unpaidBills.reduce((t, x) => t + Number(x.b.amount), 0))}</b></li>` : ''}
+        ${pending.length || owed || lastPay || unpaidBills.length ? '' : '<li class="muted small">Nothing pending.</li>'}</ul></section>
       <section class="panel"><h2>Added this month <span class="muted small">${rows.length}</span></h2>
         <div class="table-wrap flat"><table><thead><tr><th>Date</th><th>Category</th><th>From / paid to</th><th>Receipt / check</th><th class="num">In</th><th class="num">Out</th></tr></thead>
           <tbody id="mo-rows">${rows.map((e) => `<tr data-entry="${e.id}" ${edit ? '' : 'class="ro"'}><td class="nowrap">${esc(fmtDate(e.on_date))}</td>
@@ -3412,7 +3541,7 @@
             <td class="num">${e.kind === 'in' ? money(e.amount) : ''}</td><td class="num">${e.kind === 'out' ? money(e.amount) : ''}</td></tr>`).join('')
             || '<tr><td colspan="6" class="muted">Nothing added this month.</td></tr>'}</tbody></table></div>
         <p class="muted small">Tuition and program payments recorded per child on <b>Tuition</b>, food program claims once paid, and paychecks from Patriot
-          are counted by themselves: add here only what isn’t in the CRM yet (receipts, rent, bills, deposits not recorded per child).</p></section>
+          are counted by themselves: add here only what isn’t in the CRM yet (receipts, deposits not recorded per child). Rent and other monthly bills: mark them paid on <b>Bills</b>.</p></section>
       <section class="panel"><h2>${esc(year)} by month</h2><div class="table-wrap flat"><table><thead><tr><th>Month</th><th class="num">Money in</th>
           <th class="num">Money out</th><th class="num">Left over</th></tr></thead><tbody id="mo-year">${months.map((x) => `<tr data-month="${x.m}" ${x.m === ym ? 'class="on"' : ''}>
             <td>${esc(fmtMonth(x.m))}</td><td class="num">${x.tin ? money(x.tin) : ''}</td><td class="num">${x.tout ? money(x.tout) : ''}</td>
@@ -3429,6 +3558,142 @@
     $('#mo-add-out', body)?.addEventListener('click', () => openMoneyEntry({ kind: 'out', on_date: day }, () => drawMoney(body, el)));
     if (edit) $$('#mo-rows tr[data-entry]', body).forEach((tr) => tr.addEventListener('click', () =>
       openMoneyEntry(M.entries.find((e) => e.id === tr.dataset.entry), () => drawMoney(body, el))));
+  }
+
+  // ───── Bills (020): what the school pays on set days every month (rent twice a month, utilities...) ─────
+  const daysInMonth = (ym) => new Date(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0).getDate();
+  const ordinal = (n) => `${n}${n % 10 === 1 && n % 100 !== 11 ? 'st' : n % 10 === 2 && n % 100 !== 12 ? 'nd' : n % 10 === 3 && n % 100 !== 13 ? 'rd' : 'th'}`;
+  function billDues(b, ym) {   // the days a bill is due in a month (the 30th or 31st is the last day of a shorter month)
+    return [...new Set(b.days.map((d) => `${ym}-${pad(Math.min(d, daysInMonth(ym)))}`))].sort()
+      .filter((d) => d >= b.starts_on && (!b.ends_on || d <= b.ends_on));
+  }
+  const billsDue = (ym) => (state.money?.bills || []).flatMap((b) => billDues(b, ym).map((due) => ({ b, due,
+    paid: state.money.entries.find((e) => e.bill_id === b.id && e.bill_due === due) })))
+    .sort((x, y) => x.due.localeCompare(y.due) || x.b.sort - y.b.sort);
+  const billMonth = (b) => round2(Number(b.amount) * b.days.length);
+  const billWhen = (b) => {
+    const days = [...b.days].sort((x, y) => x - y).map((d) => `the ${ordinal(d)}`);
+    return b.days.length > 1 ? `${b.days.length} payments of ${b.varies ? 'about ' : ''}${money(b.amount)}, on ${days.slice(0, -1).join(', ')} and ${days[days.length - 1]}`
+      : `${b.varies ? 'about ' : ''}${money(b.amount)}, on ${days[0]}`;
+  };
+
+  function drawBills(body, el) {
+    const M = state.money, ym = state.moneyMonth || thisMonth(), edit = canEditFinance(), today = nyToday();
+    if (!M.bills) { body.innerHTML = '<p class="muted">To keep the school’s monthly bills here, run <code>020_class_rates_and_bills.sql</code> in Supabase.</p>'; return; }
+    const dues = billsDue(ym);
+    const paidSum = round2(dues.reduce((t, x) => t + (x.paid ? Number(x.paid.amount) : 0), 0));
+    const leftSum = round2(dues.reduce((t, x) => t + (x.paid ? 0 : Number(x.b.amount)), 0));
+    const status = (x) => {
+      if (x.paid) return ['paid', `Paid ${fmtDate(x.paid.on_date)}${x.paid.reference ? ` · ${x.paid.reference}` : ''}`];
+      if (x.due < today) return ['missed', 'Not marked paid'];
+      if (x.due === today) return ['today', 'Due today'];
+      const d = daysBetween(today, x.due);
+      return ['soon', d <= 7 ? `Due in ${d} day${d === 1 ? '' : 's'}` : 'Coming up'];
+    };
+    const wd = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short' });
+    const monthTotal = round2(M.bills.filter((b) => !b.ends_on || b.ends_on >= today).reduce((t, b) => t + billMonth(b), 0));
+    body.innerHTML = `<div class="month-bar"><button class="btn small" id="mo-prev" type="button" aria-label="Previous month">‹</button>
+        <b>${esc(fmtMonth(ym))}</b><button class="btn small" id="mo-next" type="button" aria-label="Next month">›</button>
+        ${ym !== thisMonth() ? '<button class="btn small ghost" id="mo-now" type="button">This month</button>' : ''}<span class="spacer"></span>
+        ${edit ? '<button class="btn small primary" id="bill-add" type="button">+ Add a bill</button>' : ''}</div>
+      <div class="stats">
+        <div class="stat"><b>${money(round2(paidSum + leftSum))}</b><span>Bills in ${esc(fmtMonth(ym))}</span></div>
+        <div class="stat"><b>${money(paidSum)}</b><span>Paid</span></div>
+        <div class="stat"><b class="${leftSum && dues.some((x) => !x.paid && x.due < today) ? 'neg' : ''}">${money(leftSum)}</b><span>Still to pay</span></div>
+      </div>
+      <section class="panel"><h2>Due in ${esc(fmtMonth(ym))}</h2>
+        <ul class="bill-dues" id="bill-dues">${dues.map((x) => {
+          const [st, text] = status(x);
+          return `<li class="bd-${st}" data-bill="${x.b.id}" data-due="${x.due}">
+            <span class="bd-date"><b>${Number(x.due.slice(8))}</b><small>${esc(wd(x.due))}</small></span>
+            <span class="bd-what"><b>${esc(x.b.name)}</b><span class="small bd-status">${esc(text)}</span></span>
+            <span class="bd-amt"><b>${money(x.paid ? x.paid.amount : x.b.amount)}</b>${x.b.varies && !x.paid ? '<small class="muted">about</small>' : ''}</span>
+            ${edit ? `<span class="bd-act">${x.paid ? `<button class="btn small ghost" type="button" data-entry="${x.paid.id}">Edit</button>`
+              : `<button class="btn small ${st === 'soon' ? '' : 'primary'}" type="button" data-pay>Mark paid</button>`}</span>` : ''}</li>`;
+        }).join('') || `<li class="muted small">No bills ${M.bills.length ? 'due this month' : `yet. ${edit ? 'Add the rent, utilities and other bills paid every month.' : ''}`}</li>`}</ul></section>
+      <section class="panel"><h2 class="h-row">Every month <span class="muted small">${money(monthTotal)} a month</span></h2>
+        <ul class="bill-list" id="bill-list">${M.bills.map((b) => `<li data-bill="${b.id}" class="${b.ends_on && b.ends_on < today ? 'bl-ended' : ''}">
+          <div class="bl-head"><b>${esc(b.name)}</b><b>${b.varies ? '<small class="muted">about </small>' : ''}${money(billMonth(b))}<small class="muted"> a month</small></b></div>
+          <div class="muted small">${esc(billWhen(b))} · ${esc(b.category)}${b.party ? ` · ${esc(b.party)}` : ''}</div>
+          ${(b.parts || []).length ? `<div class="bl-parts">${b.parts.map((pt) => `<span>${esc(pt.label)} <b>${money(pt.amount)}</b></span>`).join('<span class="muted">+</span>')}
+            <span class="muted">a month</span></div>` : ''}
+          ${b.note ? `<div class="muted small">${esc(b.note)}</div>` : ''}
+          ${b.ends_on ? `<div class="muted small">${b.ends_on < today ? 'Ended' : 'Until'} ${esc(fmtDate(b.ends_on))}</div>` : ''}
+          ${edit ? '<button class="btn small ghost bl-edit" type="button" data-edit>Edit</button>' : ''}</li>`).join('')
+          || '<li class="muted small">Nothing yet.</li>'}</ul>
+        <p class="muted small">Marking a bill paid adds it to money out for that month (In &amp; out). The projection counts every bill on its days.</p></section>`;
+    const go = (m) => { state.moneyMonth = m; drawBills(body, el); };
+    const redraw = () => drawBills(body, el);
+    $('#mo-prev', body).addEventListener('click', () => go(shiftMonth(ym, -1)));
+    $('#mo-next', body).addEventListener('click', () => go(shiftMonth(ym, 1)));
+    $('#mo-now', body)?.addEventListener('click', () => go(thisMonth()));
+    $('#bill-add', body)?.addEventListener('click', () => openBill({}, redraw));
+    $$('#bill-list [data-edit]', body).forEach((btn) => btn.addEventListener('click', () => openBill(M.bills.find((b) => b.id === btn.closest('li').dataset.bill), redraw)));
+    $$('#bill-dues [data-entry]', body).forEach((btn) => btn.addEventListener('click', () => openMoneyEntry(M.entries.find((e) => e.id === btn.dataset.entry), redraw)));
+    $$('#bill-dues [data-pay]', body).forEach((btn) => btn.addEventListener('click', () => {
+      const li = btn.closest('li'), b = M.bills.find((x) => x.id === li.dataset.bill), due = li.dataset.due;
+      openMoneyEntry({ kind: 'out', on_date: due <= today ? due : today, category: b.category, amount: b.amount, party: b.party || b.name,
+        note: `${b.name}, due ${fmtDate(due)}`, bill_id: b.id, bill_due: due }, redraw);
+    }));
+  }
+
+  function openBill(b0, after) {
+    const isNew = !b0.id, b = { name: '', category: '', party: '', amount: '', days: [], varies: false, parts: [], starts_on: monthStart(thisMonth()), ends_on: null, note: '', ...b0 };
+    const parts = [...(b.parts || []), {}, {}].slice(0, Math.max(2, (b.parts || []).length + 1));
+    const ctl = mountDrawer({
+      title: isNew ? 'New bill' : esc(b.name),
+      sub: isNew ? 'Paid on the same days every month' : esc(`${money(billMonth(b))} a month`),
+      body: `<div class="section grid2">
+          ${fInput('name', 'Name', b.name, 'text', 'maxlength="80" placeholder="e.g. Rent, Water"')}
+          <label>Category<input name="category" list="bill-cats" maxlength="60" value="${esc(b.category)}" placeholder="e.g. Rent, Utilities"></label>
+          ${fInput('party', 'Paid to', b.party, 'text', 'maxlength="120" placeholder="e.g. landlord, Miami-Dade Water"')}
+          ${fInput('amount', 'Amount each time', b.amount, 'number', 'step="0.01" min="0.01" inputmode="decimal"')}
+          ${fInput('days', 'Day(s) of the month it’s paid', (b.days || []).join(', '), 'text', 'placeholder="e.g. 15, 30" inputmode="numeric"')}
+          <label class="pill-check"><input type="checkbox" class="check" name="varies" ${b.varies ? 'checked' : ''}> The amount changes every month (it’s an estimate)</label>
+          <p class="full muted small">Paid twice a month? Put both days (15, 30) and the amount of each payment. The 30th or 31st is the last day of a shorter month.</p>
+          ${fInput('starts_on', 'Starting', b.starts_on, 'date')}
+          ${fInput('ends_on', 'Until (if it ends)', b.ends_on, 'date')}
+        </div>
+        <div class="section"><h3>What a month is made of <span class="muted small">(optional, e.g. base rent and CAM)</span></h3>
+          <div class="bill-parts">${parts.map((pt, i) => `<input name="pl${i}" maxlength="40" value="${esc(pt.label || '')}" placeholder="e.g. Base rent" aria-label="Part ${i + 1}">
+            <input name="pa${i}" type="number" step="0.01" min="0" inputmode="decimal" value="${esc(pt.amount ?? '')}" placeholder="a month" aria-label="Part ${i + 1} a month">`).join('')}</div></div>
+        <div class="section"><label class="full">Note<textarea name="note" rows="2" maxlength="500">${esc(b.note || '')}</textarea></label></div>
+        <datalist id="bill-cats">${[...new Set([...MONEY_CATS.out, ...state.money.entries.filter((x) => x.kind === 'out').map((x) => x.category)])].map((c) => `<option value="${esc(c)}"></option>`).join('')}</datalist>`,
+      foot: `${isNew ? '' : '<button class="btn danger" id="bill-del" type="button">Delete</button>'}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="bill-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    form.name.focus();
+    $('#bill-save', drawer).addEventListener('click', async () => {
+      const days = [...new Set(form.days.value.split(/[^0-9]+/).filter(Boolean).map(Number))].sort((x, y) => x - y);
+      const row = { name: form.name.value.trim(), category: form.category.value.trim(), party: form.party.value.trim() || null, amount: round2(form.amount.value),
+        days, varies: form.varies.checked, starts_on: form.starts_on.value, ends_on: form.ends_on.value || null, note: form.note.value.trim() || null,
+        parts: parts.map((_, i) => ({ label: form[`pl${i}`].value.trim(), amount: round2(form[`pa${i}`].value) })).filter((pt) => pt.label && pt.amount > 0) };
+      if (!row.name) { form.name.focus(); return toast('Give the bill a name', true); }
+      if (!row.category) { form.category.focus(); return toast('Pick or type a category', true); }
+      if (!(row.amount > 0)) { form.amount.focus(); return toast('Type the amount of each payment', true); }
+      if (!days.length || days.length > 4 || days.some((d) => d < 1 || d > 31)) { form.days.focus(); return toast('Type the day(s) of the month: 1 to 31, up to 4', true); }
+      if (!row.starts_on) return toast('Pick when it starts', true);
+      if (row.ends_on && row.ends_on < row.starts_on) return toast('It ends before it starts', true);
+      const { data, error } = await (isNew ? sb.from('bills').insert({ ...row, sort: state.money.bills.length + 1 }) : sb.from('bills').update(row).eq('id', b.id)).select().single();
+      if (error) return fail(error, 'Could not save the bill');
+      state.money.bills = [...state.money.bills.filter((x) => x.id !== data.id), data].sort((x, y) => x.sort - y.sort || x.name.localeCompare(y.name));
+      ctl.dirty = false;
+      toast(`Saved: ${data.name}, ${money(billMonth(data))} a month`);
+      closeDrawer();
+      after();
+    });
+    $('#bill-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Delete the bill “${b.name}”? Payments already marked stay on Money as expenses.`)) return;
+      const { error } = await sb.from('bills').delete().eq('id', b.id);
+      if (error) return fail(error, 'Could not delete the bill');
+      state.money.bills = state.money.bills.filter((x) => x.id !== b.id);
+      state.money.entries = state.money.entries.map((x) => (x.bill_id === b.id ? { ...x, bill_id: null, bill_due: null } : x));
+      ctl.dirty = false;
+      toast('Bill deleted');
+      closeDrawer();
+      after();
+    });
   }
 
   function openMoneyEntry(e0, after) {
@@ -3466,7 +3731,7 @@
     const save = async (again) => {
       const row = { kind: form.kind.value, on_date: form.on_date.value, category: form.category.value.trim(), amount: round2(form.amount.value),
         party: form.party.value.trim() || null, reference: form.reference.value.trim() || null, note: form.note.value.trim() || null,
-        ccfp_col: form.ccfp_col.value || null, in_totals: form.in_totals.checked };
+        ccfp_col: form.ccfp_col.value || null, in_totals: form.in_totals.checked, ...(e.bill_id ? { bill_id: e.bill_id, bill_due: e.bill_due } : {}) };
       if (!row.on_date) return toast('Pick the date', true);
       if (!row.category) { form.category.focus(); return toast('Pick or type a category', true); }
       if (!(row.amount > 0)) { form.amount.focus(); return toast('Type the amount', true); }
@@ -4396,6 +4661,17 @@
           <td><input data-k="capacity" type="number" min="1" max="99" value="${esc(c.capacity)}" aria-label="Capacity"></td>
           <td><input data-k="sort" type="number" value="${esc(c.sort)}" aria-label="Order"></td></tr>`).join('')}</tbody></table></div>
         <button class="btn small" id="cls-add" type="button">+ Add class</button>
+        ${state.hasClassRates ? `<h3 class="sub-h">Tuition rates</h3>
+        <p class="muted small">Full time is 7:00–3:00, with after care 7:00–5:45. A week, or a school year for Kindergarten (10 payments, no summer).
+          Each child’s page has these as one-tap rates, and Money → Projection lists children whose rate is different.</p>
+        <div class="table-wrap flat"><table class="class-table rate-table"><thead><tr><th>Class</th><th>Full time</th><th>+ After care</th><th>Per</th>
+          <th>Registration</th><th>Book fee</th></tr></thead>
+        <tbody>${state.classrooms.map((c) => `<tr data-cls="${c.id}"><td>${esc(c.name)}</td>
+          ${['rate_full', 'rate_after_care'].map((k) => `<td><input data-k="${k}" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(c[k] ?? '')}" aria-label="${esc(c.name)} ${k === 'rate_full' ? 'full time' : 'with after care'}"></td>`).join('')}
+          <td><select data-k="rate_per" aria-label="${esc(c.name)} rate per"><option value="week" ${c.rate_per !== 'school_year' ? 'selected' : ''}>Week</option>
+            <option value="school_year" ${c.rate_per === 'school_year' ? 'selected' : ''}>School year</option></select></td>
+          ${['registration_fee', 'book_fee'].map((k) => `<td><input data-k="${k}" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(c[k] ?? '')}" aria-label="${esc(c.name)} ${k === 'book_fee' ? 'book fee' : 'registration'}"></td>`).join('')}
+          </tr>`).join('')}</tbody></table></div>` : ''}
       </section>
       <section class="panel settings-panel"><h2>Receipts</h2>
         <form id="set-receipt" class="grid2">
@@ -4643,11 +4919,15 @@
 
   function bindSettingsPanels(el) {
     if (!state.hasEnrollment) return;
-    $$('.class-table input', el).forEach((input) => input.addEventListener('change', async () => {
+    $$('.class-table input, .class-table select', el).forEach((input) => input.addEventListener('change', async () => {
       const id = input.closest('tr').dataset.cls, k = input.dataset.k;
       let v = input.value.trim();
       if (k === 'name' && !v) return renderStaff(el);
       if (k === 'capacity' || k === 'sort') v = v === '' ? (k === 'sort' ? 100 : null) : Number(v);
+      if (/^rate_(full|after_care)$|_fee$/.test(k)) {
+        if (v !== '' && !(Number(v) >= 0)) { toast('Rates are numbers', true); return renderStaff(el); }
+        v = v === '' ? null : Number(v);
+      }
       const { data, error } = await sb.from('classrooms').update({ [k]: v === '' ? null : v }).eq('id', id).select().single();
       if (error) { fail(error, 'Could not save the class'); return renderStaff(el); }
       state.classrooms = state.classrooms.map((c) => (c.id === id ? data : c)).sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
@@ -4821,7 +5101,9 @@
           ${inp('desired_start', 'Wants to start')}
           ${state.hasStartOn ? `${inp('start_on', 'Starts on', 'date')}
             <label>Tuition<span class="inline-pair"><input name="expected_tuition" type="number" min="0" step="0.01" inputmode="decimal"
-              value="${esc(v.expected_tuition ?? '')}" placeholder="${esc(usualRate(v.program))}">${sel('expected_freq', Object.entries(FREQ_TEXT), v.expected_freq || 'biweekly')}</span></label>
+              value="${esc(v.expected_tuition ?? '')}" placeholder="${esc(usualRate(v.program))}">${sel('expected_freq',
+                Object.entries(FREQ_TEXT).filter(([k]) => k !== 'school_year' || state.hasClassRates || v.expected_freq === k), v.expected_freq || 'biweekly')}</span></label>
+            <div class="full rate-opts" id="inq-rates"></div>
             <p class="full muted small">With a start day and tuition, this family shows on Money → Projection from that day, and moves over when they become a student.</p>` : ''}
           <label class="full">Message / notes from family<textarea name="message" rows="3">${esc(v.message)}</textarea></label>
         </div></div>
@@ -4857,6 +5139,22 @@
       if (inq.stage === 'reschedule' && form.stage.value === 'tour_scheduled') { form.tour_at.value = ''; form.tour_at.focus(); }
     });
     form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
+    // The class's rates (020), one tap to use one: the program typed in is a class's name.
+    const inqRates = $('#inq-rates', drawer);
+    const drawInqRates = () => {
+      const cls = state.classrooms.find((c) => c.name.toLowerCase() === form.program.value.trim().toLowerCase());
+      const rs = cls ? classRates(cls.id) : [];
+      inqRates.innerHTML = rs.length ? `<span class="muted small">${esc(cls.name)} rates:</span>
+        ${rs.map((r) => `<button type="button" class="btn small" data-rate="${r.k}">${esc(r.label)} · ${esc(rateText(r))}</button>`).join('')}` : '';
+      $$('[data-rate]', inqRates).forEach((b) => b.addEventListener('click', () => {
+        const a = rateAs(rs.find((r) => r.k === b.dataset.rate), form.expected_freq.value);
+        form.expected_tuition.value = a.amount;
+        form.expected_freq.value = a.freq;
+        dirty = true;
+      }));
+      form.expected_tuition.placeholder = usualRate(cls?.name || form.program.value.trim());
+    };
+    if (inqRates) { drawInqRates(); form.program.addEventListener('input', drawInqRates); }
     const tryClose = () => { if (!dirty || confirm('Discard your changes?')) closeDrawer(); };
     $$('[data-close]', drawer).forEach((b) => b.addEventListener('click', tryClose));
     scrim.addEventListener('click', tryClose);

@@ -892,7 +892,9 @@ try {
   await drawer.locator('input[name=phone]').fill('305 555 0177');
   await drawer.locator('input[name=child_name]').fill('Test Kid Delta');
   await drawer.locator('input[name=program]').fill('Early 2s');
-  assert.equal(await drawer.locator('input[name=expected_tuition]').getAttribute('placeholder'), 'usually 600', 'the usual rate for the class as a hint');
+  assert.equal(await drawer.locator('input[name=expected_tuition]').getAttribute('placeholder'), '560 or 600', 'the class’s 2-week rates as a hint');
+  await drawer.locator('#inq-rates [data-rate=after_care]').click();   // the class rate in one tap: $300 a week = $600 every 2 weeks
+  assert.equal(await drawer.locator('input[name=expected_tuition]').inputValue(), '600');
   await drawer.locator('input[name=start_on]').fill(nextMonth1);
   await drawer.locator('input[name=expected_tuition]').fill('500');
   await drawer.locator('#save').click();
@@ -905,8 +907,8 @@ try {
   await proj.waitFor();
   assert.equal(await proj.locator('thead th').count(), 7, 'six months by default');
   const projRow = (label) => proj.locator('tr', { has: page.locator('th', { hasText: label }) }).first();
-  assert.match(await projRow('Tuition from families').textContent(), /\$[\d,]+\.\d\d/);
-  assert.match(await projRow('New families starting (possible)').locator('td').nth(1).textContent(), /\$1,000\.00|\$1,500\.00/, 'the new child from next month');
+  assert.match(await projRow('Tuition from private-pay families').textContent(), /\$[\d,]+/);
+  assert.match(await projRow('New families starting (possible)').locator('td').nth(1).textContent(), /^\$1,(000|500)$/, 'the new child from next month');
   await page.locator('#proj-coming tr', { hasText: 'Sofia Lopez' }).locator('text=Starts').waitFor();
   await page.locator('#proj-coming tr', { hasText: 'Test Kid Delta' }).locator('text=Could start').waitFor();
   await page.click('[data-pm="12"]');
@@ -914,6 +916,54 @@ try {
   await shot(page, '36-projection');
   await page.click('[data-pm="6"]');
   ok('Projection: tuition from each child’s rate and start date, payroll and expenses from recent months, Pipeline families who could start');
+
+  // ── bills paid every month, and class rates (020) ──
+  await page.click('[data-mtab=bills]');
+  await page.click('#bill-add');
+  await drawer.locator('input[name=name]').fill('Rent');
+  await drawer.locator('input[name=category]').fill('Rent');
+  await drawer.locator('input[name=amount]').fill('1000');
+  await drawer.locator('input[name=days]').fill('15, 30');
+  await drawer.locator('input[name=pl0]').fill('Base rent');
+  await drawer.locator('input[name=pa0]').fill('1500');
+  await drawer.locator('input[name=pl1]').fill('CAM');
+  await drawer.locator('input[name=pa1]').fill('500');
+  await drawer.locator('input[name=starts_on]').fill(`${todayStr.slice(0, 7)}-01`);
+  await drawer.locator('#bill-save').click();
+  await page.waitForSelector('#toast:has-text("Saved: Rent, $2,000.00 a month")');
+  assert.equal(await page.locator('#bill-dues li', { hasText: 'Rent' }).count(), 2, 'due on the 15th and the 30th');
+  assert.match(await page.locator('#bill-list li', { hasText: 'Rent' }).textContent(), /\$2,000\.00[\s\S]*2 payments of \$1,000\.00, on the 15th and the 30th[\s\S]*Base rent \$1,500\.00[\s\S]*CAM \$500\.00/);
+  await page.locator('#bill-dues li').first().locator('[data-pay]').click();
+  assert.equal(await drawer.locator('input[name=amount]').inputValue(), '1000');
+  await drawer.locator('#me-save').click();
+  await page.waitForSelector('#toast:has-text("Saved: Rent $1,000.00")');
+  await page.locator('#bill-dues li.bd-paid', { hasText: 'Rent' }).waitFor();
+  assert.equal(await page.locator('.stat', { hasText: 'Paid' }).first().locator('b').textContent(), '$1,000.00');
+  await shot(page, '38-bills');
+  await page.click('[data-mtab=overview]');
+  await moneyCol('Money out').locator('li', { hasText: 'Rent' }).locator('text=$1,000.00').waitFor();
+  await page.click('[data-mtab=projection]');
+  assert.match(await projRow('Rent and bills').locator('td').nth(1).textContent(), /\$2,000/, 'every bill on its days');
+  assert.match(await projRow('Other expenses').textContent(), /not counting Rent/);
+  assert.equal(await page.locator('#proj-rates li', { hasText: 'Test Kid Alpha' }).count(), 0, '$560 every 2 weeks is the Early 3s after-care rate');
+  // A class rate changes on Settings: the child at the old rate shows up to check.
+  await page.click('header nav button[data-view=staff]');
+  const e3Rate = page.locator('.rate-table tr', { hasText: 'Early 3s' }).locator('input[data-k=rate_after_care]');
+  await e3Rate.fill('285');
+  await e3Rate.press('Tab');
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await page.click('header nav button[data-view=money]');
+  assert.match(await page.locator('#proj-rates li', { hasText: 'Test Kid Alpha' }).textContent(), /\$560\.00 every 2 weeks: 2% less than full time \+ after care \(\$285\.00 a week\)/);
+  await page.locator('#proj-rates li', { hasText: 'Test Kid Alpha' }).locator('[data-open-sid]').click();
+  await drawer.locator('#rate-opts [data-rate=full]').click();   // one tap fills the rate, kept every 2 weeks
+  assert.equal(await drawer.locator('input[name=tuition_amount]').inputValue(), '540');
+  assert.equal(await drawer.locator('#rate-opts .btn.primary').textContent(), 'Full time · $270.00 a week');
+  await drawer.locator('[data-close]').first().click();   // discard (confirm accepted)
+  await page.click('header nav button[data-view=staff]');
+  await e3Rate.fill('280');
+  await e3Rate.press('Tab');
+  await page.waitForSelector('#toast:has-text("Saved")');
+  ok('Bills: rent twice a month with what it’s made of, mark one paid (money out); the projection counts bills; class rates on Settings, rates to check, one-tap rate');
 
   // ── waiting list: registration paid is what holds the spot (019) ──
   await page.click('header nav button[data-view=board]');
@@ -1194,6 +1244,17 @@ try {
   const rosterOverflow = await m.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   assert.ok(rosterOverflow <= 0, `Enrollment scrolls sideways by ${rosterOverflow}px on a phone`);
   await shot(m, '14-mobile-enrollment');
+  await m.click('header nav button[data-view=money]');
+  await m.click('[data-mtab=projection]');
+  await m.locator('.proj-month[open]').waitFor();
+  assert.equal(await m.locator('table.proj').isVisible(), false, 'the month table is for wide screens');
+  assert.match(await m.locator('.proj-month').first().textContent(), /Money in[\s\S]*Money out[\s\S]*Left over/);
+  const projOverflow = await m.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  assert.ok(projOverflow <= 0, `Projection scrolls sideways by ${projOverflow}px on a phone`);
+  await shot(m, '39-mobile-projection');
+  await m.click('[data-mtab=bills]');
+  await m.locator('#bill-dues li').first().waitFor();
+  await shot(m, '40-mobile-bills');
   await m.click('header nav button[data-view=today]');
   ok(`phone: compact header (${Math.round(headerH)}px, tabs in one row, scrolls away), no sideways scroll`);
 

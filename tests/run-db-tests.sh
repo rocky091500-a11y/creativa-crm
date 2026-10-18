@@ -26,3 +26,4 @@ psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/paychecks.test.sql 2>&1 | grep -vE 
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/money.test.sql 2>&1 | grep -vE "^$"
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/weekly.test.sql 2>&1 | grep -vE "^$"
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/projection.test.sql 2>&1 | grep -vE "^$"
+psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/rates_bills.test.sql 2>&1 | grep -vE "^$"

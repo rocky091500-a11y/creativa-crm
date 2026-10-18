@@ -1004,7 +1004,13 @@ try {
   assert.match(await page.locator('.class-card', { hasText: 'Early 2s' }).locator('.tag').textContent(), /\d+ waiting · [1-9]\d* paid/);
   assert.match(await page.locator('.class-card.total').textContent(), /on waiting lists \([1-9]\d* paid registration\)/);
   await page.selectOption('#r-status', 'enrolled');
-  ok('Waiting list: registration paid on the inquiry shows on its card and the column, carries over to the student, and shows on Enrollment');
+  await page.click('header nav button[data-view=money]');
+  await page.click('[data-mtab=projection]');
+  assert.match(await page.locator('#proj-wait li', { hasText: 'Test Kid Delta' }).textContent(), /registration paid[\s\S]*Counted from/, 'registration paid + start date: counted');
+  assert.match(await page.locator('#proj-wait li', { hasText: 'Test Kid Gamma' }).textContent(), /Not counted: add a start date/);
+  await page.click('.proj-table-box > summary');
+  assert.match(await page.locator('table.proj tr', { has: page.locator('th', { hasText: 'Starting from the waiting list' }) }).locator('td').nth(1).textContent(), /^\$1,(000|500)$/);
+  ok('Waiting list: registration paid on the inquiry shows on its card and the column, carries over to the student, and shows on Enrollment; with a start date it counts in the projection');
 
   // ── activated staff, as a non-admin ──
   const p2 = await newPage();

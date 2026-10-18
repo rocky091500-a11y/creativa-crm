@@ -385,6 +385,9 @@ try {
   assert.match(await tRow('Test Kid Alpha').textContent(), /\$520\.00[\s\S]*Check amount[\s\S]*sheet -\$40\.00/);
   await page.click('#p-now');
   await tRow('Test Kid Alpha').waitFor();
+  assert.equal(await page.locator('#week-box .wb-week').count(), 4, 'this week and the three after it');
+  assert.match(await page.locator('#week-box .wb-split').textContent(), /FES \/ Step Up \$280[\s\S]*School Readiness families’ share \$40/,
+    'a two-week rate is half a week; by who pays');
   await shot(page, '12-tuition');
   ok('credits: keep a payment as a credit, apply it to an invoice; owed list; FES-UA receipts; next period; Aug–Sep periods show the old sheets');
 
@@ -903,6 +906,10 @@ try {
   await page.locator('.card', { hasText: 'Delta Parent' }).locator('.tag.start', { hasText: '$500.00' }).waitFor();
   await page.click('header nav button[data-view=money]');
   await page.click('[data-mtab=projection]');
+  assert.equal(await page.locator('.proj-chart .pc-month').count(), 6, 'a column pair a month');
+  assert.equal(await page.locator('.proj-cards .proj-month').count(), 6);
+  await page.locator('.proj-summary', { hasText: 'left over a month' }).waitFor();
+  await page.click('.proj-table-box > summary');   // every number as a table
   const proj = page.locator('table.proj');
   await proj.waitFor();
   assert.equal(await proj.locator('thead th').count(), 7, 'six months by default');
@@ -1246,9 +1253,9 @@ try {
   await shot(m, '14-mobile-enrollment');
   await m.click('header nav button[data-view=money]');
   await m.click('[data-mtab=projection]');
-  await m.locator('.proj-month[open]').waitFor();
-  assert.equal(await m.locator('table.proj').isVisible(), false, 'the month table is for wide screens');
-  assert.match(await m.locator('.proj-month').first().textContent(), /Money in[\s\S]*Money out[\s\S]*Left over/);
+  await m.locator('.proj-month').first().waitFor();
+  assert.equal(await m.locator('table.proj').isVisible(), false, 'the table is tucked away');
+  assert.match(await m.locator('.proj-month').first().textContent(), /(Left over|Short)[\s\S]*Money in[\s\S]*Money out[\s\S]*What’s in it/);
   const projOverflow = await m.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   assert.ok(projOverflow <= 0, `Projection scrolls sideways by ${projOverflow}px on a phone`);
   await shot(m, '39-mobile-projection');

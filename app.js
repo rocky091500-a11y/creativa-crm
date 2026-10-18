@@ -384,7 +384,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -404,6 +404,7 @@
       fin ? sb.from('money_entries').select('id').limit(1) : Promise.resolve({ error: true }),        // missing until 017
       canOffice() ? selectAll('todos', 'due_on') : Promise.resolve({ error: true }),
       sb.from('inquiries').select('start_on,reg_paid_on').limit(1),                                   // missing until 019
+      sb.from('school_closures').select('*').order('starts_on'),                                       // missing until 021
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -441,6 +442,7 @@
     state.money = undefined;   // Money page data: loaded when it opens
     state.hasTodos = !td.error;
     state.hasStartOn = !so.error;
+    state.closures = cl.error ? null : cl.data;
     state.todos = td.error ? [] : td.data;
     watchInquiries();
     state.loadedAt = Date.now();
@@ -1938,7 +1940,7 @@
     const familyOf = (sid) => state.students.find((s) => s.id === sid)?.family_account || '';
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
     const late = (i) => { const d = daysBetween(i.due_date, todayStr()); return d <= 0 ? 'current' : d <= 30 ? '1–30 days' : d <= 60 ? '31–60 days' : d <= 90 ? '61–90 days' : 'over 90 days'; };
-    el.innerHTML = `<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period" ${before && p <= earliest ? 'disabled' : ''}>‹</button>
+    el.innerHTML = `${weekBoxHtml()}<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period" ${before && p <= earliest ? 'disabled' : ''}>‹</button>
         <b>${esc(fmtPeriod(p))}, ${p.slice(0, 4)}</b>
         <button class="btn small" id="p-next" type="button" aria-label="Next billing period">›</button>
         ${p !== periodOf(todayStr()) ? '<button class="btn small ghost" id="p-now" type="button">This period</button>' : ''}
@@ -3318,6 +3320,47 @@
       return t + (start && start >= addDays(p, 7) ? full / 2 : full);
     }, 0));
   }
+  // Tuition for one week (Mon–Fri): a weekly rate, half a two-week rate; a school-year rate is a tenth of it a month, Aug–May.
+  // Families pay through holidays and breaks (no credit), so closed days don't change it.
+  function childInWeek(rate, freq, start, last, mon) {
+    if (!(Number(rate) > 0) || (start && start > addDays(mon, 4)) || (last && last < mon)) return 0;
+    const r = Number(rate);
+    if (freq === 'weekly') return r;
+    if (freq === 'biweekly') return r / 2;
+    if (freq === 'school_year') return ['06', '07'].includes(mon.slice(5, 7)) ? 0 : (r / 10) * 12 / 52;
+    return (r * 12) / 52;   // monthly
+  }
+  const closuresIn = (from, to) => (state.closures || []).filter((c) => c.starts_on <= to && c.ends_on >= from);
+  function weekTuition(mon) {   // the tuition expected for the week starting that Monday, by who pays
+    const w = { mon, fri: addDays(mon, 4), private: 0, fes: 0, sr: 0, kinder: 0, total: 0, starting: 0, leaving: 0 };
+    state.students.filter((s) => s.status === 'enrolled' || (LEFT.has(s.status) && s.withdrawn_on && s.withdrawn_on >= mon)).forEach((s) => {
+      const fr = state.finance[s.id] || {}, last = LEFT.has(s.status) ? s.withdrawn_on : null;
+      const x = childInWeek(fr.tuition_amount, fr.tuition_frequency, s.start_date, last, mon);
+      if (!x) return;
+      w[paysFor(fr)] += x;
+      w.total += x;
+      if (s.start_date && s.start_date >= mon && s.start_date <= w.fri) w.starting++;
+      if (last && last <= w.fri) w.leaving++;
+    });
+    w.closed = closuresIn(mon, w.fri).map((c) => c.name.replace(/ \(staff (not )?paid\)$/, ''));
+    return w;
+  }
+  // The box at the top of Tuition: this week (next week on a weekend) and the three after it.
+  function weekBoxHtml() {
+    const today = nyToday(), dow = new Date(`${today}T12:00:00`).getDay();
+    const first = addDays(today, dow === 0 ? 1 : dow === 6 ? 2 : 1 - dow);
+    const weeks = [0, 1, 2, 3].map((k) => weekTuition(addDays(first, 7 * k)));
+    const w0 = weeks[0], label0 = dow === 0 || dow === 6 ? 'Next week' : 'This week', split = [['private', 'Private-pay families'], ['fes', 'FES / Step Up'], ['sr', 'School Readiness families’ share'], ['kinder', 'Kindergarten (Step Up pending)']]
+      .filter(([k]) => w0[k] > 0);
+    const notes = (w) => [w.starting && `${w.starting} starting`, w.leaving && `${w.leaving} leaving`, ...w.closed.map((c) => `${c}: tuition still due`)].filter(Boolean);
+    return `<section class="panel week-box" id="week-box"><div class="wb-head"><h2>Tuition expected each week</h2>
+        <span class="muted small">From each child’s rate. Two weeks make one bill.</span></div>
+      <div class="wb-weeks">${weeks.map((w, i) => `<div class="wb-week ${i === 0 ? 'wb-now' : ''}">
+          <span class="wb-label">${i === 0 ? label0 : `Week of ${esc(fmtDate(w.mon))}`}</span>
+          <b>${money0(w.total)}</b><span class="muted small">${esc(fmtDate(w.mon))} – ${esc(fmtDate(w.fri))}</span>
+          ${notes(w).map((t) => `<span class="small wb-note">${esc(t)}</span>`).join('')}</div>`).join('')}</div>
+      ${split.length > 1 ? `<p class="small wb-split">${label0}: ${split.map(([k, label]) => `${esc(label)} <b>${money0(w0[k])}</b>`).join(' · ')}</p>` : ''}</section>`;
+  }
   // Who pays a child's tuition, for the projection's lines.
   const PROJ_PAYS = { private: 'Tuition from private-pay families', fes: 'FES / Step Up scholarships', sr: 'School Readiness (family’s share)',
     kinder: 'Kindergarten, Step Up (pending)' };
@@ -3354,6 +3397,21 @@
       for (let d = addDays(lastRun, 14 * Math.ceil(daysBetween(lastRun, monthStart(m)) / 14)); d <= monthEnd(m); d = addDays(d, 14)) out.push(d);
       return out;
     };
+    // The share of a payday's pay period that staff are paid for: weekdays on the school calendar (021) marked "staff not paid"
+    // (one week of winter break) come off. The period is placed like the last payroll's (its end that many days before payday).
+    const lastPc = pc.find((x) => x.pay_date === lastRun);
+    const endGap = lastPc ? daysBetween(lastPc.period_end, lastRun) : 7, len = lastPc ? daysBetween(lastPc.period_start, lastPc.period_end) + 1 : 14;
+    const unpaid = (state.closures || []).filter((c) => !c.staff_paid);
+    const unpaidIn = (d) => {
+      const end = addDays(d, -endGap), start = addDays(end, 1 - len);
+      let work = 0, off = 0;
+      for (let x = start; x <= end; x = addDays(x, 1)) {
+        if ([0, 6].includes(new Date(`${x}T12:00:00`).getDay())) continue;
+        work++;
+        if (unpaid.some((c) => x >= c.starts_on && x <= c.ends_on)) off++;
+      }
+      return { share: work ? (work - off) / work : 1, names: unpaid.filter((c) => c.starts_on <= end && c.ends_on >= start).map((c) => c.name) };
+    };
     const leads = state.inquiries.filter((i) => i.start_on && Number(i.expected_tuition) > 0 && !CLOSED.has(i.stage)
       && !state.students.some((s) => s.inquiry_id === i.id));
     const waiting = state.students.filter((s) => s.status === 'waitlist' && s.start_date && Number(fin(s).tuition_amount) > 0);
@@ -3363,7 +3421,7 @@
     const rows = {
       ...Object.fromEntries(Object.keys(PROJ_PAYS).map((k) => [k, tuition(kids(k))])),
       programs: per(() => programPays), ccfp: per(() => ccfp), other: per(() => recentAvg('in')),
-      payroll: per((m) => round2(payAvg * payDates(m).length)), bills: per((m) => round2(bills.reduce((t, b) => t + Number(b.amount) * billDues(b, m).length, 0))),
+      payroll: per((m) => round2(payDates(m).reduce((t, d) => t + payAvg * unpaidIn(d).share, 0))), bills: per((m) => round2(bills.reduce((t, b) => t + Number(b.amount) * billDues(b, m).length, 0))),
       expenses: per(() => recentAvg('out')), possible,
     };
     const sumAt = (keys, i) => round2(keys.reduce((t, k) => t + rows[k][i], 0));
@@ -3383,7 +3441,9 @@
         .map((s) => ({ kind: 'leave', who: s.name, on: lastDay(s), where: STUDENT_STATUS[s.status], rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
     ].sort((a, b) => a.on.localeCompare(b.on));
     const counts = Object.fromEntries(Object.keys(PROJ_PAYS).map((k) => [k, kids(k).filter((s) => s.status === 'enrolled').length]));
-    const meta = months.map((m) => ({ bills: periodsIn(m).length, paydays: payDates(m).length }));
+    const meta = months.map((m) => ({ bills: periodsIn(m).length, paydays: payDates(m).length,
+      unpaid: [...new Set(payDates(m).filter((d) => unpaidIn(d).share < 1).flatMap((d) => unpaidIn(d).names))],
+      closed: [...new Set(closuresIn(monthStart(m), monthEnd(m)).map((c) => c.name.replace(/ \(staff (not )?paid\)$/, '')))] }));
     return { rows, ccfp, claims: claims.length, payAvg, coming, counts, meta, noPayroll: !M.paychecks, bills, billCats: [...new Set(bills.map((b) => b.category))] };
   }
   // Enrolled children with no rate, or a rate that isn't their class's and no note saying why (020).
@@ -3403,6 +3463,27 @@
     return true;
   }
 
+  // Money in and out by month: two thin columns a month (in, out) on one axis, left over written above (≤ 6 months).
+  function projChart(months, R) {
+    const n = months.length, gw = 64, H = 190, top = 26, base = 160, W = n * gw + 44;
+    const max = Math.max(1, ...R.tin, ...R.tout), step = [1000, 2500, 5000, 10000, 20000, 25000, 50000, 100000].find((x) => max / x <= 4) || 250000;
+    const topVal = Math.ceil((max * 1.08) / step) * step;
+    const ticks = Array.from({ length: topVal / step + 1 }, (_, i) => i * step);
+    const y = (v) => base - ((base - top) * v) / topVal;
+    const bar = (x, v, cls) => { const t = y(v), w = 18, r = Math.min(4, base - t); return v > 0
+      ? `<path class="${cls}" d="M${x} ${base} V${t + r} Q${x} ${t} ${x + r} ${t} H${x + w - r} Q${x + w} ${t} ${x + w} ${t + r} V${base} Z"/>` : ''; };
+    const k = (v) => (v >= 1000 ? `$${Math.round(v / 1000)}K` : `$${v}`);
+    return `<svg class="proj-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMinYMid meet" role="img" aria-label="Money in and out by month (the table below has every number)">
+      ${ticks.map((t) => `<line class="pc-grid" x1="40" x2="${W}" y1="${y(t)}" y2="${y(t)}"/><text class="pc-tick" x="36" y="${y(t) + 4}" text-anchor="end">${k(t)}</text>`).join('')}
+      ${months.map((m, i) => { const x = 44 + i * gw + 12; return `<g class="pc-month" data-month="${m}" tabindex="0">
+        <title>${esc(monthLong(m))}: in ${money0(R.tin[i])}, out ${money0(R.tout[i])}, left over ${money0(R.net[i])}</title>
+        <rect class="pc-hit" x="${x - 10}" y="${top - 22}" width="${gw - 4}" height="${H - top + 22}"/>
+        ${bar(x, R.tin[i], 'pc-in')}${bar(x + 20, R.tout[i], 'pc-out')}
+        ${n <= 6 ? `<text class="pc-net ${R.net[i] < 0 ? 'neg' : ''}" x="${x + 19}" y="${Math.min(y(R.tin[i]), y(R.tout[i])) - 6}" text-anchor="middle">${money0(R.net[i])}</text>` : ''}
+        <text class="pc-label" x="${x + 19}" y="${base + 18}" text-anchor="middle">${esc(monthShort(m).split(' ')[0])}</text></g>`; }).join('')}
+    </svg>`;
+  }
+
   function drawProjection(body, el) {
     const n = [3, 6, 12].includes(state.projMonths) ? state.projMonths : 6;
     const months = Array.from({ length: n }, (_, i) => shiftMonth(thisMonth(), i));
@@ -3420,7 +3501,7 @@
       ['other', 'Other money in', '', 'average of recent months on Money'],
       ['tin', 'Money in', 'proj-total'],
       ['out', 'Money out'],
-      ['payroll', 'Payroll', '', P.noPayroll ? 'needs Payroll access to see' : P.payAvg ? `about ${money0(P.payAvg)} gross every 2 weeks` : 'no paychecks recorded yet'],
+      ['payroll', 'Payroll', '', P.noPayroll ? 'needs Payroll access to see' : P.payAvg ? `about ${money0(P.payAvg)} gross every 2 weeks, less staff days not paid` : 'no paychecks recorded yet'],
       ['bills', 'Rent and bills', '', P.bills.length ? `${P.bills.map((b) => b.name).join(', ')}, on their days (Money → Bills)` : 'add rent and monthly bills on Money → Bills'],
       ['expenses', P.bills.length ? 'Other expenses' : 'Expenses', '', `average of recent months on Money${P.billCats.length ? `, not counting ${P.billCats.join(', ')}` : ''}`],
       ['tout', 'Money out', 'proj-total'],
@@ -3429,29 +3510,43 @@
       ['possible', 'New families starting (possible)', 'proj-possible', 'Pipeline and waiting list, with a start date and tuition'],
       ['netPossible', 'Left over if they start', 'proj-total proj-possible'],
     ].filter(([k]) => !R[k] || ['tin', 'tout', 'net', 'ccfp', 'payroll', 'bills', 'expenses', 'private'].includes(k) || R[k === 'netPossible' ? 'possible' : k].some((x) => x));
+    const notes = (i) => [P.meta[i].bills === 3 && '3 tuition bills this month', P.meta[i].paydays === 3 && '3 paydays this month',
+      ...P.meta[i].unpaid.map((c) => `${c.replace(/ \(staff not paid\)$/, '')}: staff paid for part of it`)].filter(Boolean);
     const note = (i) => [P.meta[i].bills === 3 && '3 billing periods', P.meta[i].paydays === 3 && '3 paydays'].filter(Boolean).join(' · ');
     const cell = (x) => (x ? money0(x) : '<span class="muted">—</span>');
     const check = state.hasClassRates ? ratesToCheck() : [];
-    body.innerHTML = `<div class="toolbar"><span class="muted small">An estimate for the coming months: what you can expect, not what’s been paid.</span>
+    const lo = R.net.indexOf(Math.min(...R.net)), hi = R.net.indexOf(Math.max(...R.net));
+    const why = (i) => (notes(i)[0] ? ` (${notes(i)[0].replace(/ this month$/, '')})` : '');
+    const moneyLines = (i, keys) => LINES.filter(([k]) => keys.includes(k) && R[k] && (R[k][i] || ['payroll', 'private'].includes(k)))
+      .map(([k, label]) => `<li><span>${esc(label)}</span><b>${money0(R[k][i])}</b></li>`).join('');
+    body.innerHTML = `<div class="toolbar"><span class="muted small">What to expect in the coming months, from today’s children, rates, payroll and bills: an estimate, not what’s been paid.</span>
         <span class="spacer"></span><div class="seg" role="tablist" aria-label="How many months">
         ${[3, 6, 12].map((k) => `<button type="button" data-pm="${k}" aria-selected="${n === k}">${k} months</button>`).join('')}</div></div>
-      <div class="stats">
-        <div class="stat"><b>${money0(avg(R.tin))}</b><span>Money in a month</span></div>
-        <div class="stat"><b>${money0(avg(R.tout))}</b><span>Money out a month</span></div>
-        <div class="stat"><b class="${avg(R.net) < 0 ? 'neg' : ''}">${money0(avg(R.net))}</b><span>Left over a month</span></div>
-        <div class="stat"><b>${money0(avg(R.possible))}</b><span>More a month if the families starting do</span></div>
-      </div>
-      ${check.length ? `<p class="panel small proj-check-note">${check.length} child${check.length === 1 ? ' has' : 'ren have'} no rate or a rate that isn’t their class’s:
-        <a href="#proj-rates">check them below</a>.</p>` : ''}
-      <div class="table-wrap proj-wide"><table class="proj"><thead><tr><th></th>${months.map((m, i) => `<th class="num">${esc(monthShort(m))}${note(i) ? `<div class="muted small">${esc(note(i))}</div>` : ''}</th>`).join('')}</tr></thead>
+      <section class="panel proj-summary">
+        <p class="ps-big">About <b class="${avg(R.net) < 0 ? 'neg' : ''}">${money0(avg(R.net))}</b> left over a month</p>
+        <p>Over the next ${n} months, about <b>${money0(avg(R.tin))}</b> a month comes in and <b>${money0(avg(R.tout))}</b> goes out.</p>
+        ${n > 1 ? `<p class="small">Tightest month: <b>${esc(monthLong(months[lo]))}</b>, ${money0(R.net[lo])}${esc(why(lo))}. Best month: <b>${esc(monthLong(months[hi]))}</b>, ${money0(R.net[hi])}${esc(why(hi))}.</p>` : ''}
+        ${avg(R.possible) ? `<p class="small">If the new families in the Pipeline start, about <b>${money0(avg(R.possible))}</b> more a month.</p>` : ''}
+        ${check.length ? `<p class="small proj-check-note">${check.length} child${check.length === 1 ? ' has' : 'ren have'} no rate or a rate that isn’t their class’s: <a href="#proj-rates">check them</a>.</p>` : ''}
+        <div class="proj-chart">${projChart(months, R)}</div>
+        <p class="pc-legend small"><span><i class="sw sw-in"></i>Money in</span><span><i class="sw sw-out"></i>Money out</span>
+          <span class="muted">${n <= 6 ? 'Left over is written above each month. ' : ''}Tap a month for its details.</span></p>
+      </section>
+      <div class="proj-cards">${months.map((m, i) => `<article class="panel proj-month" id="pm-${m}">
+          <header class="pm-head"><h3>${esc(monthLong(m))}</h3>${notes(i).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</header>
+          ${P.meta[i].closed.length ? `<p class="muted small pm-closed">Closed: ${esc(P.meta[i].closed.join(', '))} (tuition still due)</p>` : ''}
+          <p class="pm-left ${R.net[i] < 0 ? 'neg' : ''}"><span>${R.net[i] < 0 ? 'Short' : 'Left over'}</span><b>${money0(R.net[i])}</b></p>
+          <p class="pm-io"><span><i class="sw sw-in"></i>Money in</span><b>${money0(R.tin[i])}</b></p>
+          <p class="pm-io"><span><i class="sw sw-out"></i>Money out</span><b>${money0(R.tout[i])}</b></p>
+          ${R.possible[i] ? `<p class="pm-io pm-maybe"><span>If the new families start</span><b>+${money0(R.possible[i])}</b></p>` : ''}
+          <details class="pm-more"><summary>What’s in it</summary>
+            <h4>Money in</h4><ul class="money-lines">${moneyLines(i, ['private', 'fes', 'sr', 'kinder', 'programs', 'ccfp', 'other'])}</ul>
+            <h4>Money out</h4><ul class="money-lines">${moneyLines(i, ['payroll', 'bills', 'expenses'])}</ul></details></article>`).join('')}</div>
+      <details class="panel proj-table-box"><summary>See every number as a table</summary>
+        <div class="table-wrap"><table class="proj"><thead><tr><th></th>${months.map((m, i) => `<th class="num">${esc(monthShort(m))}${note(i) ? `<div class="muted small">${esc(note(i))}</div>` : ''}</th>`).join('')}</tr></thead>
         <tbody>${LINES.map(([k, label, cls = '', sub = '']) => (!R[k] ? `<tr class="proj-group"><th colspan="${n + 1}">${esc(label)}</th></tr>`
           : `<tr class="${cls}"><th>${esc(label)}${sub ? `<div class="muted small">${esc(sub)}</div>` : ''}</th>
-            ${R[k].map((x) => `<td class="num ${x < 0 ? 'neg' : ''}">${cell(x)}</td>`).join('')}</tr>`)).join('')}</tbody></table></div>
-      <div class="proj-cards">${months.map((m, i) => `<details class="panel proj-month" ${i === 0 ? 'open' : ''}><summary>
-          <span class="pm-head"><b>${esc(monthLong(m))}</b><b class="${R.net[i] < 0 ? 'neg' : ''}">${money0(R.net[i])}</b></span>
-          <span class="pm-sub muted small"><span>In ${money0(R.tin[i])} · out ${money0(R.tout[i])}${note(i) ? ` · ${esc(note(i))}` : ''}</span><span>left over</span></span></summary>
-        <ul class="money-lines">${LINES.map(([k, label, cls = '']) => (!R[k] ? `<li class="pm-group">${esc(label)}</li>`
-          : `<li class="${cls}"><span>${esc(label)}</span><b class="${R[k][i] < 0 ? 'neg' : ''}">${cell(R[k][i])}</b></li>`)).join('')}</ul></details>`).join('')}</div>
+            ${R[k].map((x) => `<td class="num ${x < 0 ? 'neg' : ''}">${cell(x)}</td>`).join('')}</tr>`)).join('')}</tbody></table></div></details>
       ${check.length ? `<section class="panel" id="proj-rates"><h2>Rates to check</h2>
         <p class="muted small">Children with no rate, or a rate that isn’t one of their class’s (Settings → Classes). ${edit ? 'Tap the class rate to use it.' : ''}
           A different rate on purpose (a sibling discount…)? Open the child and write why under <b>Why the rate is different</b>; they come off this list.</p>
@@ -3466,12 +3561,24 @@
             <td>${x.kind === 'leave' ? 'Last day ' : x.kind === 'maybe' ? 'Could start ' : 'Starts '}${esc(fmtDate(x.on))}</td>
             <td class="num">${Number(x.rate) > 0 ? `${money(x.rate)}<div class="muted small">${esc(FREQ_TEXT[x.freq] || '')}</div>` : '<span class="muted small">no rate yet</span>'}</td></tr>`).join('')
             || '<tr><td colspan="3" class="muted">Nobody starting or leaving in these months. Add a start date to families in the Pipeline to see them here.</td></tr>'}</tbody></table></div></section>
-      <p class="muted small">How it’s worked out: each enrolled child’s rate (on their page) for every billing period they’ll be here, from their start date
-        until a last day set on their page; everyone else is assumed to stay. A month where three billing periods start (or three paydays fall) is higher than
-        the others. Payroll is gross pay from Patriot (taxes the school pays aren’t included unless they’re added as an expense). The food program, program
-        payments, other money in and expenses use recent months, so they get better as more is recorded. For a family in the Pipeline, open it and fill in
-        <b>Starts on</b> and <b>Tuition</b>.</p>`;
+      <details class="panel proj-how"><summary>How it’s worked out</summary>
+        <ul class="small">
+          <li><b>Tuition</b>: each enrolled child’s rate (on their page) for every billing period they’ll be here, from their start date until a last day set
+            on their page; everyone else is assumed to stay. Families pay full tuition through holidays and breaks, so those don’t change it.
+            A month where three billing periods start is higher than the others.</li>
+          <li><b>Payroll</b>: gross pay from Patriot (the average of the last two payrolls) on each payday. Days on the school calendar marked “staff not paid”
+            (Settings → School calendar), like one week of winter break, come off that payroll. A month with three paydays is higher. Taxes the school pays
+            aren’t included unless they’re added as an expense.</li>
+          <li><b>Rent and bills</b>: every bill on its days (Money → Bills). <b>Food program, program payments, other money in and expenses</b>: recent
+            months, so they get better as more is recorded.</li>
+          <li><b>New families</b>: families in the Pipeline or on the waiting list with a start date and tuition, kept apart because they haven’t started.</li>
+        </ul></details>`;
     $$('[data-pm]', body).forEach((b) => b.addEventListener('click', () => { state.projMonths = Number(b.dataset.pm); store.set('projMonths', state.projMonths); drawProjection(body, el); }));
+    const toMonth = (g) => { const card = $(`#pm-${g.dataset.month}`, body); card.scrollIntoView({ behavior: 'smooth', block: 'start' }); $('.pm-more', card).open = true; };
+    $$('.pc-month', body).forEach((g) => {
+      g.addEventListener('click', () => toMonth(g));
+      g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toMonth(g); } });
+    });
     $$('#proj-coming tr[data-sid]', body).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.sid)));
     $$('#proj-coming tr[data-iid]', body).forEach((tr) => tr.addEventListener('click', () => openDrawer(tr.dataset.iid)));
     $$('[data-open-sid]', body).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openStudent(a.dataset.openSid); }));
@@ -4673,6 +4780,18 @@
           ${['registration_fee', 'book_fee'].map((k) => `<td><input data-k="${k}" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(c[k] ?? '')}" aria-label="${esc(c.name)} ${k === 'book_fee' ? 'book fee' : 'registration'}"></td>`).join('')}
           </tr>`).join('')}</tbody></table></div>` : ''}
       </section>
+      ${state.closures ? `<section class="panel settings-panel" id="cal-panel"><h2>School calendar</h2>
+        <p class="muted small">Holidays and closed days. Families pay full tuition through them (no credit). Untick <b>Staff paid</b> for days teachers
+          aren’t paid (one of the two weeks of winter break): Money → Projection takes them out of payroll. Changes save as you go.</p>
+        <div class="table-wrap flat"><table class="cal-table"><thead><tr><th>Closed for</th><th>From</th><th>To</th><th>Staff paid</th><th></th></tr></thead>
+        <tbody>${state.closures.map((c) => `<tr data-cal="${c.id}" class="${c.ends_on < todayStr() ? 'cal-past' : ''}">
+          <td><input data-k="name" value="${esc(c.name)}" maxlength="80" aria-label="Closed for"></td>
+          <td><input data-k="starts_on" type="date" value="${esc(c.starts_on)}" aria-label="From"></td>
+          <td><input data-k="ends_on" type="date" value="${esc(c.ends_on)}" aria-label="To"></td>
+          <td><input data-k="staff_paid" type="checkbox" class="check" ${c.staff_paid ? 'checked' : ''} aria-label="Staff paid"></td>
+          <td><button class="btn small ghost" type="button" data-cal-del>Remove</button></td></tr>`).join('')
+          || '<tr><td colspan="5" class="muted">No closed days yet.</td></tr>'}</tbody></table></div>
+        <button class="btn small" id="cal-add" type="button">+ Add a closed day</button></section>` : ''}
       <section class="panel settings-panel"><h2>Receipts</h2>
         <form id="set-receipt" class="grid2">
           ${fInput('school_name', 'School name', set.school_name)}
@@ -4933,6 +5052,31 @@
       state.classrooms = state.classrooms.map((c) => (c.id === id ? data : c)).sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
       toast('Saved');
     }));
+    const sortCal = (xs) => xs.sort((a, b) => a.starts_on.localeCompare(b.starts_on));
+    $$('.cal-table input', el).forEach((input) => input.addEventListener('change', async () => {
+      const id = input.closest('tr').dataset.cal, k = input.dataset.k, v = k === 'staff_paid' ? input.checked : input.value.trim();
+      if (v === '') return renderStaff(el);
+      const { data, error } = await sb.from('school_closures').update({ [k]: v }).eq('id', id).select().single();
+      if (error) { fail(error, 'Could not save the closed day'); return renderStaff(el); }
+      state.closures = sortCal(state.closures.map((c) => (c.id === id ? data : c)));
+      toast('Saved');
+    }));
+    $$('.cal-table [data-cal-del]', el).forEach((b) => b.addEventListener('click', async () => {
+      const id = b.closest('tr').dataset.cal, c = state.closures.find((x) => x.id === id);
+      if (!confirm(`Remove “${c.name}” (${fmtDate(c.starts_on)}) from the calendar?`)) return;
+      const { error } = await sb.from('school_closures').delete().eq('id', id);
+      if (error) return fail(error, 'Could not remove it');
+      state.closures = state.closures.filter((x) => x.id !== id);
+      renderStaff(el);
+    }));
+    $('#cal-add', el)?.addEventListener('click', async () => {
+      const day = todayStr();
+      const { data, error } = await sb.from('school_closures').insert({ name: 'School closed', starts_on: day, ends_on: day }).select().single();
+      if (error) return fail(error, 'Could not add a closed day');
+      state.closures = sortCal([...state.closures, data]);
+      renderStaff(el);
+      toast('Added: change its name and dates');
+    });
     $('#cls-add', el).addEventListener('click', async () => {
       const name = (prompt('Name of the new class (e.g. 15–17 months)') || '').trim();
       if (!name) return;

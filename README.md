@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql` and `020_class_rates_and_bills.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql` and `021_school_calendar.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -361,8 +361,15 @@ first week isn't shown as late, and gets no late fee, until then.
 period they'll be here (from their start date until a last day set on their page), by who pays (private-pay families,
 FES / Step Up, School Readiness families' share, Kindergarten on Step Up pending), VPK and SR payments and the food
 program (recent averages), and other money in; payroll, rent and bills on their days (020), and other expenses from
-recent months. A second line shows what's added if the families starting do. Below it, children whose rate isn't one of
-their class's (one tap to use the class rate), and who starts and leaves. On a phone each month is a card.
+recent months. It opens with what's left over a month, the tightest and best months, and a chart of money in and out by
+month; then a card per month (tap "What's in it" for the lines), the full table tucked away, children whose rate isn't
+one of their class's (one tap to use the class rate), and who starts and leaves.
+
+**Tuition** opens with the tuition expected each week: this week (next week on a weekend) and the three after it, from each
+child's rate (a two-week rate is half a week; Kindergarten's school-year rate a tenth a month, Aug–May), by who pays.
+
+**Settings → School calendar** (021) keeps holidays and closed days. Families pay full tuition through them; days marked
+*staff not paid* (one of the two weeks of winter break) come off payroll in the projection.
 
 For a family in the **Pipeline**, open it and fill in **Starts on** and **Tuition** (with how often); the card shows
 "starts …" and they count from that day. Both move over when they become a student.

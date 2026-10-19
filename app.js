@@ -3585,6 +3585,7 @@
     const cell = (x) => (x ? money0(x) : '<span class="muted">—</span>');
     const check = state.hasClassRates ? ratesToCheck() : [];
     const lo = R.net.indexOf(Math.min(...R.net)), hi = R.net.indexOf(Math.max(...R.net));
+    const A = moneyMonth(months[0]), prev = shiftMonth(months[0], -1), L = moneyMonth(prev);   // what really came in and went out (Money → In & out)
     const why = (i) => (notes(i)[0] ? ` (${notes(i)[0].replace(/ this month$/, '')})` : '');
     const moneyLines = (i, keys) => LINES.filter(([k]) => keys.includes(k) && R[k] && (R[k][i] || ['payroll', 'private'].includes(k)))
       .map(([k, label]) => `<li><span>${esc(label)}</span><b>${money0(R[k][i])}</b></li>`).join('');
@@ -3595,6 +3596,7 @@
         <p class="ps-big">About <b class="${avg(R.net) < 0 ? 'neg' : ''}">${money0(avg(R.net))}</b> left over a month</p>
         <p>Over the next ${n} months, about <b>${money0(avg(R.tin))}</b> a month comes in and <b>${money0(avg(R.tout))}</b> goes out.</p>
         ${n > 1 ? `<p class="small">Tightest month: <b>${esc(monthLong(months[lo]))}</b>, ${money0(R.net[lo])}${esc(why(lo))}. Best month: <b>${esc(monthLong(months[hi]))}</b>, ${money0(R.net[hi])}${esc(why(hi))}.</p>` : ''}
+        ${L.tin || L.tout ? `<p class="small">Last month (${esc(monthLong(prev))}), <b>${money0(L.tin)}</b> came in and <b>${money0(L.tout)}</b> went out.</p>` : ''}
         ${avg(R.possible) ? `<p class="small">If the new families in the Pipeline start, about <b>${money0(avg(R.possible))}</b> more a month.</p>` : ''}
         ${check.length ? `<p class="small proj-check-note">${check.length} child${check.length === 1 ? ' has' : 'ren have'} no rate or a rate that isn’t their class’s: <a href="#proj-rates">check them</a>.</p>` : ''}
         <div class="proj-chart">${projChart(months, R)}</div>
@@ -3608,6 +3610,9 @@
           <p class="pm-io"><span><i class="sw sw-in"></i>Money in</span><b>${money0(R.tin[i])}</b></p>
           <p class="pm-io"><span><i class="sw sw-out"></i>Money out</span><b>${money0(R.tout[i])}</b></p>
           ${R.possible[i] ? `<p class="pm-io pm-maybe"><span>If the new families start</span><b>+${money0(R.possible[i])}</b></p>` : ''}
+          ${i === 0 ? `<div class="pm-actual"><p class="pm-io"><span>Came in so far</span><b>${money0(A.tin)}</b></p>
+            <p class="pm-io"><span>Went out so far</span><b>${money0(A.tout)}</b></p>
+            <p class="muted small">What’s recorded through today (Money → In &amp; out).</p></div>` : ''}
           <details class="pm-more"><summary>What’s in it</summary>
             <h4>Money in</h4><ul class="money-lines">${moneyLines(i, ['private', 'fes', 'sr', 'kinder', 'waitlist', 'programs', 'ccfp', 'other'])}</ul>
             <h4>Money out</h4><ul class="money-lines">${moneyLines(i, ['payroll', 'bills', 'expenses'])}</ul></details></article>`).join('')}</div>

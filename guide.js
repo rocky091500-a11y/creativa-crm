@@ -24,7 +24,8 @@ window.CRM_GUIDE = {
         'Open a child: start date, status (Enrolled, Waitlist, Withdrawn, Graduated), last day, contacts (Primary = mother, Secondary = father, Emergency), RBT and therapies.',
         'Funding & tuition: tick the program (FES-UA, FES-EO, SR, VPK, Step Up pending) and pick the class rate from the list: until 3:00 or until 5:45 with after care.',
         'A different rate on purpose (a sibling discount)? Type it and write why under “Why the rate is different”.',
-        'Brothers and sisters: “Copy from a brother or sister” copies the parents; the same family account bills them together.']],
+        'Brothers and sisters: “Copy from a brother or sister” copies the parents; the same family account bills them together.',
+        'Registration 2027–28 (tab at the top): who’s coming back, the class they move up to, the registration fee, and Record payment (with a receipt). Mark “No” for families not returning.']],
       ['Tuition and payments', 'Tuition is billed every two weeks, on Monday, with grace until Friday.', [
         'The box at the top shows the tuition expected this week and the next three.',
         'Bill this period creates the two-week bills for everyone (children on Step Up pending, with no rate, or not billed to the family are skipped).',
@@ -89,7 +90,8 @@ window.CRM_GUIDE = {
         'Abra un niño: fecha de inicio, estado (Inscrito, Lista de espera, Retirado, Graduado), último día, contactos (Principal = madre, Secundario = padre, Emergencia), RBT y terapias.',
         'Fondos y matrícula: marque el programa (FES-UA, FES-EO, SR, VPK, Step Up pendiente) y elija la tarifa de la clase en la lista: hasta las 3:00 o hasta las 5:45 con cuidado extendido.',
         '¿Una tarifa diferente a propósito (descuento por hermano)? Escríbala y ponga por qué en “Por qué la tarifa es diferente”.',
-        'Hermanos: “Copiar de un hermano o hermana” copia a los padres; la misma cuenta de familia los cobra juntos.']],
+        'Hermanos: “Copiar de un hermano o hermana” copia a los padres; la misma cuenta de familia los cobra juntos.',
+        'Matrícula 2027–28 (pestaña arriba): quién regresa, la clase a la que pasa, la matrícula y Registrar pago (con recibo). Marque “No” para las familias que no regresan.']],
       ['Matrícula y pagos', 'La matrícula se cobra cada dos semanas, el lunes, con plazo hasta el viernes.', [
         'El cuadro de arriba muestra la matrícula esperada esta semana y las tres siguientes.',
         'Cobrar este período crea los cobros de dos semanas para todos (se saltan los de Step Up pendiente, sin tarifa o que no se le cobran a la familia).',

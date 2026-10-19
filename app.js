@@ -304,7 +304,8 @@
   const contactName = (c) => [c.first_name, c.last_name].filter(Boolean).join(' ');
   // Registration is what holds a spot on the waiting list: marked Paid on the student, or a registration bill paid in full.
   const regPaid = (s) => s.reg_fee === 'paid' || (state.invoices || []).some((i) => i.student_id === s.id && i.kind !== 'tuition' && !i.void
-    && /regist/i.test(i.description) && Number(i.amount) > 0 && invoiceBalance(i) <= 0);
+    && /regist/i.test(i.description) && Number(i.amount) > 0 && invoiceBalance(i) <= 0
+    && !(state.registrations || []).some((r) => r.invoice_id === i.id));   // next year's registration (023) is tracked on its own
   // A family in the Pipeline: from their student record once they have one, or the day it was recorded on the inquiry.
   const inqRegPaid = (i) => {
     const s = state.students.find((x) => x.inquiry_id === i.id);
@@ -1492,7 +1493,9 @@
   // children keep their class; Kindergarten moves on to 1st grade). The fee is that class's registration fee.
   function regRows() {
     const year = regYear(), classes = state.classrooms.slice().sort((a, b) => a.sort - b.sort);
-    return state.students.filter((s) => s.status === 'enrolled' || s.status === 'waitlist').map((s) => {
+    const start = `${year.slice(0, 4)}-08-01`;
+    return state.students.filter((s) => s.status === 'enrolled' || s.status === 'waitlist'
+      || state.registrations.some((x) => x.student_id === s.id && x.school_year === year)).map((s) => {
       const r = state.registrations.find((x) => x.student_id === s.id && x.school_year === year);
       const i = classes.findIndex((c) => c.id === s.classroom_id);
       const nextDefault = s.status === 'waitlist' ? s.classroom_id : i >= 0 && i < classes.length - 1 ? classes[i + 1].id : null;
@@ -1503,26 +1506,73 @@
       const fee = inv ? Number(inv.amount) : Number(cls?.registration_fee) || 0;
       const paid = inv ? invoicePaid(inv) : 0;
       const pays = inv ? state.payments.filter((p) => p.invoice_id === inv.id).sort((a, b) => b.paid_on.localeCompare(a.paid_on)) : [];
-      const state_ = status !== 'returning' ? status : inv && paid >= fee && fee > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
+      // Waiting (or not started) for next year with registration already paid: nothing more to collect.
+      const onFile = !inv && status === 'returning' && regPaid(s) && (s.status === 'waitlist' || (s.start_date && s.start_date >= start));
+      const state_ = status !== 'returning' ? status : onFile ? 'on_file' : inv && paid >= fee && fee > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
       return { s, r, next, cls, status, inv, fee, paid, pays, st: state_ };
     }).sort((a, b) => (classes.findIndex((c) => c.id === a.next) - classes.findIndex((c) => c.id === b.next)) || a.s.name.localeCompare(b.s.name));
   }
-  const REG_ST = { paid: 'Paid', partial: 'Partly paid', unpaid: 'Not paid yet', not_returning: 'Not returning', undecided: 'Not sure yet' };
-  async function saveReg(s, patch) {
-    const year = regYear(), r = state.registrations.find((x) => x.student_id === s.id && x.school_year === year);
-    const row = r ? null : regRows().find((x) => x.s.id === s.id);
-    const q = r ? sb.from('registrations').update(patch).eq('id', r.id)
-      : sb.from('registrations').insert({ school_year: year, student_id: s.id, next_classroom_id: row?.next || null, status: row?.status || 'returning', ...patch });
-    const { data, error } = await q.select().single();
+  const REG_ST = { paid: 'Paid', on_file: 'Paid (on file)', partial: 'Partly paid', unpaid: 'Not paid yet', not_returning: 'Not returning', undecided: 'Not sure yet' };
+  // Next year's class and "coming back?" (023's registration_save keeps the bill in step) and the bill as it is now.
+  async function saveReg(x, patch) {
+    const { data, error } = await sb.rpc('registration_save', { p_student: x.s.id, p_year: regYear(),
+      p_next: 'next' in patch ? patch.next : x.next, p_status: patch.status || x.status });
     if (error) { fail(error, 'Could not save the registration'); return null; }
-    state.registrations = [...state.registrations.filter((x) => x.id !== data.id), data];
+    await syncReg(data, x.r?.invoice_id);
     return data;
+  }
+  async function syncReg(row, oldInvoice) {
+    state.registrations = [...state.registrations.filter((r) => r.id !== row.id), row];
+    const ids = [...new Set([row.invoice_id, oldInvoice].filter(Boolean))];
+    if (!ids.length) return;
+    const { data } = await sb.from('invoices').select('*').in('id', ids);
+    state.invoices = [...state.invoices.filter((i) => !ids.includes(i.id)), ...(data || [])];   // a removed bill is gone
+  }
+  // A registration payment: the bill is made and paid in one step when it's saved (023's registration_pay), with a receipt.
+  function openRegPayment(x, after) {
+    const year = regYearLabel(), due = round2(Math.max(x.fee - x.paid, 0)) || '';
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+    const ctl = mountDrawer({
+      title: `Registration ${esc(year)}`,
+      sub: esc(`${x.s.name} · ${x.cls?.name || 'No class'} · ${money(x.fee)}${x.paid ? ` · ${money(x.paid)} paid` : ''}`),
+      body: `<div class="section grid2">
+          ${fInput('amount', 'Amount', due, 'number', 'min="0.01" step="0.01" inputmode="decimal"')}
+          ${fInput('paid_on', 'Date received', todayStr(), 'date')}
+          <label>Method<select name="method">${Object.entries(METHOD).map(([k, v]) => opt(k, v, 'cash')).join('')}</select></label>
+          <label>Paid by<select name="payer">${Object.entries(PAYER).map(([k, v]) => opt(k, v, 'parent')).join('')}</select></label>
+          ${fInput('reference', 'Check no. / confirmation', '', 'text', 'maxlength="80"')}
+          ${fInput('note', 'Note', '', 'text', 'maxlength="500"')}
+        </div>`,
+      foot: `<span class="spacer"></span><button class="btn" data-close type="button">Cancel</button>
+        <button class="btn" id="rp-save" type="button">Save</button><button class="btn primary" id="rp-print" type="button">Save and print receipt</button>`,
+    });
+    const { drawer, form } = ctl;
+    form.amount.focus();
+    const save = async (print) => {
+      const amount = round2(form.amount.value);
+      if (!(amount > 0)) { form.amount.focus(); return toast('Type the amount', true); }
+      if (!form.paid_on.value) return toast('Enter the date received', true);
+      $$('#rp-save, #rp-print', drawer).forEach((b) => { b.disabled = true; });
+      const { data, error } = await sb.rpc('registration_pay', { p_student: x.s.id, p_year: regYear(), p_next: x.next, p_amount: amount,
+        p_paid_on: form.paid_on.value, p_method: form.method.value, p_payer: form.payer.value, p_reference: form.reference.value, p_note: form.note.value });
+      if (error) { $$('#rp-save, #rp-print', drawer).forEach((b) => { b.disabled = false; }); return fail(error, 'Could not save the payment'); }
+      state.payments = [...state.payments, data];
+      const { data: row } = await sb.from('registrations').select('*').eq('school_year', regYear()).eq('student_id', x.s.id).single();
+      if (row) await syncReg(row, data.invoice_id);
+      ctl.dirty = false;
+      closeDrawer();
+      toast(`Saved · receipt #${data.receipt_no}`);
+      after();
+      if (print) showReceipts([data]);
+    };
+    $('#rp-save', drawer).addEventListener('click', () => save(false));
+    $('#rp-print', drawer).addEventListener('click', () => save(true));
   }
   function renderRegistration(el) {
     const f = state.regFilters, edit = canEditFinance(), all = regRows(), year = regYearLabel();
     const opens = state.settings?.reg_opens, before = opens && todayStr() < opens;
     const back = all.filter((x) => x.status === 'returning');
-    const collected = round2(all.reduce((t, x) => t + x.paid, 0)), toCollect = round2(back.reduce((t, x) => t + Math.max(x.fee - x.paid, 0), 0));
+    const collected = round2(all.reduce((t, x) => t + x.paid, 0)), toCollect = round2(back.filter((x) => x.st !== 'on_file').reduce((t, x) => t + Math.max(x.fee - x.paid, 0), 0));
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
     const lastId = state.classrooms.slice().sort((a, b) => b.sort - a.sort)[0]?.id;
     const noClass = (s) => (s.classroom_id === lastId ? '1st grade (leaving)' : 'No class');
@@ -1530,7 +1580,7 @@
     el.innerHTML = `${rosterTabs()}
       ${before ? `<p class="panel small">Registration for ${esc(year)} opens <b>${esc(longDate(opens))}</b>. You can already record anyone who pays early.</p>` : ''}
       <div class="stats">
-        <div class="stat"><b>${all.filter((x) => x.st === 'paid').length} of ${back.length}</b><span>Returning children registered for ${esc(year)}</span></div>
+        <div class="stat"><b>${all.filter((x) => ['paid', 'on_file'].includes(x.st)).length} of ${back.length}</b><span>Returning children registered for ${esc(year)}</span></div>
         <div class="stat"><b>${money(collected)}</b><span>Registration collected</span></div>
         <div class="stat"><b>${money(toCollect)}</b><span>Still to collect</span></div>
         <div class="stat"><b>${all.filter((x) => x.status === 'not_returning').length}</b><span>Not returning · ${all.filter((x) => x.status === 'undecided').length} not sure</span></div>
@@ -1553,40 +1603,33 @@
         && (!q || [x.s.name, x.s.parent_name, x.s.family_account].some((v) => (v || '').toLowerCase().includes(q))));
       $('#rg-count', el).textContent = `${rows.length} child${rows.length === 1 ? '' : 'ren'}`;
       $('#rg-rows', el).innerHTML = rows.map((x) => `<tr data-sid="${x.s.id}" class="${x.status !== 'returning' ? 'reg-off' : ''}">
-          <td><a href="#" data-open-sid="${x.s.id}"><b>${esc(x.s.name)}</b></a><div class="muted small">${esc([classroomName(x.s.classroom_id) || 'No class', x.s.status === 'waitlist' ? 'waiting list' : ''].filter(Boolean).join(' · '))}</div></td>
+          <td><a href="#" data-open-sid="${x.s.id}"><b>${esc(x.s.name)}</b></a><div class="muted small">${esc([classroomName(x.s.classroom_id) || 'No class',
+            x.s.status === 'waitlist' ? 'waiting list' : LEFT.has(x.s.status) ? STUDENT_STATUS[x.s.status].toLowerCase() : ''].filter(Boolean).join(' · '))}</div></td>
           <td>${edit ? `<select data-next aria-label="Class in ${esc(year)}">${opt('', noClass(x.s), x.next || '')}
             ${state.classrooms.map((c) => opt(c.id, c.name, x.next || '')).join('')}</select>` : esc(nextName(x))}</td>
           <td>${edit ? `<select data-status aria-label="Coming back in ${esc(year)}">${opt('returning', 'Yes', x.status)}${opt('undecided', 'Not sure', x.status)}${opt('not_returning', 'No', x.status)}</select>`
             : esc(x.status === 'returning' ? 'Yes' : x.status === 'undecided' ? 'Not sure' : 'No')}</td>
           <td class="num">${x.status === 'returning' && x.fee ? money(x.fee) : ''}</td>
-          <td><span class="pay-pill ps-${x.st === 'paid' ? 'paid' : x.st === 'partial' ? 'partial' : x.st === 'unpaid' ? 'open' : 'none'}">${esc(REG_ST[x.st])}</span>
+          <td><span class="pay-pill ps-${['paid', 'on_file'].includes(x.st) ? 'paid' : x.st === 'partial' ? 'partial' : x.st === 'unpaid' ? 'open' : 'none'}">${esc(REG_ST[x.st])}</span>
             ${x.pays.length ? `<div class="muted small">${esc(x.pays.map((p) => `${money(p.amount)} ${fmtDate(p.paid_on)}${p.method ? ` · ${METHOD[p.method] || p.method}` : ''}`).join(', '))}</div>` : ''}</td>
-          ${edit ? `<td>${x.status === 'returning' && x.st !== 'paid' && x.fee ? '<button class="btn small" type="button" data-reg-pay>Record payment</button>'
-            : x.pays.length ? '<button class="btn small ghost" type="button" data-reg-receipt>Receipt</button>' : ''}</td>` : ''}</tr>`).join('')
+          ${edit ? `<td>${x.status === 'returning' && ['unpaid', 'partial'].includes(x.st) && x.fee ? '<button class="btn small" type="button" data-reg-pay>Record payment</button>' : ''}
+            ${x.pays.length ? '<button class="btn small ghost" type="button" data-reg-receipt>Receipt</button>' : ''}</td>` : ''}</tr>`).join('')
         || `<tr><td colspan="${edit ? 6 : 5}" class="muted">Nobody matches.</td></tr>`;
       $$('#rg-rows [data-open-sid]', el).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openStudent(a.dataset.openSid); }));
       const rowOf = (n) => all.find((x) => x.s.id === n.closest('tr').dataset.sid);
       $$('#rg-rows [data-next]', el).forEach((sel) => sel.addEventListener('change', async () => {
-        const x = rowOf(sel);
-        if (await saveReg(x.s, { next_classroom_id: sel.value || null, ...(sel.value ? {} : { status: 'not_returning' }) })) { toast('Saved'); renderRegistration(el); }
+        sel.disabled = true;
+        const ok = await saveReg(rowOf(sel), { next: sel.value || null, status: sel.value ? 'returning' : 'not_returning' });
+        if (ok) toast('Saved');
+        renderRegistration(el);
       }));
       $$('#rg-rows [data-status]', el).forEach((sel) => sel.addEventListener('change', async () => {
-        if (await saveReg(rowOf(sel).s, { status: sel.value })) { toast('Saved'); renderRegistration(el); }
+        sel.disabled = true;
+        const ok = await saveReg(rowOf(sel), { status: sel.value });
+        if (ok) toast('Saved');
+        renderRegistration(el);
       }));
-      $$('#rg-rows [data-reg-pay]', el).forEach((b) => b.addEventListener('click', async () => {
-        const x = rowOf(b);
-        b.disabled = true;
-        let inv = x.inv;
-        if (!inv) {   // the child's registration bill for next year, then pay it
-          const { data, error } = await sb.from('invoices').insert({ student_id: x.s.id, kind: 'fee', description: `Registration ${year}`,
-            invoice_date: todayStr(), due_date: todayStr(), amount: x.fee, created_by: state.me.id }).select().single();
-          if (error) { b.disabled = false; return fail(error, 'Could not make the registration bill'); }
-          state.invoices.push(data);
-          if (!(await saveReg(x.s, { invoice_id: data.id, next_classroom_id: x.next, status: 'returning' }))) { b.disabled = false; return; }
-          inv = data;
-        }
-        openPayment({ studentId: x.s.id, invoiceId: inv.id });
-      }));
+      $$('#rg-rows [data-reg-pay]', el).forEach((b) => b.addEventListener('click', () => openRegPayment(rowOf(b), () => renderRegistration(el))));
       $$('#rg-rows [data-reg-receipt]', el).forEach((b) => b.addEventListener('click', () => showReceipts(rowOf(b).pays)));
     };
     ['q', 'cls', 'st'].forEach((k) => {

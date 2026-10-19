@@ -307,6 +307,9 @@ window.CRM_ES = {
   'Returning children registered for {n}–{n}': 'Niños que regresan inscritos para {n}–{n}', '{n} of {n}': '{n} de {n}',
   'Not returning · {n} not sure': 'No regresan · {n} no saben', '{n} children': '{n} niños', '{n} child': '{n} niño', 'waiting list': 'lista de espera',
 
+  'Paid (on file)': 'Pagado (registrado)', 'Save and print receipt': 'Guardar e imprimir recibo', 'Check no. / confirmation': 'N.º de cheque / confirmación',
+  'Paid by': 'Pagado por', 'Parent': 'Padre/Madre', 'Partly paid ': 'Pagado en parte',
+
   // ── numbers and dates ({n} = a number, amount, or month/day name)
   '{n} inquiries': '{n} consultas', '{n} months': '{n} meses', '{n} students': '{n} estudiantes', '{n} student': '{n} estudiante', '{n} new': '{n} nuevas',
   '{n} waiting · {n} paid': '{n} en espera · {n} pagaron', '{n} on waiting lists ({n} paid registration)': '{n} en listas de espera ({n} pagaron la matrícula)',

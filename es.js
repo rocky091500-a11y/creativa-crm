@@ -293,6 +293,13 @@ window.CRM_ES = {
   'Done': 'Hecho', 'Closed': 'Cerrado', 'Added': 'Agregado', 'Saved the claim for': 'Se guardó el reclamo de',
   '{n} yr {n} mo': '{n} a {n} m', '{n} yr': '{n} años', '{n} mo': '{n} meses',
 
+  'Class rate': 'Tarifa de la clase', 'Pick a class rate…': 'Elija una tarifa de la clase…', 'Other amount (type it in Rate)': 'Otro monto (escríbalo en Tarifa)',
+  'Until {n} — {n} every {n} weeks ({n} a week)': 'Hasta las {n} — {n} cada {n} semanas ({n} a la semana)',
+  'Until {n} (after care) — {n} every {n} weeks ({n} a week)': 'Hasta las {n} (cuidado extendido) — {n} cada {n} semanas ({n} a la semana)',
+  'Until {n} — {n} a week': 'Hasta las {n} — {n} a la semana', 'Until {n} (after care) — {n} a week': 'Hasta las {n} (cuidado extendido) — {n} a la semana',
+  'Until {n} — {n} a school year': 'Hasta las {n} — {n} por año escolar',
+  'Until {n} (after care & multisports) — {n} a school year': 'Hasta las {n} (cuidado extendido y deportes) — {n} por año escolar',
+
   // ── numbers and dates ({n} = a number, amount, or month/day name)
   '{n} inquiries': '{n} consultas', '{n} months': '{n} meses', '{n} students': '{n} estudiantes', '{n} student': '{n} estudiante', '{n} new': '{n} nuevas',
   '{n} waiting · {n} paid': '{n} en espera · {n} pagaron', '{n} on waiting lists ({n} paid registration)': '{n} en listas de espera ({n} pagaron la matrícula)',

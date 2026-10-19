@@ -706,3 +706,4 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 .cal-table tr.cal-past { opacity: .55; }
 .pin-val { font-family: ui-monospace, Menlo, monospace; font-weight: 600; letter-spacing: .08em; }
 .pin-hidden { color: var(--ink-soft); }
+.pm-actual { background: var(--cream); border-radius: 8px; padding: 6px 10px; margin-top: 4px; display: grid; gap: 2px; }

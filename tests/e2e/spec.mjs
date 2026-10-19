@@ -913,6 +913,7 @@ try {
   await page.click('[data-mtab=projection]');
   assert.equal(await page.locator('.proj-chart .pc-month').count(), 6, 'a column pair a month');
   assert.equal(await page.locator('.proj-cards .proj-month').count(), 6);
+  assert.match(await page.locator('.proj-cards .proj-month').first().locator('.pm-actual').textContent(), /Came in so far\s*\$[\d,]+[\s\S]*Went out so far/, 'this month: what really came in');
   await page.locator('.proj-summary', { hasText: 'left over a month' }).waitFor();
   await page.click('.proj-table-box > summary');   // every number as a table
   const proj = page.locator('table.proj');

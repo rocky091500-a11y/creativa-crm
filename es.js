@@ -310,6 +310,15 @@ window.CRM_ES = {
   'Paid (on file)': 'Pagado (registrado)', 'Save and print receipt': 'Guardar e imprimir recibo', 'Check no. / confirmation': 'N.º de cheque / confirmación',
   'Paid by': 'Pagado por', 'Parent': 'Padre/Madre', 'Partly paid ': 'Pagado en parte',
 
+  'Starts at (time clock)': 'Entra a las (reloj)', 'Clocking in earlier is saved as this time, so pay starts then (the real tap shows on their timesheet). Leave it empty to count from the tap.':
+    'Si marca la entrada antes, se guarda esta hora y el pago empieza ahí (la marca real se ve en su hoja de horas). Déjelo vacío para contar desde la marca.',
+  '(tapped in {n} AM, early: counts from their start)': '(marcó a las {n} AM, temprano: cuenta desde su hora de entrada)',
+  '(tapped in {n} PM, early: counts from their start)': '(marcó a las {n} PM, temprano: cuenta desde su hora de entrada)',
+
+  'Staff today': 'Personal hoy', 'At work': 'Trabajando', 'At lunch': 'En almuerzo', 'Not in yet': 'Todavía no llegan', 'Gone for the day': 'Ya se fueron',
+  'refresh': 'actualizar', 'not clocked in': 'no ha marcado entrada', 'Nobody clocked in today.': 'Nadie marcó entrada hoy.',
+  'Couldn’t load the time clock.': 'No se pudo cargar el reloj.', 'at work ·': 'trabajando ·',
+
   // ── numbers and dates ({n} = a number, amount, or month/day name)
   '{n} inquiries': '{n} consultas', '{n} months': '{n} meses', '{n} students': '{n} estudiantes', '{n} student': '{n} estudiante', '{n} new': '{n} nuevas',
   '{n} waiting · {n} paid': '{n} en espera · {n} pagaron', '{n} on waiting lists ({n} paid registration)': '{n} en listas de espera ({n} pagaron la matrícula)',

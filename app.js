@@ -715,6 +715,7 @@
         ${state.hasEnrollment ? `<div class="stat"><b>${state.students.filter((s) => s.status === 'enrolled').length}</b><span>Students enrolled now</span></div>` : ''}
       </div>
       <div class="today-grid">
+        ${canPayroll() ? '<section class="panel staff-today" id="staff-today"><h2>Staff today</h2><p class="muted small">Loading…</p></section>' : ''}
         <section class="panel"><h2>Follow-ups due</h2>
           ${due.map((i) => row(i, i.next_follow_up < today ? `<span class="tag overdue">overdue · ${fmtDate(i.next_follow_up)}</span>` : '<span class="tag due">today</span>')).join('')
             || '<p class="empty">Nothing due. Set a follow-up date on an inquiry to see it here.</p>'}
@@ -738,11 +739,48 @@
       </div>`;
     $$('a.sms', el).forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
     $$('.row', el).forEach((r) => r.addEventListener('click', () => openDrawer(r.dataset.id)));
+    if (canPayroll()) drawStaffToday(el);
     const todoBox = $('.today-todo', el);
     if (todoBox) bindTodos(todoBox, renderView);
     $('#see-todo', el)?.addEventListener('click', () => { state.view = 'todo'; store.set('view', 'todo'); renderShell(); });
   }
 
+  // Who's at work right now, from the time clock: in (since when), at lunch, gone for the day, not in yet (and how late).
+  // Payroll access only; refreshed every 2 minutes while Today is open.
+  async function drawStaffToday(el) {
+    const box = $('#staff-today', el);
+    if (!box) return;
+    const day = nyToday();
+    const [emp, te] = await Promise.all([sb.from('employees').select('*').eq('active', true).order('first_name'),
+      sb.from('time_entries').select('*').eq('work_date', day).order('clock_in')]);
+    if (!box.isConnected) return;
+    if (emp.error || te.error) { box.innerHTML = '<h2>Staff today</h2><p class="muted small">Couldn’t load the time clock.</p>'; return; }
+    const now = new Date(), nowHM = clockTime(now.toISOString());
+    const rows = emp.data.map((e) => {
+      const xs = te.data.filter((x) => x.employee_id === e.id), open = xs.find((x) => !x.clock_out), last = xs[xs.length - 1];
+      const first = xs[0], start = e.start_time ? new Date(nyIso(day, e.start_time.slice(0, 5))) : null;
+      const st = open ? 'in' : last?.out_reason === 'lunch' ? 'lunch' : last ? 'gone' : 'notin';
+      const late = st === 'notin' && start && now > start ? Math.round((now - start) / 60000) : 0;
+      return { e, xs, open, last, first, start, st, late };
+    });
+    const dow = new Date(`${day}T12:00:00`).getDay(), weekend = dow === 0 || dow === 6;
+    const line = (r) => {
+      const name = `<b>${esc(empName(r.e))}</b>`;
+      if (r.st === 'in') return `<li class="sw-in-row">${name} <span class="muted small">in since ${esc(clockTime(r.open.clock_in))}${r.open.punched_in ? ` (tapped ${esc(clockTime(r.open.punched_in))})` : ''}${r.xs.length > 1 ? ` · first in ${esc(clockTime(r.first.clock_in))}` : ''}</span></li>`;
+      if (r.st === 'lunch') return `<li>${name} <span class="muted small">at lunch since ${esc(clockTime(r.last.clock_out))}</span></li>`;
+      if (r.st === 'gone') return `<li>${name} <span class="muted small">${esc(clockTime(r.first.clock_in))} – ${esc(clockTime(r.last.clock_out))}, gone for the day</span></li>`;
+      return `<li>${name} <span class="small ${r.late > 5 ? 'rate-off' : 'muted'}">${r.start ? `starts ${esc(clockTime(r.start.toISOString()))}${r.late > 5 ? ` · not in yet, ${r.late} min late` : ''}` : 'not clocked in'}</span></li>`;
+    };
+    const group = (k, title) => { const xs = rows.filter((r) => r.st === k); return xs.length ? `<h3 class="sub-h">${title} (${xs.length})</h3><ul class="plain staff-list">${xs.map(line).join('')}</ul>` : ''; };
+    const lateN = rows.filter((r) => r.late > 5).length;
+    box.innerHTML = `<h2 class="h-row">Staff today <span class="muted small">as of ${esc(nowHM)} · <a href="#" id="st-refresh">refresh</a></span></h2>
+      <p class="small"><b>${rows.filter((r) => r.st === 'in').length}</b> at work · ${rows.filter((r) => r.st === 'lunch').length} at lunch ·
+        ${rows.filter((r) => r.st === 'gone').length} gone${lateN && !weekend ? ` · <span class="rate-off">${lateN} late</span>` : ''}</p>
+      ${group('in', 'At work')}${group('lunch', 'At lunch')}${weekend && !te.data.length ? '<p class="muted small">Nobody clocked in today.</p>' : group('notin', 'Not in yet')}${group('gone', 'Gone for the day')}`;
+    $('#st-refresh', box)?.addEventListener('click', (e) => { e.preventDefault(); drawStaffToday(el); });
+    clearTimeout(state.staffTodayTimer);
+    state.staffTodayTimer = setTimeout(() => { if (state.view === 'today' && box.isConnected) drawStaffToday(el); }, 120000);
+  }
   // Day-before reminders and 1-week "how was your visit?" notes. The emails go out from the hourly
   // job (netlify/functions/tour-emails.mjs); families without an email get a ready-made text instead.
   function tourEmailsPanel() {
@@ -2911,7 +2949,7 @@
       weeks[weeks.length - 1].days.push(d);
     });
     const span = (x) => `<button type="button" class="ts-span${x.clock_out ? '' : ' open'}" data-entry="${x.id}" ${closed ? 'disabled' : ''}>
-        ${esc(clockTime(x.clock_in))} – ${x.clock_out ? esc(clockTime(x.clock_out)) : '<b>no clock-out</b>'}${x.out_reason === 'lunch' ? ' <span class="muted">lunch</span>' : ''}
+        ${esc(clockTime(x.clock_in))} – ${x.clock_out ? esc(clockTime(x.clock_out)) : '<b>no clock-out</b>'}${x.out_reason === 'lunch' ? ' <span class="muted">lunch</span>' : ''}${x.punched_in ? ` <span class="muted small">(tapped in ${esc(clockTime(x.punched_in))}, early: counts from their start)</span>` : ''}
         ${x.edited_at || x.source === 'office' ? '<span class="ts-edited" title="Changed or added by the office">✎</span>' : ''}</button>`;
     const ctl = mountDrawer({
       title: esc(empName(e)),
@@ -2969,6 +3007,7 @@
           ${fSelect('out_reason', 'Left for', [['out', 'The day'], ['lunch', 'Lunch (unpaid)']], x?.out_reason || 'out')}
           <label class="full">Note<input name="note" value="${esc(x?.note)}" maxlength="300" placeholder="e.g. Forgot to clock out, left at 4:30"></label>
         </div>
+        ${x?.punched_in ? `<p class="muted small">Tapped in early at ${esc(clockTime(x.punched_in))}; it counts from their start time.</p>` : ''}
         ${x?.source === 'clock' ? `<p class="muted small">From the time clock${x.original_in ? `. The clock had ${esc(clockTime(x.original_in))} – ${x.original_out ? esc(clockTime(x.original_out)) : 'no clock-out'};
           changed by ${esc(staffName(x.edited_by) || 'the office')} ${esc(fmtDateTime(x.edited_at))}` : ''}.</p>`
           : x ? `<p class="muted small">Added by ${esc(staffName(x.created_by) || 'the office')}${x.edited_at ? `, changed ${esc(fmtDateTime(x.edited_at))}` : ''}.</p>` : ''}
@@ -3137,6 +3176,9 @@
           ${fInput('pay_rate', 'Pay rate ($ per hour)', e.pay_rate, 'number', 'min="0" step="0.01" inputmode="decimal"')}
           ${fSelect('lunch_minutes', 'Scheduled lunch (unpaid)', LUNCH, e.lunch_minutes)}
           ${fInput('schedule', 'Schedule', e.schedule, 'text', 'maxlength="60" placeholder="e.g. 8:00 – 4:30"')}
+          ${state.pay.employees.some((x) => 'start_time' in x) ? `${fInput('start_time', 'Starts at (time clock)', (e.start_time || '').slice(0, 5), 'time')}
+            <p class="full muted small">Clocking in earlier is saved as this time, so pay starts then (the real tap shows on their timesheet).
+              Leave it empty to count from the tap.</p>` : ''}
           <label class="full">Notes<input name="notes" value="${esc(e.notes)}" maxlength="500"></label>
           <label class="full pill-check"><input type="checkbox" class="check" name="active" ${e.active ? 'checked' : ''}> Active (shows on the time clock)</label>
         </div></div>
@@ -3154,7 +3196,8 @@
     $('#em-save', drawer).addEventListener('click', async () => {
       const row = { first_name: formVal(form, 'first_name'), last_name: formVal(form, 'last_name') || '', position: formVal(form, 'position'),
         pay_rate: form.pay_rate.value === '' ? null : Number(form.pay_rate.value), lunch_minutes: Number(form.lunch_minutes.value),
-        schedule: formVal(form, 'schedule'), notes: formVal(form, 'notes'), active: form.active.checked };
+        schedule: formVal(form, 'schedule'), notes: formVal(form, 'notes'), active: form.active.checked,
+        ...(form.start_time ? { start_time: form.start_time.value || null } : {}) };
       if (!row.first_name) return toast('Enter their first name', true);
       const { error } = id ? await sb.from('employees').update(row).eq('id', id) : await sb.from('employees').insert(row);
       if (error) return fail(error, 'Could not save');

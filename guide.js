@@ -45,6 +45,7 @@ window.CRM_GUIDE = {
       ['Payroll and the time clock', 'Staff clock in and out on the tablet at the front desk; payroll is run in Patriot.', [
         'Staff: each person’s position, hourly rate, lunch and schedule, and their time clock PIN (Show PINs; print slips). People missing a PIN are listed at the top.',
         'Time clock: set up the tablet once (Payroll → Time clock → Use this device). Staff tap their name, type their PIN, and Clock in / Lunch / Back / Clock out.',
+        'Starts at: each person’s start time (on their page in Staff). Clocking in early is saved as that time, so pay starts then; Today shows who’s at work, at lunch, gone, or not in yet.',
         'Hours: every pay period (two weeks, Friday to Thursday): fix any missed clock-out, then “Hours for Patriot” to type them into Patriot.',
         'After Patriot: add the paychecks (copy the list from Patriot and paste it), then “Mark as entered in Patriot” to lock the period.',
         'The step-by-step guide for payroll and pay stubs is on the Payroll page.']],
@@ -111,6 +112,7 @@ window.CRM_GUIDE = {
       ['Nómina y reloj de entrada', 'El personal marca entrada y salida en la tableta de la recepción; la nómina se corre en Patriot.', [
         'Personal: el puesto, pago por hora, almuerzo y horario de cada persona, y su PIN del reloj (Mostrar PIN; imprimir papelitos). Arriba aparecen quienes no tienen PIN.',
         'Reloj: prepare la tableta una vez (Nómina → Reloj → Usar este aparato). Cada persona toca su nombre, escribe su PIN y marca Entrada / Almuerzo / Regreso / Salida.',
+        'Entra a las: la hora de entrada de cada persona (en su página en Personal). Si marca antes, se guarda esa hora y el pago empieza ahí; Hoy muestra quién está trabajando, en almuerzo, ya se fue o no ha llegado.',
         'Horas: cada período de pago (dos semanas, de viernes a jueves): corrija las salidas que falten y luego “Horas para Patriot” para pasarlas a Patriot.',
         'Después de Patriot: agregue los cheques de pago (copie la lista de Patriot y péguela) y luego “Marcar como pasado a Patriot” para cerrar el período.',
         'La guía paso a paso de la nómina y los talones de pago está en la página de Nómina.']],

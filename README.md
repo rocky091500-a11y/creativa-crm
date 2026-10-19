@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql` and `021_school_calendar.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql` and `022_pins_on_file.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -315,8 +315,10 @@ and paystubs. (Patriot has no file import for hours from other systems, so the C
 
 - **Who sees it**: admins, and anyone given **Payroll: Yes** on Settings. Finance access alone doesn't show pay rates.
 - **Staff & PINs**: each person's position, hourly rate, scheduled lunch and schedule. **Make PINs for everyone**
-  gives each a random 4-digit PIN and a sheet of slips to hand out; PINs are stored hashed and can only be replaced,
-  never looked up. Five wrong PINs lock that person out of the clock for 15 minutes.
+  gives each a random 4-digit PIN and a sheet of slips to hand out. With `022_pins_on_file.sql`, each PIN set from then on
+  is also kept on file for payroll staff (**Show PINs**, **Print PIN slips**), so the office can look one up; the clock
+  checks a hashed copy. A typed-in easy PIN (7777) is allowed for now and marked to change; made-up ones never are. A box
+  at the top names everyone still missing a PIN. Five wrong PINs lock that person out of the clock for 15 minutes.
 - **Setting up the clock**: sign in to the CRM on the tablet, **Payroll → Time clock → Use this device as the time
   clock**. The tablet keeps a device key (only its hash is stored) and is signed out of the CRM. Remove a lost tablet
   there and it stops working. Times always come from the server.

@@ -704,3 +704,5 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 .bill-parts { display: grid; grid-template-columns: minmax(0, 1fr) 130px; gap: 8px; }
 .cal-table input:not([type="checkbox"]) { padding: 5px 8px; width: 100%; min-width: 120px; }
 .cal-table tr.cal-past { opacity: .55; }
+.pin-val { font-family: ui-monospace, Menlo, monospace; font-weight: 600; letter-spacing: .08em; }
+.pin-hidden { color: var(--ink-soft); }

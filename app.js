@@ -2304,17 +2304,19 @@
       entries.push(...data);
       if (data.length < 1000) break;
     }
-    const [emp, open, hours, closed, devices] = await Promise.all([
+    const [emp, open, hours, closed, devices, pins] = await Promise.all([
       sb.from('employees').select('*').order('first_name'),
       sb.from('time_entries').select('*').is('clock_out', null).order('clock_in'),
       sb.rpc('payroll_hours', { p_start: pp.start, p_end: pp.end }),
       sb.from('payroll_periods').select('*').order('period_start', { ascending: false }),
       sb.from('timeclock_devices').select('id, name, created_at, last_seen_at').order('created_at'),
+      sb.rpc('payroll_pins'),   // missing until 022
     ]);
     for (const [r, what] of [[emp, 'staff'], [open, 'the time clock'], [hours, 'hours'], [closed, 'pay periods'], [devices, 'time clocks']]) {
       if (r.error) { fail(r.error, `Could not load ${what}`); return false; }
     }
-    state.pay = { pp, entries, employees: emp.data, open: open.data, hours: hours.data, closed: closed.data, devices: devices.data };
+    state.pay = { pp, entries, employees: emp.data, open: open.data, hours: hours.data, closed: closed.data, devices: devices.data,
+      pins: pins.error ? null : Object.fromEntries(pins.data.map((x) => [x.employee_id, x.pin])) };
     return true;
   }
   const closedFor = (pp) => state.pay.closed.find((c) => c.period_start <= pp.end && c.period_end >= pp.start) || null;
@@ -2804,12 +2806,23 @@
     $('#ps-close', sheet).focus();
   }
 
+  // An easy PIN (7777, 1234...) is fine for now, but marked to change.
+  const easyPin = (pin) => /^(\d)\1{3}$/.test(pin) || '0123456789'.includes(pin) || '9876543210'.includes(pin);
+  function pinCell(e) {
+    const pin = state.pay.pins?.[e.id];
+    if (!e.pin_set_at) return '<span class="pay-pill ps-open">No PIN</span>';
+    if (state.pay.pins && !pin) return `<span class="pay-pill ps-paid">Set ${esc(fmtDate(e.pin_set_at))}</span> <span class="muted small">not on file</span>`;
+    if (!pin) return `<span class="pay-pill ps-paid">Set ${esc(fmtDate(e.pin_set_at))}</span>`;
+    return `<span class="pin-val ${state.showPins ? '' : 'pin-hidden'}">${state.showPins ? esc(pin) : '••••'}</span>${easyPin(pin) ? ' <span class="tag due">easy: change soon</span>' : ''}`;
+  }
   function drawPayPeople(body, el) {
     const P = state.pay;
     const list = P.employees.slice().sort((a, b) => (b.active - a.active) || empSort(a, b));
     const noPin = list.filter((e) => e.active && !e.pin_set_at);
     body.innerHTML = `<div class="toolbar"><span class="muted small">${list.filter((e) => e.active).length} active ·
         ${noPin.length ? `${noPin.length} without a time clock PIN` : 'everyone has a PIN'}</span><span class="spacer"></span>
+        ${P.pins ? `<button class="btn small" id="pe-show" type="button">${state.showPins ? 'Hide PINs' : 'Show PINs'}</button>` : ''}
+        ${P.pins && Object.values(P.pins).some(Boolean) ? '<button class="btn small" id="pe-slips" type="button">Print PIN slips</button>' : ''}
         ${noPin.length ? `<button class="btn small" id="pe-pins" type="button">Make PINs for everyone without one (${noPin.length})</button>` : ''}
         <button class="btn small" id="pe-csv" type="button">Download CSV</button>
         <button class="btn small primary" id="pe-add" type="button">+ Add person</button></div>
@@ -2821,7 +2834,7 @@
         <tbody id="pe-rows">${list.map((e) => `<tr data-emp="${e.id}" class="${e.active ? '' : 'inactive'}"><td><b>${esc(empName(e))}</b>${e.active ? '' : ' <span class="muted small">(not active)</span>'}</td>
           <td>${esc(e.position || '')}</td><td class="num">${e.pay_rate != null ? money(e.pay_rate) : ''}</td>
           <td>${e.lunch_minutes ? `${e.lunch_minutes} min` : '<span class="muted">none</span>'}</td><td>${esc(e.schedule || '')}</td>
-          <td>${e.pin_set_at ? `<span class="pay-pill ps-paid">Set ${esc(fmtDate(e.pin_set_at))}</span>` : '<span class="pay-pill ps-open">No PIN</span>'}</td></tr>`).join('')
+          <td>${pinCell(e)}</td></tr>`).join('')
           || '<tr><td colspan="6" class="muted">Nobody yet. Tap “+ Add person”.</td></tr>'}</tbody></table></div>
       <p class="muted small">Pay rates are per hour. The scheduled lunch is only a reminder: staff clock out for lunch, and the Hours tab flags a
         long day with no lunch clocked. People who leave: open them and turn “Active” off; their past hours stay.</p>`;
@@ -2833,8 +2846,10 @@
       pin?.focus();
     }));
     $('#pe-add', body).addEventListener('click', () => openEmployee(null));
+    $('#pe-show', body)?.addEventListener('click', () => { state.showPins = !state.showPins; drawPayPeople(body, el); });
+    $('#pe-slips', body)?.addEventListener('click', () => showPinSlips(list.filter((e) => e.active && P.pins[e.id]).map((e) => ({ name: empName(e), pin: P.pins[e.id] })), true));
     $('#pe-csv', body).addEventListener('click', () => csvDownload('creativa-staff.csv',
-      ['Last name', 'First name', 'Position', 'Hourly rate', 'Lunch (minutes)', 'Schedule', 'Active', 'PIN set'],
+      ['Last name', 'First name', 'Position', 'Hourly rate', 'Lunch (minutes)', 'Schedule', 'Active', 'PIN set'],   // never the PINs themselves
       list.map((e) => [e.last_name, e.first_name, e.position, e.pay_rate, e.lunch_minutes, e.schedule, e.active ? 'yes' : 'no', e.pin_set_at ? 'yes' : 'no'])));
     $('#pe-pins', body)?.addEventListener('click', async () => {
       if (!confirm(`Make a 4-digit PIN for ${noPin.length} ${noPin.length === 1 ? 'person' : 'people'}? You’ll get a sheet to print and cut into slips.`)) return;
@@ -2849,13 +2864,13 @@
     });
   }
 
-  // Slips to cut out and hand to each person. PINs are shown only now; later they can only be replaced.
-  function showPinSlips(slips) {
+  // Slips to cut out and hand to each person. Without PINs on file (022) they're shown only now; later they can only be replaced.
+  function showPinSlips(slips, onFile = !!state.pay?.pins) {
     const sheet = document.createElement('div');
     sheet.className = 'print-sheet';
     sheet.setAttribute('role', 'dialog');
     sheet.innerHTML = `<div class="print-bar no-print"><b>${slips.length} PIN${slips.length === 1 ? '' : 's'}</b>
-        <span class="muted small">Print this now: the PINs can’t be shown again.</span><span class="spacer"></span>
+        <span class="muted small">${onFile ? 'The PINs stay on file on Payroll → Staff.' : 'Print this now: the PINs can’t be shown again.'}</span><span class="spacer"></span>
         <button class="btn primary" type="button" id="sl-print">Print</button><button class="btn" type="button" id="sl-close">Close</button></div>
       <div class="pin-slips">${slips.map((x) => `<div class="pin-slip"><span class="muted small">${esc(state.settings?.school_name || 'Creativa Academy')} · time clock</span>
         <b class="slip-name">${esc(x.name)}</b><span class="slip-pin">PIN <b>${esc(x.pin)}</b></span>
@@ -2863,7 +2878,7 @@
         <span class="small muted">Toque su nombre, escriba su PIN y toque Marcar entrada. No comparta su PIN.</span></div>`).join('')}</div>`;
     document.body.append(sheet);
     document.body.classList.add('printing');
-    const close = () => { if (!confirm('Close? The PINs won’t be shown again (you can always make new ones).')) return; sheet.remove(); document.body.classList.remove('printing'); };
+    const close = () => { if (!onFile && !confirm('Close? The PINs won’t be shown again (you can always make new ones).')) return; sheet.remove(); document.body.classList.remove('printing'); };
     $('#sl-print', sheet).addEventListener('click', () => window.print());
     $('#sl-close', sheet).addEventListener('click', close);
     $('#sl-close', sheet).focus();
@@ -2885,7 +2900,9 @@
           <label class="full pill-check"><input type="checkbox" class="check" name="active" ${e.active ? 'checked' : ''}> Active (shows on the time clock)</label>
         </div></div>
         ${id ? `<div class="section" id="pin-sec"><h3 class="sub-h">Time clock PIN</h3>
-          <p class="muted small">${e.pin_set_at ? `Set ${esc(fmtDate(e.pin_set_at))}. PINs can’t be looked up; type a new one to replace it.` : 'No PIN yet: they don’t appear on the time clock until they have one.'}</p>
+          <p class="small">${state.pay.pins?.[id] ? `PIN on file: <b class="pin-val">${esc(state.pay.pins[id])}</b>${easyPin(state.pay.pins[id]) ? ' <span class="tag due">easy: change it when they give you theirs</span>' : ''}`
+            : e.pin_set_at ? `<span class="muted">Set ${esc(fmtDate(e.pin_set_at))}. ${state.pay.pins ? 'It isn’t on file (it was set before PINs were kept): type it again, or a new one, to keep it.' : 'PINs can’t be looked up; type a new one to replace it.'}</span>`
+              : '<span class="muted">No PIN yet: they don’t appear on the time clock until they have one.</span>'}</p>
           <div class="feed-row"><input name="pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" placeholder="4 digits" aria-label="New PIN">
             <button class="btn small" id="pin-set" type="button">Save PIN</button><button class="btn small" id="pin-make" type="button">Make one up</button></div>
           <p class="pin-show" id="pin-show" hidden></p></div>` : ''}`,
@@ -2912,8 +2929,9 @@
       form.pin.value = '';
       const show = $('#pin-show', drawer);
       show.hidden = false;
-      show.innerHTML = `${esc(e.first_name)}’s PIN is <b>${esc(data)}</b>. Give it to them privately; it won’t be shown again.`;
+      show.innerHTML = `${esc(e.first_name)}’s PIN is <b>${esc(data)}</b>. ${state.pay.pins ? 'It’s on file here if they forget it.' : 'Give it to them privately; it won’t be shown again.'}${easyPin(data) ? ' It’s an easy one: change it when they give you theirs.' : ''}`;
       e.pin_set_at = new Date().toISOString();
+      if (state.pay.pins) state.pay.pins[id] = data;
     };
     $('#pin-set', drawer)?.addEventListener('click', () => setPin(form.pin.value.trim()));
     $('#pin-make', drawer)?.addEventListener('click', () => setPin(null));

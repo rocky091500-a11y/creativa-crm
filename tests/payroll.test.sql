@@ -105,6 +105,7 @@ update public.settings set payroll_anchor = '2026-10-12';
 select pg_temp.ok((select payroll_anchor = '2026-10-02' from public.settings), 'an old Oct 12 start moves too');
 update public.settings set payroll_anchor = '2026-10-12';   -- later chosen on Payroll → Time clock → Pay schedule
 \ir ../supabase/migrations/008_payroll_timeclock.sql
+\ir ../supabase/migrations/022_pins_on_file.sql
 select pg_temp.ok((select payroll_anchor = '2026-10-12' from public.settings), 'a pay schedule set later is never overwritten by re-running 008');
 update public.settings set payroll_anchor = '2026-10-02';
 select pg_temp.ok(public.payroll_week_start('2026-10-15') = '2026-10-09' and public.payroll_week_start('2026-10-09') = '2026-10-09'
@@ -156,8 +157,13 @@ insert into t select 'pin_ana', public.payroll_set_pin(id, '4826') from public.e
 insert into t select 'pin_bea', public.payroll_set_pin(id) from public.employees where first_name = 'Bea';
 select pg_temp.ok((select v ~ '^[0-9]{4}$' and v not in ('0000', '1234', '1111') from t where k = 'pin_bea'), 'made-up PIN is 4 digits and not an easy one');
 select pg_temp.ok((select pin_set_at is not null from public.employees where first_name = 'Bea'), 'employee shows a PIN is set');
-do 'begin perform public.payroll_set_pin((select id from public.employees where first_name = ''Ana''), ''1234''); raise exception ''FAIL: 1234 accepted'';
-exception when others then if sqlerrm like ''FAIL:%'' then raise; end if; end';
+-- 022: a typed-in easy PIN (for now) is allowed and on file; payroll staff can look PINs up.
+select pg_temp.ok(public.payroll_set_pin((select id from public.employees where first_name = 'Ana'), '7777') = '7777', 'an easy PIN typed in is allowed (temporary)');
+select pg_temp.ok((select pin = '7777' from public.payroll_pins() join public.employees e on e.id = employee_id where e.first_name = 'Ana'), 'payroll staff see the PIN on file');
+select pg_temp.ok(public.payroll_set_pin((select id from public.employees where first_name = 'Ana'), '4826') = '4826', 'and it can be changed back');
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000b');
+select pg_temp.ok((select count(*) = 0 from public.payroll_pins()), 'staff without payroll access see no PINs');
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000d');
 do 'begin perform public.payroll_set_pin((select id from public.employees where first_name = ''Ana''), ''12a4''); raise exception ''FAIL: letters accepted'';
 exception when others then if sqlerrm like ''FAIL:%'' then raise; end if; end';
 insert into t values ('token', public.timeclock_add_device('Front desk tablet'));

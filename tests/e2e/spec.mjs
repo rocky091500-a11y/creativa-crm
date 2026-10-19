@@ -623,17 +623,22 @@ try {
   assert.ok((await slips.locator('.slip-pin b').allTextContents()).every((x) => /^\d{4}$/.test(x)));
   await shot(pr, '18-pin-slips');
   await pr.click('#sl-close');
-  await pr.locator('#pe-rows tr', { hasText: 'Ana Clock' }).locator('.pay-pill', { hasText: 'Set' }).waitFor();
+  assert.equal(await pr.locator('#pe-nopin').count(), 0, 'nobody left without a PIN');
+  assert.equal(await pr.locator('#pe-rows tr', { hasText: 'Ana Clock' }).locator('.pin-val').textContent(), '••••', 'PINs on file, hidden until “Show PINs”');
   await pr.locator('#pe-rows tr', { hasText: 'Ana Clock' }).click();
-  await pr.locator('.drawer input[name=pin]').fill('1234');
+  assert.match(await pr.locator('#pin-sec').textContent(), /PIN on file: \d{4}/);
+  await pr.locator('.drawer input[name=pin]').fill('7777');   // an easy one for now
   await pr.locator('.drawer #pin-set').click();
-  await pr.waitForSelector('#toast:has-text("too easy to guess")');
+  await pr.locator('#pin-show', { hasText: '7777' }).locator('text=easy one').waitFor();
   await pr.locator('.drawer input[name=pin]').fill('4826');
   await pr.locator('.drawer #pin-set').click();
   await pr.locator('#pin-show', { hasText: '4826' }).waitFor();
   await pr.locator('.drawer [data-close]').first().click();
+  await pr.click('#pe-show');
+  assert.equal(await pr.locator('#pe-rows tr', { hasText: 'Ana Clock' }).locator('.pin-val').textContent(), '4826');
+  await pr.click('#pe-show');
   await shot(pr, '19-payroll-staff');
-  ok('Payroll: add staff with hourly rates; printable PIN slips; set a PIN (easy ones refused)');
+  ok('Payroll: add staff with hourly rates; printable PIN slips; PINs on file (Show PINs), an easy one allowed for now');
 
   // ── the time clock on a tablet ──
   const kiosk = await newPage({ width: 1024, height: 768 }, true);

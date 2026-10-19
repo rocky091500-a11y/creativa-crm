@@ -443,6 +443,13 @@ Move a family to **Reschedule** (Pipeline, or the stage picker) when their tour 
 under *Tours to reschedule* with the old time and call/text buttons, leave the tour calendar, and get no reminder
 email. Moving them back to *Tour scheduled* asks for the new date and time.
 
+## Español
+
+The **Español** button in the header shows the CRM in Spanish on that device (it's remembered; **English** switches back).
+The CRM's own words are translated as they appear, from `es.js` (exact text, or with its numbers and month/day names
+filled in as `{n}`); names, notes and anything people type stay as written, and printed papers (receipts, statements, the
+food program record) stay in English. A phrase still in English just needs a line added to `es.js`.
+
 ## Tests
 
 ```bash

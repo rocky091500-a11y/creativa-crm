@@ -1,5 +1,5 @@
 /* Creativa time clock, for the tablet at the front desk. Staff tap their name, type their PIN and
-   clock in, go to lunch, come back or clock out. No login: the device key saved when the office set
+   clock in or clock out (lunch comes off their hours by itself, 025). No login: the device key saved when the office set
    this device up (CRM → Payroll → Time clock) lets it call the timeclock_* functions in
    supabase/migrations/008_payroll_timeclock.sql. Every punch uses the server's time. */
 (() => {
@@ -146,8 +146,10 @@
     const line = st.status === 'in' ? `You’re clocked in since <b>${esc(time(st.since))}</b><span class="k-es">Entrada: ${esc(time(st.since))}</span>`
       : st.status === 'lunch' ? `You’re at lunch since <b>${esc(time(st.since))}</b><span class="k-es">En almuerzo desde ${esc(time(st.since))}</span>`
         : `You’re clocked out<span class="k-es">Está fuera</span>`;
+    // Since 025 the scheduled lunch comes off by itself (the status says the person's lunch), so there's no Lunch button.
+    const auto = 'lunch_minutes' in st, lunch = Number(st.lunch_minutes) || 0;
     const actions = st.status === 'in'
-      ? [['lunch', 'Lunch', 'Salir a almorzar', ''], ['out', 'Clock out', 'Marcar salida', 'primary']]
+      ? (auto ? [['out', 'Clock out', 'Marcar salida', 'primary']] : [['lunch', 'Lunch', 'Salir a almorzar', ''], ['out', 'Clock out', 'Marcar salida', 'primary']])
       : st.status === 'lunch'
         ? [['in', 'Back from lunch', 'Regreso del almuerzo', 'primary'], ['out', 'Done for the day', 'Terminé por hoy', '']]
         : [['in', 'Clock in', 'Marcar entrada', 'primary']];
@@ -158,6 +160,8 @@
           <span class="k-es">No marcó la salida el ${esc(dayEs(st.missed_clock_out))}. Avise a la oficina a qué hora salió.</span></p>` : ''}
         ${note ? `<p class="k-msg err">${note}</p>` : ''}
         <div class="k-actions">${actions.map(([a, en, es, cls]) => `<button class="k-btn ${cls}" type="button" data-act="${a}">${en}<span>${es}</span></button>`).join('')}</div>
+        ${st.status === 'in' && auto && lunch > 0 ? `<p class="muted">Your ${lunch === 60 ? '1-hour' : `${lunch}-minute`} lunch comes off by itself on days over 6 hours: no need to clock out for it.
+          <span class="k-es">Su almuerzo de ${lunch === 60 ? '1 hora' : `${lunch} minutos`} se descuenta solo los días de más de 6 horas: no marque salida.</span></p>` : ''}
         <dl class="k-hours"><div><dt>Today · Hoy</dt><dd>${hm(st.today_minutes)}</dd></div>
           <div><dt>This week · Semana</dt><dd>${hm(st.week_minutes)}</dd></div>
           <div><dt>Pay period · Período</dt><dd>${hm(st.period_minutes)}</dd></div></dl>

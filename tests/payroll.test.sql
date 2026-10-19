@@ -107,6 +107,7 @@ update public.settings set payroll_anchor = '2026-10-12';   -- later chosen on P
 \ir ../supabase/migrations/008_payroll_timeclock.sql
 \ir ../supabase/migrations/022_pins_on_file.sql
 \ir ../supabase/migrations/024_scheduled_start.sql
+\ir ../supabase/migrations/025_auto_lunch.sql
 update public.employees set start_time = null;   -- these tests punch at any hour; 024's early clock-in is tested at the end
 select pg_temp.ok((select payroll_anchor = '2026-10-12' from public.settings), 'a pay schedule set later is never overwritten by re-running 008');
 update public.settings set payroll_anchor = '2026-10-02';
@@ -260,7 +261,8 @@ do 'begin insert into public.time_entries (employee_id, clock_in, clock_out) sel
 delete from public.time_entries where note = 'forgot to clock';
 
 -- ═════════════ hours, overtime ═════════════
--- Ana, workweek Fri Sep 25 – Thu Oct 1: five 9-hour days = 45 hours → 40 regular, 5 overtime (on Thursday).
+-- Ana, workweek Fri Sep 25 – Thu Oct 1: five 9-hour days, no lunch clocked, so her 30-minute lunch comes off each (025):
+-- 42.5 hours → 40 regular, 2.5 overtime (on Thursday).
 insert into public.time_entries (employee_id, clock_in, clock_out, out_reason)
   select (select v::uuid from t where k = 'ana'), (d + time '08:00') at time zone 'America/New_York', (d + time '17:00') at time zone 'America/New_York', 'out'
     from unnest(array['2026-09-25', '2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01']::date[]) d;
@@ -270,17 +272,19 @@ insert into public.time_entries (employee_id, clock_in, clock_out, out_reason)
     from (values ('2026-10-02 08:00-04', '2026-10-02 12:00-04', 'lunch'), ('2026-10-02 12:30-04', '2026-10-02 16:30-04', 'out')) as x(i, o, r);
 select pg_temp.ok((select to_char(clock_in at time zone 'America/New_York', 'HH24:MI') = '08:00' and work_date = '2026-09-25' from public.time_entries
                     where employee_id = (select v::uuid from t where k = 'ana') order by clock_in limit 1), 'times are the school''s time');
-select pg_temp.ok((select sum(regular) = 2400 and sum(overtime) = 300 from public.payroll_hours('2026-09-18', '2026-10-01') where employee_id = (select v::uuid from t where k = 'ana')),
-                  '45 hours in a week: 40 regular + 5 overtime');
-select pg_temp.ok((select regular = 240 and overtime = 300 from public.payroll_hours('2026-09-18', '2026-10-01')
+select pg_temp.ok((select sum(regular) = 2400 and sum(overtime) = 150 from public.payroll_hours('2026-09-18', '2026-10-01') where employee_id = (select v::uuid from t where k = 'ana')),
+                  '42.5 hours in a week (lunch off each day): 40 regular + 2.5 overtime');
+select pg_temp.ok((select bool_and(minutes = 510) from public.payroll_hours('2026-09-18', '2026-10-01') where employee_id = (select v::uuid from t where k = 'ana')),
+                  'a 9-hour day with no lunch clocked loses the scheduled 30 minutes');
+select pg_temp.ok((select regular = 360 and overtime = 150 from public.payroll_hours('2026-09-18', '2026-10-01')
                     where employee_id = (select v::uuid from t where k = 'ana') and work_date = '2026-10-01'), 'overtime falls on the day hour 40 is passed');
 select pg_temp.ok((select minutes = 480 and overtime = 0 from public.payroll_hours('2026-10-02', '2026-10-15')
                     where employee_id = (select v::uuid from t where k = 'ana') and work_date = '2026-10-02'), 'a new workweek starts over on Friday; lunch is unpaid');
 -- Twice-a-month pay: the period Oct 1–15 starts mid-week, so Sep 25–30 count toward that week's 40.
 update public.settings set payroll_frequency = 'semimonthly';
-select pg_temp.ok((select sum(regular) = 12 * 60 and sum(overtime) = 5 * 60 from public.payroll_hours('2026-10-01', '2026-10-15')
+select pg_temp.ok((select sum(regular) = 14 * 60 and sum(overtime) = 150 from public.payroll_hours('2026-10-01', '2026-10-15')
                     where employee_id = (select v::uuid from t where k = 'ana') and work_date < '2026-10-03'),
-                  'twice a month: Sep 25–30 (36 h) count toward the week, so Oct 1 is 4 regular + 5 overtime, and Oct 2 starts a new week');
+                  'twice a month: Sep 25–30 (34 h) count toward the week, so Oct 1 is 6 regular + 2.5 overtime, and Oct 2 starts a new week');
 update public.settings set payroll_frequency = 'biweekly';
 select pg_temp.as_user('00000000-0000-0000-0000-00000000000b');   -- staff without payroll see no hours
 select pg_temp.ok((select count(*) = 0 from public.payroll_hours('2026-09-18', '2026-10-15')), 'no payroll access, no hours');
@@ -297,7 +301,7 @@ do 'begin perform public.payroll_close_period(''2026-09-18'', ''2026-10-01''); r
 exception when others then if sqlerrm like ''FAIL:%'' then raise; end if; end';
 delete from public.time_entries where employee_id = (select v::uuid from t where k = 'bea') and clock_in = '2026-09-30 09:00-04';
 select pg_temp.ok((select public.payroll_close_period('2026-09-18', '2026-10-01')
-                   = jsonb_build_array(jsonb_build_object('employee_id', v::uuid, 'name', 'Ana Clock', 'rate', 16.50, 'regular', 40.00, 'overtime', 5.00))
+                   = jsonb_build_array(jsonb_build_object('employee_id', v::uuid, 'name', 'Ana Clock', 'rate', 16.50, 'regular', 40.00, 'overtime', 2.50))
                      from t where k = 'ana'), 'closing keeps the hours sent to Patriot');
 do 'begin perform public.payroll_close_period(''2026-09-25'', ''2026-10-01''); raise exception ''FAIL: closed twice'';
 exception when others then if sqlerrm like ''FAIL:%'' then raise; end if; end';
@@ -340,6 +344,49 @@ do 'begin if (select today_ok from early) then perform pg_temp.punch(''zuri'', '
 reset role;
 select pg_temp.ok((select not today_ok from early) or (select count(*) = 1 from public.time_entries x join public.employees e on e.id = x.employee_id
   where e.last_name = 'Earlybird' and x.punched_in is null and x.clock_out > x.clock_in), 'out again before the start: the stretch is from the real tap');
+-- ═════════════ 025: the scheduled lunch comes off by itself ═════════════
+insert into public.employees (first_name, last_name, lunch_minutes) values ('Dot', 'Lunchtime', 60), ('Eve', 'Nolunch', 0);
+insert into t select 'dot', id::text from public.employees where last_name = 'Lunchtime';
+insert into t select 'eve', id::text from public.employees where last_name = 'Nolunch';
+insert into public.time_entries (employee_id, clock_in, clock_out, out_reason)
+  select (select v::uuid from t where k = x.k), x.i::timestamptz, x.o::timestamptz, x.r
+    from (values ('dot', '2026-10-05 09:00-04', '2026-10-05 18:00-04', 'out'),     -- 9 hours → 8
+                 ('dot', '2026-10-06 09:00-04', '2026-10-06 13:00-04', 'out'),     -- a half day keeps its 4 hours
+                 ('dot', '2026-10-07 09:00-04', '2026-10-07 15:00-04', 'out'),     -- exactly 6 hours: nothing off
+                 ('dot', '2026-10-08 09:00-04', '2026-10-08 12:00-04', 'out'),     -- left at 12 and back at 1: that hour was
+                 ('dot', '2026-10-08 13:00-04', '2026-10-08 17:00-04', 'out'),     --   her lunch, so nothing more comes off
+                 ('dot', '2026-10-09 09:00-04', '2026-10-09 13:00-04', 'lunch'),   -- clocked out for lunch: that hour is unpaid already
+                 ('dot', '2026-10-09 14:00-04', '2026-10-09 18:00-04', 'out'),
+                 ('dot', '2026-10-12 08:00-04', '2026-10-12 12:00-04', 'out'),     -- a 20-minute break: the other 40 come off
+                 ('dot', '2026-10-12 12:20-04', '2026-10-12 17:00-04', 'out'),
+                 ('eve', '2026-10-05 07:00-04', '2026-10-05 15:00-04', 'out')) as x(k, i, o, r);   -- no lunch scheduled
+select pg_temp.ok((select string_agg(work_date || '=' || minutes::int, ' ' order by work_date) from public.payroll_hours('2026-10-02', '2026-10-15')
+                    where employee_id = (select v::uuid from t where k = 'dot'))
+                  = '2026-10-05=480 2026-10-06=240 2026-10-07=360 2026-10-08=420 2026-10-09=480 2026-10-12=480',
+                  'lunch off days over 6 hours only, less any break already off the clock');
+select pg_temp.ok((select bool_and(lunch_minutes = 60) from public.time_entries where employee_id = (select v::uuid from t where k = 'dot')),
+                  'each stretch keeps the lunch it was made with');
+select pg_temp.ok((select minutes = 480 from public.payroll_hours('2026-10-02', '2026-10-15') where employee_id = (select v::uuid from t where k = 'eve')),
+                  'no lunch scheduled: the whole day counts');
+select pg_temp.ok(public.lunch_off(361, 361, 30) = 30 and public.lunch_off(360, 360, 30) = 0 and public.lunch_off(480, 510, 30) = 0
+                  and public.lunch_off(480, 500, 30) = 10 and public.lunch_off(500, null, 30) = 30 and public.lunch_off(500, 500, null) = 0, 'lunch_off');
+-- The time clock's hours have lunch off too: a 7-hour stretch that ended a minute ago (when it started today).
+insert into public.time_entries (employee_id, clock_in, clock_out, out_reason)
+  select v::uuid, now() - interval '7 hours', now() - interval '1 minute', 'out' from t where k = 'dot';
+select pg_temp.ok(((now() - interval '7 hours') at time zone 'America/New_York')::date <> (now() at time zone 'America/New_York')::date
+                  or (public._timeclock_status((select v::uuid from t where k = 'dot'))->>'today_minutes')::int = 359,
+                  'time clock: today is 6 h 59 min after the 1-hour lunch');
+select pg_temp.ok((public._timeclock_status((select v::uuid from t where k = 'dot'))->>'lunch_minutes')::int = 60, 'the time clock knows her lunch');
+-- Changing someone's lunch changes their time not yet entered in Patriot, never time already entered.
+insert into public.payroll_periods (period_start, period_end) values ('2026-10-05', '2026-10-05');
+update public.employees set lunch_minutes = 30 where last_name in ('Lunchtime', 'Nolunch');
+select pg_temp.ok((select string_agg(work_date || '=' || minutes::int, ' ' order by work_date) from public.payroll_hours('2026-10-05', '2026-10-06')
+                    where employee_id in (select v::uuid from t where k in ('dot', 'eve')))
+                  = '2026-10-05=480 2026-10-05=480 2026-10-06=240', 'a day already entered in Patriot keeps its lunch');
+select pg_temp.ok((select minutes = 510 from public.payroll_hours('2026-10-02', '2026-10-15')
+                    where employee_id = (select v::uuid from t where k = 'dot') and work_date = '2026-10-12'), 'later days use the new 30 minutes (less her 20-minute break)');
+delete from public.payroll_periods where period_start = '2026-10-05';
+
 select pg_temp.as_user(null);
 update public.profiles set payroll = false where email = 'books@creativaacademy.com';
 

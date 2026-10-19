@@ -1087,11 +1087,16 @@
   const fundingTags = (sid) => fundingOf(sid).map((k) => `<span class="tag f-${k}">${esc(FUNDING[k])}</span>`).join('');
   const fundingText = (sid) => fundingOf(sid).map((k) => FUNDING[k]).join(', ');
   const missingDocs = (s) => DOCS.filter(([k]) => !s[k]);
-  const sortStudents = (a, b) => (classSort(a) - classSort(b)) || a.name.localeCompare(b.name);
-  function classSort(s) {
-    const i = state.classrooms.findIndex((c) => c.id === s.classroom_id);
-    return i < 0 ? 999 : i;
+  // Children by last name, then first name ("Ana de la Cruz" files under "de la Cruz").
+  const PARTICLES = new Set(['de', 'del', 'da', 'das', 'do', 'dos', 'di', 'du', 'la', 'las', 'los', 'van', 'von']);
+  function lastFirst(name) {
+    const w = String(name || '').trim().split(/\s+/);
+    let i = w.length - 1;
+    while (i > 1 && PARTICLES.has(w[i - 1].toLowerCase())) i--;
+    return `${w.slice(i).join(' ')} ${w.slice(0, i).join(' ')}`;
   }
+  const byLastName = (a, b) => lastFirst(a).localeCompare(lastFirst(b), undefined, { sensitivity: 'base' }) || String(a).localeCompare(String(b));
+  const sortStudents = (a, b) => byLastName(a.name, b.name);
   function upsertStudent(row) {
     const i = state.students.findIndex((x) => x.id === row.id);
     if (i >= 0) state.students[i] = row; else state.students.push(row);
@@ -1548,7 +1553,7 @@
       const onFile = !inv && status === 'returning' && regPaid(s) && (s.status === 'waitlist' || (s.start_date && s.start_date >= start));
       const state_ = status !== 'returning' ? status : onFile ? 'on_file' : inv && paid >= fee && fee > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
       return { s, r, next, cls, status, inv, fee, paid, pays, st: state_ };
-    }).sort((a, b) => (classes.findIndex((c) => c.id === a.next) - classes.findIndex((c) => c.id === b.next)) || a.s.name.localeCompare(b.s.name));
+    }).sort((a, b) => (classes.findIndex((c) => c.id === a.next) - classes.findIndex((c) => c.id === b.next)) || byLastName(a.s.name, b.s.name));
   }
   const REG_ST = { paid: 'Paid', on_file: 'Paid (on file)', partial: 'Partly paid', unpaid: 'Not paid yet', not_returning: 'Not returning', undecided: 'Not sure yet' };
   // Next year's class and "coming back?" (023's registration_save keeps the bill in step) and the bill as it is now.
@@ -1726,7 +1731,7 @@
     const inv0 = invId && state.invoices.find((i) => i.id === invId);
     const suggested = p ? p.amount : inv0 ? invoiceBalance(inv0) || '' : due != null ? Math.max(round2(due - paidFor(sid, m)), 0) || '' : '';
     const payer = p ? p.payer : 'parent';
-    const students = state.students.filter((s) => s.status !== 'waitlist' || s.id === sid).sort((a, b) => a.name.localeCompare(b.name));
+    const students = state.students.filter((s) => s.status !== 'waitlist' || s.id === sid).sort(sortStudents);
     const st = state.students.find((s) => s.id === sid);
     const invoiceOptions = (studentIdNow) => {
       const list = state.invoices.filter((i) => i.student_id === studentIdNow && !i.void && (invoiceBalance(i) > 0 || i.id === invId))
@@ -1991,7 +1996,7 @@
       g.earlier.push(h);
     });
     return [...groups.values()].map((g) => ({ ...g, name: g.students.length ? familyName(g.students) : g.customer,
-      students: g.students.sort((a, b) => a.name.localeCompare(b.name)),
+      students: g.students.sort(sortStudents),
       total: round2(g.payments.reduce((t, p) => t + Number(p.amount), 0) + g.earlier.reduce((t, h) => t + earlierPaid(h), 0)),
       count: g.payments.length + g.earlier.length,
       needsCheck: g.earlier.some((h) => h.needs_check),
@@ -2112,7 +2117,7 @@
       const fes = monthPays.filter((p) => hasFunding(p.student_id, 'fes_ua'));
       const family = fes.filter((p) => p.payer === 'parent');
       const nameOf = (p) => state.students.find((s) => s.id === p.student_id)?.name || '';
-      showReceipts(family.sort((a, b) => nameOf(a).localeCompare(nameOf(b)) || a.receipt_no - b.receipt_no));
+      showReceipts(family.sort((a, b) => byLastName(nameOf(a), nameOf(b)) || a.receipt_no - b.receipt_no));
       if (family.length && fes.length > family.length) toast(`${fes.length - family.length} payment(s) from programs left out (only family payments are reimbursed)`);
     });
     $('#t-csv', el).addEventListener('click', () => csvDownload(`creativa-tuition-${m}.csv`,
@@ -2316,7 +2321,7 @@
         const fesRows = rows.filter((r) => hasFunding(r.s.id, 'fes_ua'));
         const list = fesRows.filter((r) => r.inv).map((r) => ({ old: p, student_id: r.s.id, covers_month: p.slice(0, 8) + '01', paid_on: todayStr(),
           payer: 'parent', amount: r.inv.amount, note: r.pre?.h?.needs_check ? '' : null }))
-          .sort((a, b) => nameOf(a.student_id).localeCompare(nameOf(b.student_id)));
+          .sort((a, b) => byLastName(nameOf(a.student_id), nameOf(b.student_id)));
         showReceipts(list);
         const shared = fesRows.filter((r) => !r.inv && r.pre?.with).length;
         if (shared) toast(`${shared} FES-UA child${shared === 1 ? '’s' : 'ren’s'} amount is combined with a brother or sister’s; it’s on their receipt`);
@@ -2325,7 +2330,7 @@
     if (!before) $('#t-fes', el).addEventListener('click', () => {
       const fes = periodPays.filter((x) => hasFunding(x.student_id, 'fes_ua'));
       const family = fes.filter((x) => x.payer === 'parent');
-      showReceipts(family.sort((a, b) => nameOf(a.student_id).localeCompare(nameOf(b.student_id)) || a.receipt_no - b.receipt_no));
+      showReceipts(family.sort((a, b) => byLastName(nameOf(a.student_id), nameOf(b.student_id)) || a.receipt_no - b.receipt_no));
       if (family.length && fes.length > family.length) toast(`${fes.length - family.length} payment(s) from programs left out (only family payments are reimbursed)`);
     });
     $('#t-csv', el).addEventListener('click', () => csvDownload(`creativa-billing-${p}.csv`,
@@ -3803,7 +3808,7 @@
     .map((s) => ({ s, fr: state.finance[s.id] || {}, c: rateCheck(s.classroom_id, state.finance[s.id] || {}) }))
     .filter(({ fr, c }) => c && (c.none || (c.diff && !fr.rate_note)))
     .sort((a, b) => (state.classrooms.find((c) => c.id === a.s.classroom_id)?.sort || 0) - (state.classrooms.find((c) => c.id === b.s.classroom_id)?.sort || 0)
-      || a.s.name.localeCompare(b.s.name));
+      || byLastName(a.s.name, b.s.name));
   async function setClassRate(s, r) {
     const fr = state.finance[s.id], a = rateAs(r, fr?.tuition_frequency);
     const q = fr ? sb.from('student_finance').update({ tuition_amount: a.amount, tuition_frequency: a.freq }).eq('student_id', s.id)

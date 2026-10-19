@@ -901,7 +901,7 @@ try {
   await drawer.locator('input[name=child_name]').fill('Test Kid Delta');
   await drawer.locator('input[name=program]').fill('Early 2s');
   assert.equal(await drawer.locator('input[name=expected_tuition]').getAttribute('placeholder'), '560 or 600', 'the class’s 2-week rates as a hint');
-  await drawer.locator('#inq-rates [data-rate=after_care]').click();   // the class rate in one tap: $300 a week = $600 every 2 weeks
+  await drawer.locator('#inq-rate-pick').selectOption('after_care');   // the class rate from the list: $300 a week = $600 every 2 weeks
   assert.equal(await drawer.locator('input[name=expected_tuition]').inputValue(), '600');
   await drawer.locator('input[name=start_on]').fill(nextMonth1);
   await drawer.locator('input[name=expected_tuition]').fill('500');
@@ -968,14 +968,17 @@ try {
   await page.click('header nav button[data-view=money]');
   assert.match(await page.locator('#proj-rates li', { hasText: 'Test Kid Alpha' }).textContent(), /\$560\.00 every 2 weeks: 2% less than full time \+ after care \(\$285\.00 a week\)/);
   await page.locator('#proj-rates li', { hasText: 'Test Kid Alpha' }).locator('[data-open-sid]').click();
-  await drawer.locator('#rate-opts [data-rate=full]').click();   // one tap fills the rate, kept every 2 weeks
+  await drawer.locator('#rate-pick').selectOption('full');   // picking the class rate fills it, kept every 2 weeks
   assert.equal(await drawer.locator('input[name=tuition_amount]').inputValue(), '540');
-  assert.equal(await drawer.locator('#rate-opts .btn.primary').textContent(), 'Full time · $270.00 a week');
+  assert.equal(await drawer.locator('#rate-pick option:checked').textContent(), 'Until 3:00 — $540.00 every 2 weeks ($270.00 a week)');
   await drawer.locator('[data-close]').first().click();   // discard (confirm accepted)
   await page.click('header nav button[data-view=staff]');
   await e3Rate.fill('280');
   await e3Rate.press('Tab');
   await page.waitForSelector('#toast:has-text("Saved")');
+  assert.ok(await page.locator('#guide .guide-sec').count() >= 10, 'Settings opens with the guide, by area');
+  await page.locator('#guide .guide-sec summary', { hasText: 'Payroll and the time clock' }).click();
+  await page.locator('#guide .guide-sec[open] li', { hasText: 'Hours for Patriot' }).waitFor();
   ok('Bills: rent twice a month with what it’s made of, mark one paid (money out); the projection counts bills; class rates on Settings, rates to check, one-tap rate');
 
   // ── waiting list: registration paid is what holds the spot (019) ──

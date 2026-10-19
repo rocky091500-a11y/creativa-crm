@@ -389,8 +389,8 @@ Waitlisted inquiry can be added to the waiting list in one tap, keeping that.
 
 **Settings → Classes → Tuition rates** keeps each class's rates from the Programs & Hours sheet: full time (7:00–3:00)
 and full time with after care (7:00–5:45), a week, or a school year for Kindergarten (10 payments, Aug–May), plus the
-registration and book fees. Each child's page has them as one-tap rates (kept to how the family pays: weekly or every
-2 weeks), with a place to write why a child's rate is different (a sibling discount). The Pipeline's tuition does the
+registration and book fees. Each child's page has them in a **Class rate** list ("Until 3:00 — $540.00 every 2 weeks", "Until 5:45 (after care) —
+…"; kept to how the family pays: weekly or every 2 weeks), with a place to write why a child's rate is different (a sibling discount). The Pipeline's tuition does the
 same from the program.
 
 **Money → Bills** keeps what the school pays on set days every month: rent (twice a month, with what a month is made
@@ -442,6 +442,11 @@ then **Send test**. The token is stored in Supabase Vault (`telegram_bot_token`)
 Move a family to **Reschedule** (Pipeline, or the stage picker) when their tour has to move. They show on Today
 under *Tours to reschedule* with the old time and call/text buttons, leave the tour calendar, and get no reminder
 email. Moving them back to *Tour scheduled* asks for the new date and time.
+
+## Guide
+
+**Settings** opens with a guide to everything the CRM does, by area, with how to use each part (`guide.js`, written in
+English and Spanish; it follows the Español button). Add a line there when something new is added to the CRM.
 
 ## Español
 

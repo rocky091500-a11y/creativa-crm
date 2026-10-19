@@ -317,6 +317,15 @@
       .filter((r) => r.amt > 0);
   }
   const rateText = (r) => `${money(r.amt)} ${r.year ? 'a school year' : 'a week'}`;
+  // The class rates as a list to pick from: "Until 3:00 — $540.00 every 2 weeks ($270.00 a week)", kept to how the family pays.
+  const rateUntil = (r) => (r.k === 'full' ? (r.year ? 'Until 2:30' : 'Until 3:00') : (r.year ? 'Until 5:45 (after care & multisports)' : 'Until 5:45 (after care)'));
+  function rateOption(r, freq) {
+    const a = rateAs(r, freq);
+    return `${rateUntil(r)} — ${money(a.amount)} ${a.freq === 'biweekly' ? 'every 2 weeks' : a.freq === 'weekly' ? 'a week' : 'a school year'}${a.freq === 'biweekly' ? ` (${money(r.amt)} a week)` : ''}`;
+  }
+  const rateSelect = (id, rs, freq, chosen, dis = '') => `<label class="full">Class rate<select id="${id}" ${dis}><option value="">Pick a class rate…</option>
+    ${rs.map((r) => `<option value="${r.k}" ${chosen === r.k ? 'selected' : ''}>${esc(rateOption(r, freq))}</option>`).join('')}
+    <option value="other" ${chosen === 'other' ? 'selected' : ''}>Other amount (type it in Rate)</option></select></label>`;
   // A class rate as a child's rate, kept to how the family pays: weekly, or every 2 weeks (Kindergarten: the school year).
   const rateAs = (r, freq) => (r.year ? { amount: r.amt, freq: 'school_year' } : freq === 'weekly' ? { amount: r.amt, freq: 'weekly' } : { amount: round2(r.amt * 2), freq: 'biweekly' });
   // A child's rate next to their class's: which class rate it is, or how far from the nearest one. Null when the class has
@@ -911,8 +920,16 @@
   }
 
   // ───────────── Staff (admin) ─────────────
+  // The guide (guide.js): everything the CRM does, by area, in English or Spanish. Written in both, so not run through es.js.
+  function guideHtml() {
+    const G = window.CRM_GUIDE?.[state.lang === 'es' ? 'es' : 'en'];
+    if (!G) return '';
+    return `<section class="panel guide" id="guide" data-no-es><h2>${esc(G.title)}</h2><p class="muted small">${esc(G.intro)}</p>
+      ${G.sections.map(([title, what, steps]) => `<details class="guide-sec"><summary>${esc(title)}</summary><p class="small">${esc(what)}</p>
+        <ul class="small">${steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></details>`).join('')}</section>`;
+  }
   function renderStaff(el) {
-    el.innerHTML = `<div class="panel staff-help">
+    el.innerHTML = `${guideHtml()}<div class="panel staff-help">
         <h2>Adding a staff member</h2>
         <p class="muted small">In Supabase, open <b>Authentication → Users → Invite user</b> and enter their email.
         Once they accept the invite and set a password they appear below — switch <b>Active</b> on to let them in.
@@ -1308,16 +1325,18 @@
       const rs = classRates(form.classroom_id.value);
       const chk = rateCheck(form.classroom_id.value, { tuition_amount: form.tuition_amount.value.trim(), tuition_frequency: form.tuition_frequency.value,
         funding: form.fund_sr?.checked ? ['sr'] : [] });
-      rateBox.innerHTML = rs.length ? `<span class="muted small">${esc(classroomName(form.classroom_id.value))} rates:</span>
-        ${rs.map((r) => `<button type="button" class="btn small ${chk?.match?.k === r.k ? 'primary' : ''}" data-rate="${r.k}" ${dis}>${esc(r.label)} · ${esc(rateText(r))}</button>`).join('')}
+      rateBox.innerHTML = rs.length ? `${rateSelect('rate-pick', rs, form.tuition_frequency.value, chk?.match?.k || (chk && !chk.none ? 'other' : ''), dis)}
         ${chk && !chk.match ? `<span class="small rate-off">${esc(rateCheckText(chk))}</span>` : ''}` : '';
-      $$('[data-rate]', rateBox).forEach((b) => b.addEventListener('click', () => {
-        const a = rateAs(rs.find((r) => r.k === b.dataset.rate), form.tuition_frequency.value);
-        form.tuition_amount.value = a.amount;
-        form.tuition_frequency.value = a.freq;
+      $('#rate-pick', rateBox)?.addEventListener('change', (e) => {
+        const r = rs.find((x) => x.k === e.target.value);
+        if (r) {
+          const a = rateAs(r, form.tuition_frequency.value);
+          form.tuition_amount.value = a.amount;
+          form.tuition_frequency.value = a.freq;
+        } else if (e.target.value === 'other') form.tuition_amount.focus();
         ctl.dirty = true;
         drawRates();
-      }));
+      });
     };
     if (rateBox) {
       drawRates();
@@ -5428,14 +5447,17 @@
     const drawInqRates = () => {
       const cls = state.classrooms.find((c) => c.name.toLowerCase() === form.program.value.trim().toLowerCase());
       const rs = cls ? classRates(cls.id) : [];
-      inqRates.innerHTML = rs.length ? `<span class="muted small">${esc(cls.name)} rates:</span>
-        ${rs.map((r) => `<button type="button" class="btn small" data-rate="${r.k}">${esc(r.label)} · ${esc(rateText(r))}</button>`).join('')}` : '';
-      $$('[data-rate]', inqRates).forEach((b) => b.addEventListener('click', () => {
-        const a = rateAs(rs.find((r) => r.k === b.dataset.rate), form.expected_freq.value);
-        form.expected_tuition.value = a.amount;
-        form.expected_freq.value = a.freq;
+      const cur = rs.find((r) => { const a = rateAs(r, form.expected_freq.value); return a.freq === form.expected_freq.value && a.amount === Number(form.expected_tuition.value); });
+      inqRates.innerHTML = rs.length ? rateSelect('inq-rate-pick', rs, form.expected_freq.value, cur?.k || (form.expected_tuition.value ? 'other' : '')) : '';
+      $('#inq-rate-pick', inqRates)?.addEventListener('change', (e) => {
+        const r = rs.find((x) => x.k === e.target.value);
+        if (r) {
+          const a = rateAs(r, form.expected_freq.value);
+          form.expected_tuition.value = a.amount;
+          form.expected_freq.value = a.freq;
+        } else if (e.target.value === 'other') form.expected_tuition.focus();
         dirty = true;
-      }));
+      });
       form.expected_tuition.placeholder = usualRate(cls?.name || form.program.value.trim());
     };
     if (inqRates) { drawInqRates(); form.program.addEventListener('input', drawInqRates); }

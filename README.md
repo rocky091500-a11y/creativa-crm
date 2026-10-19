@@ -365,9 +365,11 @@ FES / Step Up, School Readiness families' share, Kindergarten on Step Up pending
 program (recent averages), and other money in; payroll, rent and bills on their days (020), and other expenses from
 recent months. It opens with what's left over a month, the tightest and best months, and a chart of money in and out by
 month; then a card per month (tap "What's in it" for the lines), the full table tucked away, children whose rate isn't
-one of their class's (one tap to use the class rate), the waiting list, and who starts and leaves. A child on the waiting list
-with a start date and registration paid counts as starting (money in); without registration, as possible; with no start
-date, not at all (the list says so). With no rate on their page, their class's full-time rate is used.
+one of their class's (one tap to use the class rate), new families, and enrolled children starting and leaving. **New
+families** are the Enrollment waiting list matched up with the Pipeline (linked, same name, or same phone and first name),
+each child once, plus Pipeline families with a start date or at Waitlisted. A start date and registration paid (either
+place) counts as starting (money in); a start date without it, as possible; no start date, not at all. A child on the
+waiting list whose Pipeline stage is earlier is flagged. With no rate, their class's full-time rate is used.
 
 **Tuition** opens with the tuition expected each week: this week (next week on a weekend) and the three after it, from each
 child's rate (a two-week rate is half a week; Kindergarten's school-year rate a tenth a month, Aug–May), by who pays.

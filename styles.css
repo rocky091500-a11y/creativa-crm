@@ -391,6 +391,7 @@ table.ts { margin-bottom: 14px; border: 1px solid var(--line); border-radius: 8p
 table.ts tbody tr { cursor: default; }
 table.ts tbody tr:hover { background: none; }
 table.ts td { padding: 6px 8px; vertical-align: middle; }
+table.ts .ts-lunch { white-space: normal; }
 table.ts thead th, table.ts tfoot th { padding: 6px 8px; background: var(--cream); }
 table.ts tfoot th { text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--ink); }
 .ts-span { display: inline-flex; gap: 4px; align-items: center; border: 1px solid var(--line); background: var(--white); border-radius: 8px;

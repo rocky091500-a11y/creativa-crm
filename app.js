@@ -774,7 +774,7 @@
     const group = (k, title) => { const xs = rows.filter((r) => r.st === k); return xs.length ? `<h3 class="sub-h">${title} (${xs.length})</h3><ul class="plain staff-list">${xs.map(line).join('')}</ul>` : ''; };
     const lateN = rows.filter((r) => r.late > 5).length;
     box.innerHTML = `<h2 class="h-row">Staff today <span class="muted small">as of ${esc(nowHM)} · <a href="#" id="st-refresh">refresh</a></span></h2>
-      <p class="small"><b>${rows.filter((r) => r.st === 'in').length}</b> at work · ${rows.filter((r) => r.st === 'lunch').length} at lunch ·
+      <p class="small"><b>${rows.filter((r) => r.st === 'in').length}</b> at work · ${rows.some((r) => r.st === 'lunch') ? `${rows.filter((r) => r.st === 'lunch').length} at lunch · ` : ''}
         ${rows.filter((r) => r.st === 'gone').length} gone${lateN && !weekend ? ` · <span class="rate-off">${lateN} late</span>` : ''}</p>
       ${group('in', 'At work')}${group('lunch', 'At lunch')}${weekend && !te.data.length ? '<p class="muted small">Nobody clocked in today.</p>' : group('notin', 'Not in yet')}${group('gone', 'Gone for the day')}`;
     $('#st-refresh', box)?.addEventListener('click', (e) => { e.preventDefault(); drawStaffToday(el); });
@@ -2622,13 +2622,6 @@
     const out = [];
     const missed = state.pay.open.filter((x) => x.employee_id === e.id && isStale(x) && x.work_date >= state.pay.pp.start && x.work_date <= state.pay.pp.end);
     if (missed.length) out.push(['warn', `${missed.length} missing clock-out${missed.length === 1 ? '' : 's'}`]);
-    if (e.lunch_minutes > 0) {
-      const days = {};
-      mine.filter((x) => x.clock_out).forEach((x) => { (days[x.work_date] = days[x.work_date] || []).push(x); });
-      const noLunch = Object.values(days).filter((list) => list.length === 1
-        && (new Date(list[0].clock_out) - new Date(list[0].clock_in)) / 60000 > 6 * 60).length;
-      if (noLunch) out.push(['info', `no lunch clocked on ${noLunch} day${noLunch === 1 ? '' : 's'}`]);
-    }
     const edited = mine.filter((x) => x.edited_at || x.source === 'office').length;
     if (edited) out.push(['info', `${edited} changed or added by the office`]);
     return out;
@@ -2748,7 +2741,7 @@
         }).join('') || '<tr><td colspan="7" class="muted">Add your staff on the “Staff &amp; PINs” tab.</td></tr>'}</tbody>
         <tfoot><tr><th>Total</th><th></th><th class="num">${hrs(sum('regular'))}</th><th class="num">${hrs(sum('overtime'))}</th>
           <th class="num">${hrs(sum('minutes'))}</th><th class="num">${money(gross)}</th><th></th></tr></tfoot></table></div>
-      <p class="muted small">Tap a name for their day-by-day timesheet. Lunch clocked out is unpaid. Overtime is time over 40 hours in a workweek
+      <p class="muted small">Tap a name for their day-by-day timesheet. Each person’s scheduled lunch comes off any day they work more than 6 hours. Overtime is time over 40 hours in a workweek
         (${esc(weekdayName(paySched().anchor))} to ${esc(weekdayName(addDays(paySched().anchor, 6)))}), paid at 1½ times the rate.
         Estimated gross is before taxes; Patriot works out the paychecks.</p>`;
 
@@ -2953,6 +2946,9 @@
       if (!weeks.length || weeks[weeks.length - 1].start !== w) weeks.push({ start: w, days: [] });
       weeks[weeks.length - 1].days.push(d);
     });
+    // The scheduled lunch taken off the day (025): its clocked time less the day's hours.
+    const lunchOff = (d) => Math.round(entries.filter((x) => x.work_date === d.work_date && x.clock_out)
+      .reduce((s, x) => s + (new Date(x.clock_out) - new Date(x.clock_in)) / 60000, 0) - Number(d.minutes));
     const span = (x) => `<button type="button" class="ts-span${x.clock_out ? '' : ' open'}" data-entry="${x.id}" ${closed ? 'disabled' : ''}>
         ${esc(clockTime(x.clock_in))} – ${x.clock_out ? esc(clockTime(x.clock_out)) : '<b>no clock-out</b>'}${x.out_reason === 'lunch' ? ' <span class="muted">lunch</span>' : ''}${x.punched_in ? ` <span class="muted small">(tapped in ${esc(clockTime(x.punched_in))}, early: counts from their start)</span>` : ''}
         ${x.edited_at || x.source === 'office' ? '<span class="ts-edited" title="Changed or added by the office">✎</span>' : ''}</button>`;
@@ -2966,7 +2962,7 @@
           return `<table class="ts"><thead><tr><th colspan="3">Week of ${esc(dayLabel(w.start))}</th></tr></thead><tbody>
             ${w.days.map((d) => `<tr><td class="nowrap">${esc(dayLabel(d.work_date))}</td>
               <td>${entries.filter((x) => x.work_date === d.work_date).map(span).join('')}</td>
-              <td class="num">${hrs(d.minutes)}${Number(d.overtime) ? `<div class="muted small">${hrs(d.overtime)} OT</div>` : ''}</td></tr>`).join('')}
+              <td class="num">${hrs(d.minutes)}${lunchOff(d) > 0 ? `<div class="muted small ts-lunch">${lunchOff(d)} min lunch off</div>` : ''}${Number(d.overtime) ? `<div class="muted small">${hrs(d.overtime)} OT</div>` : ''}</td></tr>`).join('')}
             </tbody><tfoot><tr><th colspan="2">Week total${ot ? ` · ${hrs(ot)} overtime` : ''}</th><th class="num">${hrs(reg + ot)}</th></tr></tfoot></table>`;
         }).join('') || '<p class="muted">No time in this pay period.</p>'}
         <dl class="ts-total"><div><dt>Regular</dt><dd>${hrs(t.regular)}</dd></div><div><dt>Overtime</dt><dd>${hrs(t.overtime)}</dd></div>
@@ -3121,8 +3117,8 @@
           <td>${e.lunch_minutes ? `${e.lunch_minutes} min` : '<span class="muted">none</span>'}</td><td>${esc(e.schedule || '')}</td>
           <td>${pinCell(e)}</td></tr>`).join('')
           || '<tr><td colspan="6" class="muted">Nobody yet. Tap “+ Add person”.</td></tr>'}</tbody></table></div>
-      <p class="muted small">Pay rates are per hour. The scheduled lunch is only a reminder: staff clock out for lunch, and the Hours tab flags a
-        long day with no lunch clocked. People who leave: open them and turn “Active” off; their past hours stay.</p>`;
+      <p class="muted small">Pay rates are per hour. Lunch comes off by itself: any day someone works more than 6 hours, their scheduled
+        lunch is taken off their hours, so staff don’t clock out for lunch. People who leave: open them and turn “Active” off; their past hours stay.</p>`;
     $$('#pe-rows tr[data-emp]', body).forEach((tr) => tr.addEventListener('click', () => openEmployee(tr.dataset.emp)));
     $$('[data-nopin]', body).forEach((b) => b.addEventListener('click', () => {
       openEmployee(b.dataset.nopin);
@@ -3179,7 +3175,7 @@
           ${fInput('last_name', 'Last name', e.last_name, 'text', 'maxlength="60"')}
           ${fInput('position', 'Position', e.position, 'text', 'maxlength="60" placeholder="e.g. Assistant teacher"')}
           ${fInput('pay_rate', 'Pay rate ($ per hour)', e.pay_rate, 'number', 'min="0" step="0.01" inputmode="decimal"')}
-          ${fSelect('lunch_minutes', 'Scheduled lunch (unpaid)', LUNCH, e.lunch_minutes)}
+          ${fSelect('lunch_minutes', 'Lunch (unpaid, taken off days over 6 hours)', LUNCH, e.lunch_minutes)}
           ${fInput('schedule', 'Schedule', e.schedule, 'text', 'maxlength="60" placeholder="e.g. 8:00 – 4:30"')}
           ${state.pay.employees.some((x) => 'start_time' in x) ? `${fInput('start_time', 'Starts at (time clock)', (e.start_time || '').slice(0, 5), 'time')}
             <p class="full muted small">Clocking in earlier is saved as this time, so pay starts then (the real tap shows on their timesheet).
@@ -3251,7 +3247,7 @@
           <li>Come to <b>Payroll → Time clock</b> and tap <b>Use this device as the time clock</b>.</li>
           <li>The time clock opens, and the CRM signs out on that device, so nobody at the front desk can open it.
             On an iPad, tap <b>Share → Add to Home Screen</b> so the clock opens full screen.</li>
-          <li>Staff tap their name, type their 4-digit PIN, and tap <b>Clock in</b>, <b>Lunch</b>, <b>Back from lunch</b> or <b>Clock out</b>.
+          <li>Staff tap their name, type their 4-digit PIN, and tap <b>Clock in</b> when they get here and <b>Clock out</b> when they leave. No clocking out for lunch: it comes off their hours by itself.
             Times come from the server, not the tablet’s clock.</li>
         </ol>
         ${mine ? '<p class="ok-text small">This device is already a time clock. <a href="/clock/">Open the time clock</a></p>' : ''}

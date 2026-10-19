@@ -16,7 +16,7 @@ contact form from creativaacademy.com lands here, and staff move each family fro
 - **Reports** (finance access) — money received per month, by who paid / method / class, the school year at a
   glance, and who is on School Readiness, SR – BPIECE, FES-UA (with award IDs), FES-EO, VPK or private pay
 - **Payroll** (payroll access) — a time clock for the front-desk tablet (`/clock/`: tap your name, type a PIN, clock
-  in / lunch / back / out), each pay period's regular and overtime hours per person, timesheets the office can fix,
+  in / out; each person's scheduled lunch comes off their hours by itself), each pay period's regular and overtime hours per person, timesheets the office can fix,
   missed clock-outs flagged, and a sheet of hours to type into Patriot Software
 - **Settings** (admins) — staff, finance and payroll access, classes and teachers, receipts (signer, license number,
   signature, address line), tour email wording, Telegram alerts, spam protection (blocked senders), and the tour
@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql` and `024_scheduled_start.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql` and `025_auto_lunch.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -326,7 +326,7 @@ and paystubs. (Patriot has no file import for hours from other systems, so the C
   month or monthly; match Patriot). Staff are paid every two weeks for **Friday to Thursday** (10 workdays: Oct 2–15,
   Oct 16–29…), alternating with tuition: the Friday after each period falls in the week between tuition billing
   Mondays (Oct 5, Oct 19…). The panel lists both and warns if they ever land on the same weeks. Changing the schedule
-  warns if periods already entered in Patriot wouldn't line up with it. Lunch clocked out is unpaid; overtime is time over 40 hours in a workweek
+  warns if periods already entered in Patriot wouldn't line up with it. The scheduled lunch comes off by itself (025, below); overtime is time over 40 hours in a workweek
   (starting on the pay schedule's weekday: Friday to Thursday), worked out per day by `payroll_hours()`. Estimated gross is
   rate × regular + 1.5 × rate × overtime, before taxes.
 - **Fixing time**: tap a name for the timesheet, tap a time to change it, or **+ Add time**. Changed times are marked
@@ -442,6 +442,16 @@ then **Send test**. The token is stored in Supabase Vault (`telegram_bot_token`)
 Move a family to **Reschedule** (Pipeline, or the stage picker) when their tour has to move. They show on Today
 under *Tours to reschedule* with the old time and call/text buttons, leave the tour calendar, and get no reminder
 email. Moving them back to *Tour scheduled* asks for the new date and time.
+
+## Lunch comes off by itself (025)
+
+Staff only **Clock in** and **Clock out** on the time clock. Any day someone is clocked in more than 6 hours, their
+scheduled lunch (Payroll → Staff → Lunch: 30 minutes, 1 hour or none) comes off their hours, less any break already off
+the clock that day (leaving at 12 and coming back at 1 covers a 1-hour lunch). A shorter day keeps all its time. The
+timesheet shows "30 min lunch off" under the day's hours, and the time clock's Today / This week / Pay period hours have
+it off too. Each stretch of time keeps the lunch it was made with (`time_entries.lunch_minutes`), so changing someone's
+lunch changes their days in pay periods not yet entered in Patriot, never ones already entered. Run 025 before (or right
+after) the app update: until it has run, the time clock keeps its Lunch button.
 
 ## Early clock-ins and who's at work (024)
 

@@ -671,23 +671,14 @@ try {
   await kiosk.locator('#k-msg', { hasText: 'Wrong PIN' }).waitFor();
   await typePin('4826');
   await kiosk.locator('.k-state', { hasText: 'clocked in since' }).waitFor();
-  await kiosk.click('[data-act=lunch]');
-  await kiosk.locator('.k-done h1', { hasText: /^Out for lunch at/ }).waitFor();
-  await kiosk.click('#k-ok');
-  await kname('Ana Clock').click();
-  await typePin('4826');
-  await kiosk.locator('.k-state', { hasText: 'at lunch since' }).waitFor();
-  await kiosk.click('[data-act=in]');
-  await kiosk.locator('.k-done h1', { hasText: /^Back from lunch at/ }).waitFor();
-  await kiosk.click('#k-ok');
-  await kname('Ana Clock').click();
-  await typePin('4826');
+  assert.deepEqual(await kiosk.locator('[data-act]').evaluateAll((bs) => bs.map((b) => b.dataset.act)), ['out'], 'clocked in: only Clock out, no lunch button');
+  await kiosk.locator('.k-panel', { hasText: 'Your 30-minute lunch comes off by itself on days over 6 hours' }).waitFor();
   await kiosk.click('[data-act=out]');
   await kiosk.locator('.k-done h1', { hasText: /^Clocked out at/ }).waitFor();
   assert.ok(await kiosk.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'no sideways scroll on the tablet');
   await kiosk.goto(BASE + '/');
   await kiosk.waitForSelector('text=Staff sign in');
-  ok('time clock: set up from Payroll (signs the CRM out there); name + PIN; in, wrong PIN refused, lunch, back, out');
+  ok('time clock: set up from Payroll (signs the CRM out there); name + PIN; in, wrong PIN refused, no lunch button, out');
 
   // ── payroll: hours, fixes, Patriot ──
   await pr.click('[data-ptab=hours]');

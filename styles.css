@@ -711,3 +711,5 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 .guide-sec > summary { cursor: pointer; font-weight: 600; color: var(--sage-deep); }
 .guide-sec[open] > summary { margin-bottom: 6px; }
 .guide-sec ul { margin: 6px 0 4px; padding-left: 20px; display: grid; gap: 4px; }
+.reg-table select { min-width: 120px; }
+.reg-table tr.reg-off td { color: var(--ink-soft); }

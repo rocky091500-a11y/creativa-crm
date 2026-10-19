@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql` and `022_pins_on_file.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql` and `023_registration.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -442,6 +442,17 @@ then **Send test**. The token is stored in Supabase Vault (`telegram_bot_token`)
 Move a family to **Reschedule** (Pipeline, or the stage picker) when their tour has to move. They show on Today
 under *Tours to reschedule* with the old time and call/text buttons, leave the tour calendar, and get no reminder
 email. Moving them back to *Tour scheduled* asks for the new date and time.
+
+## Registration for next school year (023)
+
+**Enrollment → Registration 2027–28** (finance access) lists every child at the school or waiting, moving up to the next
+class (waiting children keep theirs; Kindergarten moves on to 1st grade; change it if needed), with that class's
+registration fee (Settings → Classes), whether they're coming back, and what's been paid. **Record payment** makes the
+child's "Registration 2027–28" bill and the payment on it in one step when it's saved (`registration_pay`: one bill per
+child per year, paid in one or more parts, due when the school year starts), with a receipt for that school year; it
+counts in Money and Reports like any payment. Changing the class moves the fee; "not coming back" before paying removes the
+bill (`registration_save`). A waiting child who already paid registration shows as *Paid (on file)*. The year and the
+opening date are `settings.reg_year` / `reg_opens` (2027-28, from Nov 9, 2026).
 
 ## Guide
 

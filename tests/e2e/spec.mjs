@@ -1296,6 +1296,8 @@ try {
   // ── Español: the button in the header ──
   await page.bringToFront();
   await page.click('header nav button[data-view=today]');
+  await page.locator('#staff-today .staff-list li').first().waitFor();   // who's at work, from the time clock
+  assert.match(await page.locator('#staff-today').textContent(), /Staff today[\s\S]*at work/);
   await page.click('#lang');
   await page.locator('header nav button[data-view=today]', { hasText: 'Hoy' }).waitFor();
   assert.equal(await page.locator('#lang').textContent(), 'English');

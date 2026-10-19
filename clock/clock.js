@@ -180,6 +180,7 @@
     const at = esc(time(r.at));
     const [title, es, bye] = action === 'lunch' ? [`Out for lunch at ${at}`, 'Salida a almorzar', `Enjoy your lunch, ${first}! · ¡Buen provecho!`]
       : action === 'in' && from === 'lunch' ? [`Back from lunch at ${at}`, 'Regreso del almuerzo', `Welcome back, ${first}! · ¡Ya está de regreso!`]
+        : action === 'in' && r.tapped && r.at && new Date(r.at) > new Date(r.tapped) ? [`Clocked in: your time starts at ${at}`, `Entrada marcada: su hora empieza a las ${at}`, `Have a great day, ${first}! · ¡Que tenga un buen día!`]
         : action === 'in' ? [`Clocked in at ${at}`, 'Entrada marcada', `Have a great day, ${first}! · ¡Que tenga un buen día!`]
           : [`Clocked out at ${at}`, 'Salida marcada', `See you soon, ${first}! · ¡Hasta pronto!`];
     root.innerHTML = `${header()}<section class="k-panel k-center k-done">

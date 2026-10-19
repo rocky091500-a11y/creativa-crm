@@ -106,6 +106,8 @@ select pg_temp.ok((select payroll_anchor = '2026-10-02' from public.settings), '
 update public.settings set payroll_anchor = '2026-10-12';   -- later chosen on Payroll → Time clock → Pay schedule
 \ir ../supabase/migrations/008_payroll_timeclock.sql
 \ir ../supabase/migrations/022_pins_on_file.sql
+\ir ../supabase/migrations/024_scheduled_start.sql
+update public.employees set start_time = null;   -- these tests punch at any hour; 024's early clock-in is tested at the end
 select pg_temp.ok((select payroll_anchor = '2026-10-12' from public.settings), 'a pay schedule set later is never overwritten by re-running 008');
 update public.settings set payroll_anchor = '2026-10-02';
 select pg_temp.ok(public.payroll_week_start('2026-10-15') = '2026-10-09' and public.payroll_week_start('2026-10-09') = '2026-10-09'
@@ -316,6 +318,28 @@ select pg_temp.ok((select note = 'reopened' from public.time_entries where work_
 do 'begin delete from public.employees where first_name = ''Ana''; raise exception ''FAIL: deleted someone with time'';
 exception when foreign_key_violation then null; end';
 reset role;
+
+-- ═════════════ 024: an early clock-in counts from the scheduled start ═════════════
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000d');
+insert into public.employees (first_name, last_name, active, start_time)
+  values ('Zuri', 'Earlybird', true, ((now() at time zone 'America/New_York') + interval '1 hour')::time);
+insert into t select 'zuri', id::text from public.employees where last_name = 'Earlybird';
+insert into t select 'pin_zuri', public.payroll_set_pin(id, '5813') from public.employees where last_name = 'Earlybird';
+reset role;
+select pg_temp.as_user(null);
+create temp table early as select extract(hour from now() at time zone 'America/New_York') < 22 as today_ok;   -- an hour from now is still today
+grant select on early to anon;
+set role anon;
+do 'begin if (select today_ok from early) then perform pg_temp.punch(''zuri'', ''in''); end if; end';
+reset role;
+select pg_temp.ok((select not today_ok from early) or (select count(*) = 1 from public.time_entries x join public.employees e on e.id = x.employee_id
+  where e.last_name = 'Earlybird' and x.punched_in is not null and x.clock_in = ((now() at time zone 'America/New_York')::date + e.start_time) at time zone 'America/New_York'),
+  'clocked in an hour early: saved as the start time, the tap kept');
+set role anon;
+do 'begin if (select today_ok from early) then perform pg_temp.punch(''zuri'', ''out''); end if; end';
+reset role;
+select pg_temp.ok((select not today_ok from early) or (select count(*) = 1 from public.time_entries x join public.employees e on e.id = x.employee_id
+  where e.last_name = 'Earlybird' and x.punched_in is null and x.clock_out > x.clock_in), 'out again before the start: the stretch is from the real tap');
 select pg_temp.as_user(null);
 update public.profiles set payroll = false where email = 'books@creativaacademy.com';
 

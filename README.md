@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql` and `023_registration.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql` and `024_scheduled_start.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -442,6 +442,14 @@ then **Send test**. The token is stored in Supabase Vault (`telegram_bot_token`)
 Move a family to **Reschedule** (Pipeline, or the stage picker) when their tour has to move. They show on Today
 under *Tours to reschedule* with the old time and call/text buttons, leave the tour calendar, and get no reminder
 email. Moving them back to *Tour scheduled* asks for the new date and time.
+
+## Early clock-ins and who's at work (024)
+
+Each person has a **Starts at (time clock)** time (Payroll → Staff; filled in from the front of their Schedule). Clocking in
+earlier on the time clock is saved as that time, so pay starts then; the real tap is kept (`time_entries.punched_in`) and
+shows on their timesheet ("tapped in 7:30, early"). Back from lunch, or with no start time, counts from the tap. **Today**
+(payroll access) shows **Staff today**: who's at work and since when, at lunch, gone for the day, and not in yet (late
+after their start time), refreshed every 2 minutes.
 
 ## Registration for next school year (023)
 

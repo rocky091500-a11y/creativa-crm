@@ -300,6 +300,13 @@ window.CRM_ES = {
   'Until {n} — {n} a school year': 'Hasta las {n} — {n} por año escolar',
   'Until {n} (after care & multisports) — {n} a school year': 'Hasta las {n} (cuidado extendido y deportes) — {n} por año escolar',
 
+  'Children': 'Niños', 'Coming back?': '¿Regresa?', 'Not sure': 'No sabe', 'Not sure yet': 'No sabe todavía', 'Not returning': 'No regresa',
+  'Not paid yet': 'Sin pagar todavía', 'Registration collected': 'Matrícula cobrada', 'Still to collect': 'Por cobrar', 'Every class next year': 'Todas las clases el próximo año',
+  '1st grade (leaving)': '1er grado (se va)', 'No class': 'Sin clase', 'Receipt ': 'Recibo', 'Could not save the registration': 'No se pudo guardar la inscripción',
+  'Could not make the registration bill': 'No se pudo crear el cobro de matrícula', 'Registration {n}–{n}': 'Matrícula {n}–{n}',
+  'Returning children registered for {n}–{n}': 'Niños que regresan inscritos para {n}–{n}', '{n} of {n}': '{n} de {n}',
+  'Not returning · {n} not sure': 'No regresan · {n} no saben', '{n} children': '{n} niños', '{n} child': '{n} niño', 'waiting list': 'lista de espera',
+
   // ── numbers and dates ({n} = a number, amount, or month/day name)
   '{n} inquiries': '{n} consultas', '{n} months': '{n} meses', '{n} students': '{n} estudiantes', '{n} student': '{n} estudiante', '{n} new': '{n} nuevas',
   '{n} waiting · {n} paid': '{n} en espera · {n} pagaron', '{n} on waiting lists ({n} paid registration)': '{n} en listas de espera ({n} pagaron la matrícula)',

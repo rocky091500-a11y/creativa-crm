@@ -1022,6 +1022,31 @@ try {
   assert.match(await page.locator('table.proj tr', { has: page.locator('th', { hasText: 'New families starting (registration paid)' }) }).locator('td').nth(1).textContent(), /^\$1,(000|500)$/);
   ok('Waiting list: registration paid on the inquiry shows on its card and the column, carries over to the student, and shows on Enrollment; with a start date it counts in the projection');
 
+  // ── registration for next school year (023) ──
+  await page.click('header nav button[data-view=roster]');
+  await page.click('[data-rtab=reg]');
+  const rgRow = (name) => page.locator('#rg-rows tr', { hasText: name });
+  await rgRow('Test Kid Alpha').waitFor();
+  assert.equal(await rgRow('Test Kid Alpha').locator('select[data-next] option:checked').textContent(), 'Late 3s', 'moves up to the next class');
+  assert.match(await rgRow('Test Kid Alpha').textContent(), /\$300\.00[\s\S]*Not paid yet/);
+  assert.equal(await rgRow('Test Kid Beta').locator('select[data-next] option:checked').textContent(), 'Kindergarten');
+  assert.match(await rgRow('Test Kid Beta').textContent(), /\$350\.00/, 'Kindergarten registration is $350');
+  await rgRow('Test Kid Alpha').locator('[data-reg-pay]').click();
+  await drawer.locator('select[name=invoice_id]').waitFor();
+  assert.equal(await drawer.locator('input[name=amount]').inputValue(), '300');
+  await drawer.locator('select[name=method]').selectOption('zelle');
+  await drawer.locator('#pay-save').click();
+  await page.waitForSelector('#toast:has-text("receipt #")');
+  await rgRow('Test Kid Alpha').locator('.pay-pill', { hasText: 'Paid' }).waitFor();
+  assert.match(await rgRow('Test Kid Alpha').textContent(), /\$300\.00 [A-Z][a-z]{2} \d+ · Zelle/);
+  await rgRow('Test Kid Beta').locator('select[data-status]').selectOption('not_returning');
+  await rgRow('Test Kid Beta').locator('.pay-pill', { hasText: 'Not returning' }).waitFor();
+  assert.match(await page.locator('.stat', { hasText: 'Registration collected' }).textContent(), /\$300\.00/);
+  await shot(page, '42-registration');
+  await page.click('[data-rtab=children]');
+  await page.locator('#roster-rows tr').first().waitFor();
+  ok('Registration 2027–28: each child moving up with that class’s fee; a payment makes the bill and a receipt; not returning');
+
   // ── activated staff, as a non-admin ──
   const p2 = await newPage();
   await login(p2, 'newhire@creativaacademy.com', 'newhire-pass-1');

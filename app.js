@@ -3361,15 +3361,16 @@
   const closuresIn = (from, to) => (state.closures || []).filter((c) => c.starts_on <= to && c.ends_on >= from);
   function weekTuition(mon) {   // the tuition expected for the week starting that Monday, by who pays
     const w = { mon, fri: addDays(mon, 4), private: 0, fes: 0, sr: 0, kinder: 0, total: 0, starting: 0, leaving: 0 };
-    const startingIds = new Set(waitlistPlan().filter((x) => x.plan === 'start').map((x) => x.s.id));   // waiting list, registration paid
-    state.students.filter((s) => s.status === 'enrolled' || startingIds.has(s.id) || (LEFT.has(s.status) && s.withdrawn_on && s.withdrawn_on >= mon)).forEach((s) => {
-      const fr = state.finance[s.id] || {}, last = LEFT.has(s.status) ? s.withdrawn_on : null;
-      const r = s.status === 'waitlist' ? startRate(fr.tuition_amount, fr.tuition_frequency, s.classroom_id) : { amount: fr.tuition_amount, freq: fr.tuition_frequency };
-      const x = childInWeek(r.amount, r.freq, s.start_date, last, mon);
+    const kids = state.students.filter((s) => s.status === 'enrolled' || (LEFT.has(s.status) && s.withdrawn_on && s.withdrawn_on >= mon))
+      .map((s) => ({ fr: state.finance[s.id] || {}, start: s.start_date, last: LEFT.has(s.status) ? s.withdrawn_on : null }))
+      .map((k) => ({ ...k, amount: k.fr.tuition_amount, freq: k.fr.tuition_frequency }))
+      .concat(newFamilies().filter((f) => f.plan === 'start').map((f) => ({ fr: f.fr, start: f.start, last: null, amount: f.rate.amount, freq: f.rate.freq })));
+    kids.forEach(({ fr, start, last, amount, freq }) => {
+      const x = childInWeek(amount, freq, start, last, mon);
       if (!x) return;
       w[paysFor(fr)] += x;
       w.total += x;
-      if (s.start_date && s.start_date >= mon && s.start_date <= w.fri) w.starting++;
+      if (start && start >= mon && start <= w.fri) w.starting++;
       if (last && last <= w.fri) w.leaving++;
     });
     w.closed = closuresIn(mon, w.fri).map((c) => c.name.replace(/ \(staff (not )?paid\)$/, ''));
@@ -3398,13 +3399,36 @@
     return r ? { ...rateAs(r, 'biweekly'), cls: true } : null;
   }
   const classIdOf = (program) => state.classrooms.find((c) => c.name.toLowerCase() === String(program || '').trim().toLowerCase())?.id;
-  // Who's on the waiting list, and whether the projection counts them: registration paid + a start date = starting (counted in
-  // money in); a start date without registration = possible; no start date (or no rate at all) = not counted.
-  function waitlistPlan() {
-    return state.students.filter((s) => s.status === 'waitlist').map((s) => {
-      const fr = state.finance[s.id] || {}, rate = startRate(fr.tuition_amount, fr.tuition_frequency, s.classroom_id), paid = regPaid(s);
-      return { s, fr, rate, paid, plan: !s.start_date || !rate ? 'none' : paid ? 'start' : 'maybe' };
-    }).sort((a, b) => (a.s.start_date || '9999').localeCompare(b.s.start_date || '9999') || a.s.name.localeCompare(b.s.name));
+  // The same child in Enrollment and the Pipeline: one was made from the other, or the same name, or the same phone and first name.
+  function sameChild(st, i) {
+    if (st.inquiry_id && st.inquiry_id === i.id) return true;
+    const a = normName(st.name), b = normName(i.child_name);
+    if (a && a === b) return true;
+    const p1 = digits(st.parent_phone).slice(-10), p2 = digits(i.phone).slice(-10);
+    return !!b && p1.length === 10 && p1 === p2 && a.split(' ')[0] === b.split(' ')[0];
+  }
+  // Families who haven't started, each child once: the Enrollment waiting list matched up with the Pipeline, and Pipeline
+  // families with a start date or at Waitlisted. A start date + registration paid = starting (counted in money in); a start
+  // date without it = possible; no start date = not counted. No rate? Their class's full-time rate.
+  function newFamilies() {
+    const open = state.inquiries.filter((i) => !CLOSED.has(i.stage)), used = new Set();
+    const fam = (st, i) => {
+      const fr = st ? state.finance[st.id] || {} : {}, start = st?.start_date || i?.start_on || null;
+      const rate = (st && Number(fr.tuition_amount) > 0 && startRate(fr.tuition_amount, fr.tuition_frequency))
+        || (i && Number(i.expected_tuition) > 0 && startRate(i.expected_tuition, i.expected_freq))
+        || startRate(null, null, st?.classroom_id || classIdOf(i?.program));
+      const paid = (st && regPaid(st)) || !!i?.reg_paid_on;
+      return { st, i, fr, name: st?.name || i.child_name || i.parent_name || 'A family', start, rate, paid,
+        classId: st?.classroom_id || classIdOf(i?.program), plan: !start || !rate ? 'none' : paid ? 'start' : 'maybe' };
+    };
+    const out = state.students.filter((st) => st.status === 'waitlist').map((st) => {
+      const i = open.find((x) => !used.has(x.id) && sameChild(st, x));
+      if (i) used.add(i.id);
+      return fam(st, i);
+    });
+    open.filter((i) => !used.has(i.id) && (i.start_on || i.stage === 'waitlisted')
+      && !state.students.some((st) => st.status !== 'waitlist' && sameChild(st, i))).forEach((i) => out.push(fam(null, i)));
+    return out.sort((a, b) => (a.start || '9999').localeCompare(b.start || '9999') || a.name.localeCompare(b.name));
   }
   // Who pays a child's tuition, for the projection's lines.
   const PROJ_PAYS = { private: 'Tuition from private-pay families', fes: 'FES / Step Up scholarships', sr: 'School Readiness (family’s share)',
@@ -3457,17 +3481,15 @@
       }
       return { share: work ? (work - off) / work : 1, names: unpaid.filter((c) => c.starts_on <= end && c.ends_on >= start).map((c) => c.name) };
     };
-    const leads = state.inquiries.filter((i) => i.start_on && !CLOSED.has(i.stage) && !state.students.some((s) => s.inquiry_id === i.id))
-      .map((i) => ({ i, rate: startRate(i.expected_tuition, i.expected_freq, classIdOf(i.program)) })).filter((x) => x.rate);
-    const wl = waitlistPlan(), starting = wl.filter((x) => x.plan === 'start'), waiting = wl.filter((x) => x.plan === 'maybe');
-    const sumRates = (xs, on) => per((m) => round2(xs.reduce((t, x) => t + childInMonth(x.rate.amount, x.rate.freq, on(x), null, m), 0)));
-    const possible = per((m, i) => round2(sumRates(leads, (x) => x.i.start_on)[i] + sumRates(waiting, (x) => x.s.start_date)[i]));
+    const fams = newFamilies(), starting = fams.filter((x) => x.plan === 'start'), waiting = fams.filter((x) => x.plan === 'maybe');
+    const sumRates = (xs) => per((m) => round2(xs.reduce((t, x) => t + childInMonth(x.rate.amount, x.rate.freq, x.start, null, m), 0)));
+    const possible = sumRates(waiting);
     const kids = (k) => here.filter((s) => paysFor(fin(s)) === k);
     const rows = {
       ...Object.fromEntries(Object.keys(PROJ_PAYS).map((k) => [k, tuition(kids(k))])),
       programs: per(() => programPays), ccfp: per(() => ccfp), other: per(() => recentAvg('in')),
       payroll: per((m) => round2(payDates(m).reduce((t, d) => t + payAvg * unpaidIn(d).share, 0))), bills: per((m) => round2(bills.reduce((t, b) => t + Number(b.amount) * billDues(b, m).length, 0))),
-      expenses: per(() => recentAvg('out')), possible, waitlist: sumRates(starting, (x) => x.s.start_date),
+      expenses: per(() => recentAvg('out')), possible, waitlist: sumRates(starting),
     };
     const sumAt = (keys, i) => round2(keys.reduce((t, k) => t + rows[k][i], 0));
     rows.tin = per((m, i) => sumAt([...Object.keys(PROJ_PAYS), 'waitlist', 'programs', 'ccfp', 'other'], i));
@@ -3478,11 +3500,6 @@
     const coming = [
       ...here.filter((s) => s.start_date && s.start_date >= from && s.start_date <= end)
         .map((s) => ({ kind: 'start', who: s.name, on: s.start_date, where: 'Enrolled', rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
-      ...[...starting, ...waiting].filter((x) => x.s.start_date >= from && x.s.start_date <= end)
-        .map((x) => ({ kind: x.plan === 'start' ? 'start' : 'maybe', who: x.s.name, on: x.s.start_date, where: `Waiting list · registration ${x.paid ? 'paid' : 'not paid'}${x.rate.cls ? ' · class rate' : ''}`,
-          rate: x.rate.amount, freq: x.rate.freq, sid: x.s.id })),
-      ...leads.filter((x) => x.i.start_on >= from && x.i.start_on <= end).map(({ i, rate }) => ({ kind: 'maybe', who: i.child_name || i.parent_name || 'A family', on: i.start_on,
-        where: `Pipeline · ${STAGE_LABEL[i.stage]}${inqRegPaid(i) ? ' · registration paid' : ''}${rate.cls ? ' · class rate' : ''}`, rate: rate.amount, freq: rate.freq, iid: i.id })),
       ...here.filter((s) => lastDay(s) && lastDay(s) <= end)
         .map((s) => ({ kind: 'leave', who: s.name, on: lastDay(s), where: STUDENT_STATUS[s.status], rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
     ].sort((a, b) => a.on.localeCompare(b.on));
@@ -3490,7 +3507,7 @@
     const meta = months.map((m) => ({ bills: periodsIn(m).length, paydays: payDates(m).length,
       unpaid: [...new Set(payDates(m).filter((d) => unpaidIn(d).share < 1).flatMap((d) => unpaidIn(d).names))],
       closed: [...new Set(closuresIn(monthStart(m), monthEnd(m)).map((c) => c.name.replace(/ \(staff (not )?paid\)$/, '')))] }));
-    return { rows, ccfp, claims: claims.length, payAvg, coming, counts, meta, noPayroll: !M.paychecks, wl, starting, bills, billCats: [...new Set(bills.map((b) => b.category))] };
+    return { rows, ccfp, claims: claims.length, payAvg, coming, counts, meta, noPayroll: !M.paychecks, fams, starting, bills, billCats: [...new Set(bills.map((b) => b.category))] };
   }
   // Enrolled children with no rate, or a rate that isn't their class's and no note saying why (020).
   const ratesToCheck = () => state.students.filter((s) => s.status === 'enrolled')
@@ -3542,7 +3559,7 @@
       ['fes', PROJ_PAYS.fes, '', kidsSub('fes', 'at their rate')],
       ['sr', PROJ_PAYS.sr, '', kidsSub('sr', 'the family’s share only')],
       ['kinder', PROJ_PAYS.kinder, '', kidsSub('kinder', 'at their school-year rate, 10 payments Aug–May')],
-      ['waitlist', 'Starting from the waiting list', '', `${P.starting.length} child${P.starting.length === 1 ? '' : 'ren'} with registration paid, from their start date`],
+      ['waitlist', 'New families starting (registration paid)', '', `${P.starting.length} child${P.starting.length === 1 ? '' : 'ren'}, from their start date`],
       ['programs', 'VPK and School Readiness payments', '', 'average of recent months recorded on Tuition'],
       ['ccfp', 'Child Care Food Program', '', P.claims ? `average of the last ${P.claims} claim${P.claims === 1 ? '' : 's'}` : 'no claims recorded yet'],
       ['other', 'Other money in', '', 'average of recent months on Money'],
@@ -3554,7 +3571,7 @@
       ['tout', 'Money out', 'proj-total'],
       ['left', 'Left over'],
       ['net', 'Left over', 'proj-total'],
-      ['possible', 'New families starting (possible)', 'proj-possible', 'Pipeline and waiting list, with a start date and tuition'],
+      ['possible', 'New families starting (possible)', 'proj-possible', 'a start date but registration not paid yet'],
       ['netPossible', 'Left over if they start', 'proj-total proj-possible'],
     ].filter(([k]) => !R[k] || ['tin', 'tout', 'net', 'ccfp', 'payroll', 'bills', 'expenses', 'private'].includes(k) || R[k === 'netPossible' ? 'possible' : k].some((x) => x));
     const notes = (i) => [P.meta[i].bills === 3 && '3 tuition bills this month', P.meta[i].paydays === 3 && '3 paydays this month',
@@ -3594,13 +3611,15 @@
         <tbody>${LINES.map(([k, label, cls = '', sub = '']) => (!R[k] ? `<tr class="proj-group"><th colspan="${n + 1}">${esc(label)}</th></tr>`
           : `<tr class="${cls}"><th>${esc(label)}${sub ? `<div class="muted small">${esc(sub)}</div>` : ''}</th>
             ${R[k].map((x) => `<td class="num ${x < 0 ? 'neg' : ''}">${cell(x)}</td>`).join('')}</tr>`)).join('')}</tbody></table></div></details>
-      ${P.wl.length ? `<section class="panel" id="proj-wait"><h2>Waiting list</h2>
-        <p class="muted small">A child on the waiting list counts once they have a <b>start date</b> (on their page). With registration paid they’re counted as
-          starting; without it, as possible. No rate on their page? Their class’s full-time rate is used.</p>
-        <ul class="rate-check">${P.wl.map((x) => `<li><a href="#" data-open-sid="${x.s.id}"><b>${esc(x.s.name)}</b></a>
-          <span class="muted small">${esc(classroomName(x.s.classroom_id) || 'No class')} · registration ${x.paid ? 'paid' : 'not paid'}</span>
-          <div class="small ${x.plan === 'none' ? 'rate-off' : ''}">${x.plan === 'none' ? (x.s.start_date ? 'Not counted: no rate and no class rate' : 'Not counted: add a start date on their page')
-            : `${x.plan === 'start' ? 'Counted from' : 'Possible from'} ${esc(fmtDate(x.s.start_date))} · ${money(x.rate.amount)} ${esc(FREQ_TEXT[x.rate.freq] || '')}${x.rate.cls ? ' (class rate)' : ''}`}</div></li>`).join('')}</ul></section>` : ''}
+      ${P.fams.length ? `<section class="panel" id="proj-wait"><h2>New families</h2>
+        <p class="muted small">The waiting list and families in the Pipeline, each child once. A <b>start date</b> and <b>registration paid</b> = counted
+          as starting; a start date without registration = possible; no start date = not counted yet. No rate? Their class’s full-time rate.</p>
+        <ul class="rate-check">${P.fams.map((x) => `<li><a href="#" ${x.st ? `data-open-sid="${x.st.id}"` : `data-open-iid="${x.i.id}"`}><b>${esc(x.name)}</b></a>
+          <span class="muted small">${esc([classroomName(x.classId), x.i ? `Pipeline: ${STAGE_LABEL[x.i.stage]}` : 'Waiting list', `registration ${x.paid ? 'paid' : 'not paid'}`].filter(Boolean).join(' · '))}</span>
+          ${x.st && x.i && x.i.stage !== 'waitlisted' ? `<div class="small rate-off">On the Enrollment waiting list, but ${esc(STAGE_LABEL[x.i.stage])} in the Pipeline. Not on the waiting list yet? Open
+            <a href="#" data-open-sid="${x.st.id}">their Enrollment page</a> and delete it (the Pipeline family stays).</div>` : ''}
+          <div class="small ${x.plan === 'none' ? 'rate-off' : ''}">${x.plan === 'none' ? (x.start ? 'Not counted: no rate and no class rate' : `Not counted: add a start date ${x.st ? 'on their page' : '(Starts on, in the Pipeline)'}`)
+            : `${x.plan === 'start' ? 'Counted from' : 'Possible from'} ${esc(fmtDate(x.start))} · ${money(x.rate.amount)} ${esc(FREQ_TEXT[x.rate.freq] || '')}${x.rate.cls ? ' (class rate)' : ''}`}</div></li>`).join('')}</ul></section>` : ''}
       ${check.length ? `<section class="panel" id="proj-rates"><h2>Rates to check</h2>
         <p class="muted small">Children with no rate, or a rate that isn’t one of their class’s (Settings → Classes). ${edit ? 'Tap the class rate to use it.' : ''}
           A different rate on purpose (a sibling discount…)? Open the child and write why under <b>Why the rate is different</b>; they come off this list.</p>
@@ -3614,7 +3633,7 @@
             <td><b>${esc(x.who)}</b><div class="muted small">${esc(x.where)}</div></td>
             <td>${x.kind === 'leave' ? 'Last day ' : x.kind === 'maybe' ? 'Could start ' : 'Starts '}${esc(fmtDate(x.on))}</td>
             <td class="num">${Number(x.rate) > 0 ? `${money(x.rate)}<div class="muted small">${esc(FREQ_TEXT[x.freq] || '')}</div>` : '<span class="muted small">no rate yet</span>'}</td></tr>`).join('')
-            || '<tr><td colspan="3" class="muted">Nobody starting or leaving in these months. Add a start date to families in the Pipeline to see them here.</td></tr>'}</tbody></table></div></section>
+            || '<tr><td colspan="3" class="muted">No enrolled child starts or leaves in these months. New families are listed above.</td></tr>'}</tbody></table></div></section>
       <details class="panel proj-how"><summary>How it’s worked out</summary>
         <ul class="small">
           <li><b>Tuition</b>: each enrolled child’s rate (on their page) for every billing period they’ll be here, from their start date until a last day set
@@ -3638,6 +3657,7 @@
     $$('#proj-coming tr[data-sid]', body).forEach((tr) => tr.addEventListener('click', () => openStudent(tr.dataset.sid)));
     $$('#proj-coming tr[data-iid]', body).forEach((tr) => tr.addEventListener('click', () => openDrawer(tr.dataset.iid)));
     $$('[data-open-sid]', body).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openStudent(a.dataset.openSid); }));
+    $$('[data-open-iid]', body).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openDrawer(a.dataset.openIid); }));
     $$('[data-set-rate]', body).forEach((b) => b.addEventListener('click', async () => {
       const s = state.students.find((x) => x.id === b.closest('li').dataset.sid), r = classRates(s.classroom_id).find((x) => x.k === b.dataset.setRate);
       b.disabled = true;

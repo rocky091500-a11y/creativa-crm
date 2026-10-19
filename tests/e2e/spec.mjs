@@ -922,7 +922,7 @@ try {
   assert.match(await projRow('Tuition from private-pay families').textContent(), /\$[\d,]+/);
   assert.match(await projRow('New families starting (possible)').locator('td').nth(1).textContent(), /^\$1,(000|500)$/, 'the new child from next month');
   await page.locator('#proj-coming tr', { hasText: 'Sofia Lopez' }).locator('text=Starts').waitFor();
-  await page.locator('#proj-coming tr', { hasText: 'Test Kid Delta' }).locator('text=Could start').waitFor();
+  await page.locator('#proj-wait li', { hasText: 'Test Kid Delta' }).locator('text=Possible from').waitFor();   // a Pipeline family, once
   await page.click('[data-pm="12"]');
   assert.equal(await proj.locator('thead th').count(), 13);
   await shot(page, '36-projection');
@@ -1011,10 +1011,11 @@ try {
   await page.selectOption('#r-status', 'enrolled');
   await page.click('header nav button[data-view=money]');
   await page.click('[data-mtab=projection]');
-  assert.match(await page.locator('#proj-wait li', { hasText: 'Test Kid Delta' }).textContent(), /registration paid[\s\S]*Counted from/, 'registration paid + start date: counted');
+  assert.equal(await page.locator('#proj-wait li', { hasText: 'Test Kid Delta' }).count(), 1, 'on the waiting list and in the Pipeline: listed once');
+  assert.match(await page.locator('#proj-wait li', { hasText: 'Test Kid Delta' }).textContent(), /Pipeline: Waitlisted[\s\S]*registration paid[\s\S]*Counted from/, 'registration paid + start date: counted');
   assert.match(await page.locator('#proj-wait li', { hasText: 'Test Kid Gamma' }).textContent(), /Not counted: add a start date/);
   await page.click('.proj-table-box > summary');
-  assert.match(await page.locator('table.proj tr', { has: page.locator('th', { hasText: 'Starting from the waiting list' }) }).locator('td').nth(1).textContent(), /^\$1,(000|500)$/);
+  assert.match(await page.locator('table.proj tr', { has: page.locator('th', { hasText: 'New families starting (registration paid)' }) }).locator('td').nth(1).textContent(), /^\$1,(000|500)$/);
   ok('Waiting list: registration paid on the inquiry shows on its card and the column, carries over to the student, and shows on Enrollment; with a start date it counts in the projection');
 
   // ── activated staff, as a non-admin ──

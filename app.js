@@ -3649,7 +3649,7 @@
   }
   const closuresIn = (from, to) => (state.closures || []).filter((c) => c.starts_on <= to && c.ends_on >= from);
   function weekTuition(mon) {   // the tuition expected for the week starting that Monday, by who pays
-    const w = { mon, fri: addDays(mon, 4), private: 0, fes: 0, sr: 0, kinder: 0, total: 0, starting: 0, leaving: 0 };
+    const w = { mon, fri: addDays(mon, 4), private: 0, fes: 0, sr: 0, kinder: 0, total: 0, billed: 0, starting: 0, leaving: 0 };
     const kids = state.students.filter((s) => s.status === 'enrolled' || (LEFT.has(s.status) && s.withdrawn_on && s.withdrawn_on >= mon))
       .map((s) => ({ fr: state.finance[s.id] || {}, start: s.start_date, last: LEFT.has(s.status) ? s.withdrawn_on : null }))
       .map((k) => ({ ...k, amount: k.fr.tuition_amount, freq: k.fr.tuition_frequency }))
@@ -3659,6 +3659,8 @@
       if (!x) return;
       w[paysFor(fr)] += x;
       w.total += x;
+      // What goes on the families' bill every two weeks (create_period_invoices): not Kindergarten (Step Up pending), not "don't bill".
+      if (['weekly', 'biweekly'].includes(freq) && fr.bill_family !== false && paysFor(fr) !== 'kinder') w.billed += x;
       if (start && start >= mon && start <= w.fri) w.starting++;
       if (last && last <= w.fri) w.leaving++;
     });
@@ -3674,10 +3676,11 @@
       .filter(([k]) => w0[k] > 0);
     const notes = (w) => [w.starting && `${w.starting} starting`, w.leaving && `${w.leaving} leaving`, ...w.closed.map((c) => `${c}: tuition still due`)].filter(Boolean);
     return `<section class="panel week-box" id="week-box"><div class="wb-head"><h2>Tuition expected each week</h2>
-        <span class="muted small">From each child’s rate. Two weeks make one bill.</span></div>
+        <span class="muted small">From each child’s rate. Two weeks of “on the bill” make one bill; Kindergarten (Step Up) and children not billed to their family aren’t on it.</span></div>
       <div class="wb-weeks">${weeks.map((w, i) => `<div class="wb-week ${i === 0 ? 'wb-now' : ''}">
           <span class="wb-label">${i === 0 ? label0 : `Week of ${esc(fmtDate(w.mon))}`}</span>
           <b>${money0(w.total)}</b><span class="muted small">${esc(fmtDate(w.mon))} – ${esc(fmtDate(w.fri))}</span>
+          ${round2(w.billed) !== round2(w.total) ? `<span class="muted small">On the bill: ${money(round2(w.billed))}</span>` : ''}
           ${notes(w).map((t) => `<span class="small wb-note">${esc(t)}</span>`).join('')}</div>`).join('')}</div>
       ${split.length > 1 ? `<p class="small wb-split">${label0}: ${split.map(([k, label]) => `${esc(label)} <b>${money0(w0[k])}</b>`).join(' · ')}</p>` : ''}</section>`;
   }

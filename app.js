@@ -2813,6 +2813,10 @@
         ${noPin.length ? `<button class="btn small" id="pe-pins" type="button">Make PINs for everyone without one (${noPin.length})</button>` : ''}
         <button class="btn small" id="pe-csv" type="button">Download CSV</button>
         <button class="btn small primary" id="pe-add" type="button">+ Add person</button></div>
+      ${noPin.length ? `<section class="panel warn-panel" id="pe-nopin"><h2 class="h-row">Missing a time clock PIN <span class="muted small">${noPin.length} of ${list.filter((e) => e.active).length} active</span></h2>
+        <p class="muted small">They don’t show on the time clock until they have one. Tap a name to type their PIN (or make one up and print a slip).</p>
+        <div class="rate-opts">${noPin.map((e) => `<button class="btn small" type="button" data-nopin="${e.id}">${esc(empName(e))}</button>`).join('')}</div></section>`
+        : `<p class="small pe-allpins">Everyone active has a time clock PIN.</p>`}
       <div class="table-wrap"><table class="people"><thead><tr><th>Name</th><th>Position</th><th class="num">Rate</th><th>Lunch</th><th>Schedule</th><th>Time clock PIN</th></tr></thead>
         <tbody id="pe-rows">${list.map((e) => `<tr data-emp="${e.id}" class="${e.active ? '' : 'inactive'}"><td><b>${esc(empName(e))}</b>${e.active ? '' : ' <span class="muted small">(not active)</span>'}</td>
           <td>${esc(e.position || '')}</td><td class="num">${e.pay_rate != null ? money(e.pay_rate) : ''}</td>
@@ -2822,6 +2826,12 @@
       <p class="muted small">Pay rates are per hour. The scheduled lunch is only a reminder: staff clock out for lunch, and the Hours tab flags a
         long day with no lunch clocked. People who leave: open them and turn “Active” off; their past hours stay.</p>`;
     $$('#pe-rows tr[data-emp]', body).forEach((tr) => tr.addEventListener('click', () => openEmployee(tr.dataset.emp)));
+    $$('[data-nopin]', body).forEach((b) => b.addEventListener('click', () => {
+      openEmployee(b.dataset.nopin);
+      const pin = $('.drawer input[name=pin]');
+      pin?.scrollIntoView({ block: 'center' });
+      pin?.focus();
+    }));
     $('#pe-add', body).addEventListener('click', () => openEmployee(null));
     $('#pe-csv', body).addEventListener('click', () => csvDownload('creativa-staff.csv',
       ['Last name', 'First name', 'Position', 'Hourly rate', 'Lunch (minutes)', 'Schedule', 'Active', 'PIN set'],

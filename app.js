@@ -113,6 +113,55 @@
     const d = new Date(iso);
     return `${localDate(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
+  // ───── Español: the CRM's own words in Spanish on screen (es.js), for staff who prefer it. Names and anything people type
+  // stay as written, and printed papers (receipts, statements, the food program record) stay in English. Text is translated
+  // as it appears, whole or with its numbers and month/day names in place ({n}).
+  const ES = window.CRM_ES || {}, ES_DATES = window.CRM_ES_DATES || {};
+  const ES_TOKEN = new RegExp(`\\$?-?\\d[\\d,]*(?:\\.\\d+)?(?::\\d\\d)?%?|\\b(?:${Object.keys(ES_DATES).join('|')})\\b`, 'g');
+  function esText(text) {
+    const core = text.replace(/\s+/g, ' ').trim();
+    if (!core || !/[A-Za-z]/.test(core)) return null;
+    const wrap = (t) => text.replace(/^(\s*)[\s\S]*?(\s*)$/, (m, a, b) => a + t + b);
+    if (ES[core]) return wrap(ES[core]);
+    const toks = core.match(ES_TOKEN) || [], key = core.replace(ES_TOKEN, '{n}');
+    const tr = (t) => ES_DATES[t] || t;
+    if (toks.length && ES[key]) { let k = 0; return wrap(ES[key].replace(/\{n\}/g, () => tr(toks[k++] ?? ''))); }
+    const c = core.indexOf(': ');   // "Saved: Rent $1,000.00", "New tour request: (name)": the words before the colon
+    if (c > 0 && ES[core.slice(0, c)]) return wrap(`${ES[core.slice(0, c)]}: ${core.slice(c + 2).replace(ES_TOKEN, tr)}`);
+    return toks.length && /\d/.test(core) ? wrap(core.replace(ES_TOKEN, tr)) : null;   // a date: just its month and day names
+  }
+  const esSkip = (el) => !!el?.closest('[data-no-es], .print-sheet, textarea, script, style, [contenteditable]');
+  const esDone = new WeakMap();
+  function esNode(node) {
+    if (node.nodeType === 3) {
+      if (esDone.get(node) === node.nodeValue || esSkip(node.parentElement)) return;
+      const v = esText(node.nodeValue);
+      if (v != null && v !== node.nodeValue) node.nodeValue = v;
+      esDone.set(node, node.nodeValue);
+      return;
+    }
+    if (node.nodeType !== 1 || esSkip(node)) return;
+    [node, ...node.querySelectorAll('[placeholder], [aria-label], [title]')].forEach((el) => ['placeholder', 'aria-label', 'title'].forEach((a) => {
+      const v = el.getAttribute?.(a), t = v && !esSkip(el) && esText(v);
+      if (t && t !== v) el.setAttribute(a, t);
+    }));
+    const w = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) esNode(n);
+  }
+  const esObserver = new MutationObserver((ms) => ms.forEach((m) => (m.type === 'characterData' ? esNode(m.target) : m.addedNodes.forEach(esNode))));
+  const nativeAsk = { confirm: window.confirm.bind(window), prompt: window.prompt.bind(window), alert: window.alert.bind(window) };
+  ['confirm', 'prompt', 'alert'].forEach((k) => { window[k] = (msg, ...rest) => nativeAsk[k](state.lang === 'es' && msg ? esText(String(msg)) ?? msg : msg, ...rest); });
+  function setLang(lang) {
+    state.lang = lang === 'es' ? 'es' : 'en';
+    store.set('lang', state.lang);
+    document.documentElement.lang = state.lang;
+    esObserver.disconnect();
+    if (state.lang === 'es') {
+      esNode(document.body);
+      esObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
+  }
+
   function toast(msg, isErr = false) {
     const t = $('#toast');
     t.textContent = msg;
@@ -173,11 +222,13 @@
     loadedAt: 0,
     view: store.get('view', 'today'),
     moneyTab: store.get('moneyTab', 'overview'),
+    lang: store.get('lang', 'en'),
     todoFilter: store.get('todoFilter', 'all'),
     projMonths: store.get('projMonths', 6),
     filters: { q: '', stage: '', program: '', source: '', assigned: '', ...store.get('filters', {}) },
     openId: undefined, // undefined = closed, null = new inquiry
   };
+  setLang(state.lang);   // Español, if this device chose it
   const staffName = (id) => state.staff.find((s) => s.id === id)?.full_name || '';
   const isAdmin = () => state.me?.role === 'admin';
   const canViewFinance = () => isAdmin() || ['view', 'edit'].includes(state.me?.finance);
@@ -365,6 +416,7 @@
       <p class="muted small">Ask the office to activate your account, then reload this page.</p>
       <button class="btn" id="signout">Sign out</button>`);
     $('#signout').addEventListener('click', () => sb.auth.signOut());
+    $('#lang')?.addEventListener('click', () => { const es = state.lang !== 'es'; setLang(es ? 'es' : 'en'); renderShell(); });
   }
 
   // ───────────── data ─────────────
@@ -528,6 +580,7 @@
             ? ` <span class="nav-badge" aria-label="${state.unseen.length} new">${state.unseen.length > 99 ? '99+' : state.unseen.length}</span>` : ''}</button>`).join('')}</nav>
         <button class="btn primary" id="add">+ Add<span class="hide-sm"> inquiry</span></button>
         <div class="me"><span>${esc(state.me.full_name || state.me.email)}</span>
+          <button class="btn ghost small" id="lang" type="button" data-no-es title="${state.lang === 'es' ? 'Show the CRM in English' : 'Ver el CRM en español'}">${state.lang === 'es' ? 'English' : 'Español'}</button>
           <button class="btn ghost small" id="signout">Sign out</button></div>
       </header>
       <main id="view"></main>`;
@@ -541,6 +594,7 @@
     drawTodoBadge();
     $('#add').addEventListener('click', () => openDrawer(null));
     $('#signout').addEventListener('click', () => sb.auth.signOut());
+    $('#lang')?.addEventListener('click', () => { const es = state.lang !== 'es'; setLang(es ? 'es' : 'en'); renderShell(); });
     renderView();
   }
 

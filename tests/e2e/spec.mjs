@@ -1247,6 +1247,27 @@ try {
   assert.equal(await p3.locator('#mo-add-out, #mo-add-in').count(), 0, 'view-only finance sees Money but can’t add');
   ok('view-only finance: sees Tuition, cannot record payments; no Payroll');
 
+  // ── Español: the button in the header ──
+  await page.bringToFront();
+  await page.click('header nav button[data-view=today]');
+  await page.click('#lang');
+  await page.locator('header nav button[data-view=today]', { hasText: 'Hoy' }).waitFor();
+  assert.equal(await page.locator('#lang').textContent(), 'English');
+  assert.equal(await page.evaluate(() => document.documentElement.lang), 'es');
+  await page.click('header nav button[data-view=money]');
+  await page.click('[data-mtab=projection]');
+  await page.locator('.proj-summary', { hasText: 'sobrante al mes' }).waitFor();
+  await page.click('header nav button[data-view=tuition]');
+  await page.locator('#week-box h2', { hasText: 'Matrícula esperada cada semana' }).waitFor();
+  assert.equal(await page.locator('#t-q').getAttribute('placeholder'), 'Buscar estudiante o familia…', 'placeholders too');
+  await page.click('header nav button[data-view=roster]');
+  await page.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' }).waitFor();   // names stay as they are
+  await shot(page, '41-espanol');
+  await page.click('#lang');
+  await page.locator('header nav button[data-view=today]', { hasText: 'Today' }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.lang), 'en');
+  ok('Español: one tap shows the CRM in Spanish (menus, headings, placeholders), names stay; one tap back to English');
+
   // ── phone ──
   const m = await newPage({ width: 390, height: 844 }, true);
   await login(m, 'owner@creativaacademy.com', 'owner-pass-1');

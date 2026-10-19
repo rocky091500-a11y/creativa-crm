@@ -3398,7 +3398,12 @@
     const r = classRates(classId)[0];
     return r ? { ...rateAs(r, 'biweekly'), cls: true } : null;
   }
-  const classIdOf = (program) => state.classrooms.find((c) => c.name.toLowerCase() === String(program || '').trim().toLowerCase())?.id;
+  // The class a Pipeline program starts in: its name, and 15–17 months starts with the toddlers in 18–23 months (same rate).
+  const classIdOf = (program) => {
+    const p = String(program || '').trim().toLowerCase();
+    const byName = (n) => state.classrooms.find((c) => c.name.toLowerCase() === n)?.id;
+    return byName(p) || (p === '15–17 months' ? byName('18–23 months') : undefined);
+  };
   // The same child in Enrollment and the Pipeline: one was made from the other, or the same name, or the same phone and first name.
   function sameChild(st, i) {
     if (st.inquiry_id && st.inquiry_id === i.id) return true;

@@ -640,6 +640,24 @@ try {
   await shot(pr, '19-payroll-staff');
   ok('Payroll: add staff with hourly rates; printable PIN slips; PINs on file (Show PINs), an easy one allowed for now');
 
+  // Not paid for now (026): Bea off (off the Hours tab), then back on.
+  const beaRow = () => pr.locator('#pe-rows tr', { hasText: 'Bea Office' });
+  await beaRow().click();
+  await pr.locator('.drawer input[name=paid]').uncheck();
+  await pr.locator('.drawer #em-save').click();
+  await beaRow().locator('.tag', { hasText: 'not paid for now' }).waitFor();
+  await pr.click('[data-ptab=hours]');
+  await pr.locator('#pp-rows tr', { hasText: 'Ana Clock' }).waitFor();
+  assert.equal(await pr.locator('#pp-rows tr', { hasText: 'Bea Office' }).count(), 0, 'not paid for now: off the Hours tab');
+  await pr.click('[data-ptab=people]');
+  await beaRow().click();
+  await pr.locator('.drawer input[name=paid]').check();
+  await pr.locator('.drawer #em-save').click();
+  await pr.locator('.drawer').waitFor({ state: 'detached' });
+  await beaRow().waitFor();
+  assert.equal(await beaRow().locator('.tag', { hasText: 'not paid for now' }).count(), 0, 'paid again');
+  ok('Payroll: Paid off keeps someone working without pay off the Hours tab; back on puts them back');
+
   // ── the time clock on a tablet ──
   const kiosk = await newPage({ width: 1024, height: 768 }, true);
   await kiosk.goto(BASE + '/clock/');

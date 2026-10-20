@@ -108,6 +108,7 @@ update public.settings set payroll_anchor = '2026-10-12';   -- later chosen on P
 \ir ../supabase/migrations/022_pins_on_file.sql
 \ir ../supabase/migrations/024_scheduled_start.sql
 \ir ../supabase/migrations/025_auto_lunch.sql
+\ir ../supabase/migrations/026_unpaid_staff.sql
 update public.employees set start_time = null;   -- these tests punch at any hour; 024's early clock-in is tested at the end
 select pg_temp.ok((select payroll_anchor = '2026-10-12' from public.settings), 'a pay schedule set later is never overwritten by re-running 008');
 update public.settings set payroll_anchor = '2026-10-02';
@@ -377,15 +378,67 @@ select pg_temp.ok(((now() - interval '7 hours') at time zone 'America/New_York')
                   or (public._timeclock_status((select v::uuid from t where k = 'dot'))->>'today_minutes')::int = 359,
                   'time clock: today is 6 h 59 min after the 1-hour lunch');
 select pg_temp.ok((public._timeclock_status((select v::uuid from t where k = 'dot'))->>'lunch_minutes')::int = 60, 'the time clock knows her lunch');
--- Changing someone's lunch changes their time not yet entered in Patriot, never time already entered.
+-- Changing someone's lunch changes their time from this pay period on: never earlier periods (or ones entered in Patriot).
+create temp table cp as select (public.payroll_period((now() at time zone 'America/New_York')::date)).period_start as d;
+do 'begin perform set_config(''crm.timeclock'', ''on'', true);
+  insert into public.time_entries (employee_id, clock_in, clock_out, out_reason, source)
+    select v::uuid, ((select d from cp) + time ''01:00'') at time zone ''America/New_York'',
+           ((select d from cp) + time ''10:00'') at time zone ''America/New_York'', ''out'', ''clock'' from t where k = ''eve'';
+  perform set_config(''crm.timeclock'', '''', true); end';
 insert into public.payroll_periods (period_start, period_end) values ('2026-10-05', '2026-10-05');
 update public.employees set lunch_minutes = 30 where last_name in ('Lunchtime', 'Nolunch');
 select pg_temp.ok((select string_agg(work_date || '=' || minutes::int, ' ' order by work_date) from public.payroll_hours('2026-10-05', '2026-10-06')
                     where employee_id in (select v::uuid from t where k in ('dot', 'eve')))
-                  = '2026-10-05=480 2026-10-05=480 2026-10-06=240', 'a day already entered in Patriot keeps its lunch');
-select pg_temp.ok((select minutes = 510 from public.payroll_hours('2026-10-02', '2026-10-15')
-                    where employee_id = (select v::uuid from t where k = 'dot') and work_date = '2026-10-12'), 'later days use the new 30 minutes (less her 20-minute break)');
+                  = '2026-10-05=480 2026-10-05=480 2026-10-06=240', 'a day entered in Patriot keeps its lunch');
+select pg_temp.ok((select minutes = 480 from public.payroll_hours('2026-10-02', '2026-10-15')
+                    where employee_id = (select v::uuid from t where k = 'dot') and work_date = '2026-10-12'), 'an earlier pay period keeps its lunch');
+select pg_temp.ok((select minutes = 510 from public.payroll_hours((select d from cp), (select d from cp))
+                    where employee_id = (select v::uuid from t where k = 'eve')), 'this pay period uses the new 30 minutes');
 delete from public.payroll_periods where period_start = '2026-10-05';
+-- An early clock-in still waiting for its start time is updated too when the lunch changes (it used to refuse).
+do 'begin perform set_config(''crm.timeclock'', ''on'', true);
+  insert into public.time_entries (employee_id, clock_in, punched_in, source)
+    select v::uuid, now() + interval ''30 minutes'', now(), ''clock'' from t where k = ''dot'';
+  perform set_config(''crm.timeclock'', '''', true); end';
+update public.employees set lunch_minutes = 60 where last_name = 'Lunchtime';
+select pg_temp.ok((select lunch_minutes = 60 and source = 'clock' and edited_at is null from public.time_entries
+                    where employee_id = (select v::uuid from t where k = 'dot') and clock_in > now()), 'an early clock-in takes the new lunch, not as an office edit');
+delete from public.time_entries where employee_id = (select v::uuid from t where k = 'dot') and clock_in > now();
+
+-- ═════════════ 026: staff not paid for now ═════════════
+do 'begin perform set_config(''crm.timeclock'', ''on'', true);
+  insert into public.time_entries (employee_id, clock_in, punched_in, source)
+    select v::uuid, now() + interval ''30 minutes'', now(), ''clock'' from t where k = ''eve'';
+  perform set_config(''crm.timeclock'', '''', true); end';
+create temp table log_mark as select coalesce(max(id), 0) as id from public.change_log;
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000d');   -- from the Staff page
+update public.employees set paid = false where last_name = 'Nolunch';
+select pg_temp.as_user(null);
+select pg_temp.ok(coalesce(current_setting('crm.timeclock', true), '') <> 'on', 'the time clock mode doesn''t stay on');
+select pg_temp.ok((select count(*) = 1 and bool_and(table_name = 'employees') from public.change_log where id > (select id from log_mark)),
+                  'one line on Changes for the person, none for each stretch of time');
+select pg_temp.ok((select bool_and(not paid) from public.time_entries
+                    where employee_id = (select v::uuid from t where k = 'eve') and work_date >= (select d from cp)), 'not paid: their time this pay period is unpaid');
+select pg_temp.ok((select bool_and(paid) from public.time_entries
+                    where employee_id = (select v::uuid from t where k = 'eve') and work_date < (select d from cp)), 'earlier pay periods keep what they were');
+select pg_temp.ok((select source = 'clock' and edited_at is null and not paid from public.time_entries
+                    where employee_id = (select v::uuid from t where k = 'eve') and clock_in > now()), 'an early clock-in is updated too, not as an office edit');
+select pg_temp.ok((select count(*) = 0 from public.payroll_hours((select d from cp), (select d from cp) + 13)
+                    where employee_id = (select v::uuid from t where k = 'eve')), 'unpaid time isn''t in the hours');
+insert into public.time_entries (employee_id, clock_in) select v::uuid, '2026-10-13 07:00-04' from t where k = 'eve';   -- never clocked out
+select pg_temp.ok((select not paid from public.time_entries where employee_id = (select v::uuid from t where k = 'eve') and work_date = '2026-10-13'),
+                  'time added while not paid is unpaid');
+select pg_temp.ok((public._timeclock_status((select v::uuid from t where k = 'eve'))->>'missed_clock_out') is null,
+                  'the time clock doesn''t ask about a missing clock-out of unpaid time');
+select pg_temp.as_user('00000000-0000-0000-0000-00000000000d');
+select pg_temp.ok((select public.payroll_close_period('2026-10-13', '2026-10-13') = '[]'::jsonb), 'their missing clock-out doesn''t hold up the pay period');
+reset role;
+delete from public.payroll_periods where period_start = '2026-10-13';
+select pg_temp.as_user(null);
+update public.employees set paid = true where last_name = 'Nolunch';
+select pg_temp.ok((select count(*) = 1 from public.payroll_hours((select d from cp), (select d from cp))
+                    where employee_id = (select v::uuid from t where k = 'eve')), 'paid again: their time this pay period counts');
+delete from public.time_entries where employee_id = (select v::uuid from t where k = 'eve') and (clock_out is null or work_date >= (select d from cp));
 
 select pg_temp.as_user(null);
 update public.profiles set payroll = false where email = 'books@creativaacademy.com';

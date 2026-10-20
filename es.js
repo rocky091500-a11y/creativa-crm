@@ -211,7 +211,10 @@ window.CRM_ES = {
   'The PINs stay on file on Payroll → Staff.': 'Los PIN quedan guardados en Nómina → Personal.', 'Save PIN': 'Guardar PIN', 'Make one up': 'Inventar uno',
   'A PIN is 4 digits': 'El PIN tiene 4 dígitos', 'Could not set the PIN': 'No se pudo poner el PIN', 'Enter their first name': 'Escriba su nombre',
   'First name': 'Nombre', 'Last name': 'Apellido', 'Pay rate ($ per hour)': 'Pago por hora ($)', 'Scheduled lunch (unpaid)': 'Almuerzo programado (sin pago)', 'Lunch (unpaid, taken off days over 6 hours)': 'Almuerzo (sin pago, se descuenta los días de más de 6 horas)',
-  '{n} min lunch off': '{n} min de almuerzo descontados',
+  '{n} min lunch off': '{n} min de almuerzo descontados', 'Paid (on payroll)': 'Con pago (en la nómina)', 'not paid for now': 'sin pago por ahora',
+  'Turn off for someone working without pay for now: they can still use the time clock, but their time stays off the Hours tab, the hours for Patriot and payroll. Turn it back on when they’re paid again: it counts from this pay period on.':
+    'Apáguelo para alguien que trabaja sin pago por ahora: puede usar el reloj, pero su tiempo no aparece en Horas, en las horas para Patriot ni en la nómina. Vuelva a prenderlo cuando se le pague otra vez: cuenta desde este período de pago.',
+  'Not paid for now (Payroll → Staff): their time isn’t on payroll.': 'Sin pago por ahora (Nómina → Personal): su tiempo no entra en la nómina.',
   'Active (shows on the time clock)': 'Activo (aparece en el reloj)', 'Add person': 'Agregar persona', 'Someone on payroll': 'Alguien de la nómina',
   'Assistant teacher': 'Asistente de maestra', 'Teacher': 'Maestra', 'Regular': 'Regulares', 'Overtime': 'Horas extra', 'Regular hours': 'Horas regulares',
   'Overtime hours': 'Horas extra', 'Total hours': 'Horas totales', 'Est. gross': 'Bruto est.', 'Estimated gross pay': 'Pago bruto estimado', 'Gross': 'Bruto',

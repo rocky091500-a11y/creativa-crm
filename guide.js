@@ -43,7 +43,7 @@ window.CRM_GUIDE = {
         'Food program: each month’s claim (meals, costs, submitted, paid) and the Monthly Record of Operating Expenditures to print, from the receipts marked for it.',
         'Projection: the coming months. What’s left over a month, a chart of money in and out, a card per month (with what came in so far this month), new families, and rates to check.']],
       ['Payroll and the time clock', 'Staff clock in and out on the tablet at the front desk; payroll is run in Patriot.', [
-        'Staff: each person’s position, hourly rate, lunch and schedule, and their time clock PIN (Show PINs; print slips). People missing a PIN are listed at the top.',
+        'Staff: each person’s position, hourly rate, lunch and schedule, and their time clock PIN (Show PINs; print slips). People missing a PIN are listed at the top. Paid off = working without pay for now: their time stays off payroll.',
         'Time clock: set up the tablet once (Payroll → Time clock → Use this device). Staff tap their name, type their PIN, and Clock in / Clock out. Nobody clocks out for lunch: their scheduled lunch comes off any day they work more than 6 hours.',
         'Starts at: each person’s start time (on their page in Staff). Clocking in early is saved as that time, so pay starts then; Today shows who’s at work, gone, or not in yet.',
         'Hours: every pay period (two weeks, Friday to Thursday): fix any missed clock-out, then “Hours for Patriot” to type them into Patriot.',
@@ -110,7 +110,7 @@ window.CRM_GUIDE = {
         'Programa de alimentos: el reclamo de cada mes (comidas, costos, enviado, pagado) y el Registro Mensual de Gastos para imprimir, con los recibos marcados para el programa.',
         'Proyección: los próximos meses. El sobrante al mes, un gráfico de lo que entra y sale, una tarjeta por mes (con lo que entró hasta ahora este mes), familias nuevas y tarifas por revisar.']],
       ['Nómina y reloj de entrada', 'El personal marca entrada y salida en la tableta de la recepción; la nómina se corre en Patriot.', [
-        'Personal: el puesto, pago por hora, almuerzo y horario de cada persona, y su PIN del reloj (Mostrar PIN; imprimir papelitos). Arriba aparecen quienes no tienen PIN.',
+        'Personal: el puesto, pago por hora, almuerzo y horario de cada persona, y su PIN del reloj (Mostrar PIN; imprimir papelitos). Arriba aparecen quienes no tienen PIN. Sin pago = trabaja sin pago por ahora: su tiempo no entra en la nómina.',
         'Reloj: prepare la tableta una vez (Nómina → Reloj → Usar este aparato). Cada persona toca su nombre, escribe su PIN y marca Entrada / Salida. Nadie marca salida para almorzar: su almuerzo programado se descuenta cualquier día que trabaje más de 6 horas.',
         'Entra a las: la hora de entrada de cada persona (en su página en Personal). Si marca antes, se guarda esa hora y el pago empieza ahí; Hoy muestra quién está trabajando, ya se fue o no ha llegado.',
         'Horas: cada período de pago (dos semanas, de viernes a jueves): corrija las salidas que falten y luego “Horas para Patriot” para pasarlas a Patriot.',

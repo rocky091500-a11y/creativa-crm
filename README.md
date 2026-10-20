@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql` and `025_auto_lunch.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql` and `026_unpaid_staff.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -443,6 +443,15 @@ Move a family to **Reschedule** (Pipeline, or the stage picker) when their tour 
 under *Tours to reschedule* with the old time and call/text buttons, leave the tour calendar, and get no reminder
 email. Moving them back to *Tour scheduled* asks for the new date and time.
 
+## Staff not paid for now (026)
+
+**Payroll → Staff → (a person) → Paid (on payroll)**: turn it off for someone working without pay for now (family
+helping while money is tight). They can still use the time clock and show on Today when they clock in, but their time
+is saved as unpaid (`time_entries.paid`) and stays off the Hours tab, the hours for Patriot and closing a pay period (a
+missing clock-out of theirs doesn't hold it up), and Today doesn't list them as not in yet. Turning it on or off counts from
+the current pay period on: earlier periods (whose hours may already be in Patriot) never change. Changing someone's
+lunch works the same way. Neither adds a line on Changes for each stretch of time, only for the person.
+
 ## Lunch comes off by itself (025)
 
 Staff only **Clock in** and **Clock out** on the time clock. Any day someone is clocked in more than 6 hours, their
@@ -450,7 +459,7 @@ scheduled lunch (Payroll → Staff → Lunch: 30 minutes, 1 hour or none) comes 
 the clock that day (leaving at 12 and coming back at 1 covers a 1-hour lunch). A shorter day keeps all its time. The
 timesheet shows "30 min lunch off" under the day's hours, and the time clock's Today / This week / Pay period hours have
 it off too. Each stretch of time keeps the lunch it was made with (`time_entries.lunch_minutes`), so changing someone's
-lunch changes their days in pay periods not yet entered in Patriot, never ones already entered. Run 025 before (or right
+lunch changes their days from the current pay period on, never earlier ones. Run 025 before (or right
 after) the app update: until it has run, the time clock keeps its Lunch button.
 
 ## Early clock-ins and who's at work (024)

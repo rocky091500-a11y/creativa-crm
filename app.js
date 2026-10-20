@@ -762,7 +762,7 @@
       const st = open ? 'in' : last?.out_reason === 'lunch' ? 'lunch' : last ? 'gone' : 'notin';
       const late = st === 'notin' && start && now > start ? Math.round((now - start) / 60000) : 0;
       return { e, xs, open, last, first, start, st, late };
-    });
+    }).filter((r) => r.e.paid !== false || r.xs.length);   // not paid for now (026): only when they clocked in
     const dow = new Date(`${day}T12:00:00`).getDay(), weekend = dow === 0 || dow === 6;
     const line = (r) => {
       const name = `<b>${esc(empName(r.e))}</b>`;
@@ -2620,7 +2620,7 @@
   function payChecks(e) {
     const mine = state.pay.entries.filter((x) => x.employee_id === e.id);
     const out = [];
-    const missed = state.pay.open.filter((x) => x.employee_id === e.id && isStale(x) && x.work_date >= state.pay.pp.start && x.work_date <= state.pay.pp.end);
+    const missed = state.pay.open.filter((x) => x.employee_id === e.id && isStale(x) && x.paid !== false && x.work_date >= state.pay.pp.start && x.work_date <= state.pay.pp.end);
     if (missed.length) out.push(['warn', `${missed.length} missing clock-out${missed.length === 1 ? '' : 's'}`]);
     const edited = mine.filter((x) => x.edited_at || x.source === 'office').length;
     if (edited) out.push(['info', `${edited} changed or added by the office`]);
@@ -2686,7 +2686,7 @@
 
   function drawPayHours(body, el) {
     const P = state.pay, pp = P.pp, T = payTotals(), closed = closedFor(pp);
-    const people = P.employees.filter((e) => e.active || (T[e.id]?.minutes || T[e.id]?.open)).sort(empSort);
+    const people = P.employees.filter((e) => (e.active && e.paid !== false) || (T[e.id]?.minutes || T[e.id]?.open)).sort(empSort);
     const sum = (k) => people.reduce((t, e) => t + (T[e.id]?.[k] || 0), 0);
     const gross = round2(people.reduce((t, e) => t + grossOf(e, T[e.id] || ZERO), 0));
     const nameOf = (id) => { const e = P.employees.find((x) => x.id === id); return e ? empName(e) : ''; };
@@ -2695,7 +2695,7 @@
     P.entries.filter((x) => x.clock_out).forEach((x) => { if (!lastOut[x.employee_id] || x.clock_out > lastOut[x.employee_id].clock_out) lastOut[x.employee_id] = x; });
     const atLunch = Object.values(lastOut).filter((x) => x.out_reason === 'lunch' && Date.now() - new Date(x.clock_out) < 3 * 3600e3
       && !P.open.some((o) => o.employee_id === x.employee_id && o.clock_in > x.clock_out));
-    const missed = P.open.filter(isStale);
+    const missed = P.open.filter((x) => isStale(x) && x.paid !== false);   // unpaid time (026) doesn't need fixing
     const thisPeriod = pp.start === payPeriodOf(nyToday()).start;
     body.innerHTML = `<div class="month-bar"><button class="btn small" id="pp-prev" type="button" aria-label="Previous pay period">‹</button>
         <b>${esc(fmtPayPeriod(pp))}, ${pp.end.slice(0, 4)}</b>
@@ -2758,12 +2758,12 @@
     $('#pp-csv', body).addEventListener('click', () => {
       const byId = Object.fromEntries(P.employees.map((e) => [e.id, e]));
       csvDownload(`creativa-time-${pp.start}.csv`,
-        ['Last name', 'First name', 'Date', 'Clock in', 'Clock out', 'Left for', 'Hours', 'Recorded by', 'Changed by the office', 'Note'],
+        ['Last name', 'First name', 'Date', 'Clock in', 'Clock out', 'Left for', 'Hours', 'Paid', 'Recorded by', 'Changed by the office', 'Note'],
         P.entries.slice().sort((a, b) => empSort(byId[a.employee_id], byId[b.employee_id]) || a.clock_in.localeCompare(b.clock_in)).map((x) => {
           const e = byId[x.employee_id] || {};
           return [e.last_name, e.first_name, x.work_date, clockTime(x.clock_in), x.clock_out ? clockTime(x.clock_out) : 'not clocked out',
             x.clock_out ? (x.out_reason === 'lunch' ? 'Lunch' : 'Day') : '', x.clock_out ? hrs((new Date(x.clock_out) - new Date(x.clock_in)) / 60000) : '',
-            x.source === 'clock' ? 'Time clock' : 'Office', x.edited_at ? fmtDateTime(x.edited_at) : '', x.note];
+            x.paid === false ? 'no' : 'yes', x.source === 'clock' ? 'Time clock' : 'Office', x.edited_at ? fmtDateTime(x.edited_at) : '', x.note];
         }));
     });
     $('#pp-close', body)?.addEventListener('click', async () => {
@@ -2967,6 +2967,7 @@
         }).join('') || '<p class="muted">No time in this pay period.</p>'}
         <dl class="ts-total"><div><dt>Regular</dt><dd>${hrs(t.regular)}</dd></div><div><dt>Overtime</dt><dd>${hrs(t.overtime)}</dd></div>
           <div><dt>Total hours</dt><dd>${hrs(t.minutes)}</dd></div><div><dt>Est. gross</dt><dd>${money(grossOf(e, t))}</dd></div></dl>
+        ${e.paid === false ? '<p class="muted small">Not paid for now (Payroll → Staff): their time isn’t on payroll.</p>' : ''}
         ${closed ? '<p class="muted small">This pay period was entered in Patriot, so its time is locked. Reopen it on the Hours tab to change it.</p>'
           : '<p class="muted small">Tap a time to change it. ✎ = changed or added by the office (the time clock’s original is kept).</p>'}</div>
         <div class="section" id="ts-paid-box" hidden><h3>Paychecks from Patriot</h3><ul class="chg-list mini" id="ts-paid"></ul></div>`,
@@ -3000,7 +3001,7 @@
       sub: emp ? esc(empName(emp)) : '',
       body: `<div class="section"><div class="grid2">
           ${emp ? '' : `<label class="full">Who<select name="employee_id" required><option value="">Choose…</option>
-            ${optionsHtml(P.employees.filter((e) => e.active).sort(empSort).map((e) => [e.id, empName(e)]), '')}</select></label>`}
+            ${optionsHtml(P.employees.filter((e) => e.active).sort(empSort).map((e) => [e.id, empName(e) + (e.paid === false ? ' (not paid for now)' : '')]), '')}</select></label>`}
           ${fInput('day', 'Day', inP ? inP.date : defDay, 'date', `required max="${today}"`)}
           <span></span>
           ${fInput('t_in', 'Clocked in', inP?.time || '', 'time', 'required')}
@@ -3046,7 +3047,7 @@
   function showPatriotSheet() {
     const P = state.pay, T = payTotals();
     const list = P.employees.filter((e) => (T[e.id]?.minutes || 0) > 0).sort(empSort);
-    const missed = P.open.filter((x) => isStale(x) && x.work_date >= P.pp.start && x.work_date <= P.pp.end).length;
+    const missed = P.open.filter((x) => isStale(x) && x.paid !== false && x.work_date >= P.pp.start && x.work_date <= P.pp.end).length;
     const tot = (k) => list.reduce((s, e) => s + T[e.id][k], 0);
     const sheet = document.createElement('div');
     sheet.className = 'print-sheet';
@@ -3112,7 +3113,7 @@
         <div class="rate-opts">${noPin.map((e) => `<button class="btn small" type="button" data-nopin="${e.id}">${esc(empName(e))}</button>`).join('')}</div></section>`
         : `<p class="small pe-allpins">Everyone active has a time clock PIN.</p>`}
       <div class="table-wrap"><table class="people"><thead><tr><th>Name</th><th>Position</th><th class="num">Rate</th><th>Lunch</th><th>Schedule</th><th>Time clock PIN</th></tr></thead>
-        <tbody id="pe-rows">${list.map((e) => `<tr data-emp="${e.id}" class="${e.active ? '' : 'inactive'}"><td><b>${esc(empName(e))}</b>${e.active ? '' : ' <span class="muted small">(not active)</span>'}</td>
+        <tbody id="pe-rows">${list.map((e) => `<tr data-emp="${e.id}" class="${e.active ? '' : 'inactive'}"><td><b>${esc(empName(e))}</b>${e.active ? '' : ' <span class="muted small">(not active)</span>'}${e.paid === false ? ' <span class="tag due">not paid for now</span>' : ''}</td>
           <td>${esc(e.position || '')}</td><td class="num">${e.pay_rate != null ? money(e.pay_rate) : ''}</td>
           <td>${e.lunch_minutes ? `${e.lunch_minutes} min` : '<span class="muted">none</span>'}</td><td>${esc(e.schedule || '')}</td>
           <td>${pinCell(e)}</td></tr>`).join('')
@@ -3182,6 +3183,9 @@
               Leave it empty to count from the tap.</p>` : ''}
           <label class="full">Notes<input name="notes" value="${esc(e.notes)}" maxlength="500"></label>
           <label class="full pill-check"><input type="checkbox" class="check" name="active" ${e.active ? 'checked' : ''}> Active (shows on the time clock)</label>
+          ${state.pay.employees.some((x) => 'paid' in x) ? `<label class="full pill-check"><input type="checkbox" class="check" name="paid" ${e.paid !== false ? 'checked' : ''}> Paid (on payroll)</label>
+            <p class="full muted small">Turn off for someone working without pay for now: they can still use the time clock, but their time stays off
+              the Hours tab, the hours for Patriot and payroll. Turn it back on when they’re paid again: it counts from this pay period on.</p>` : ''}
         </div></div>
         ${id ? `<div class="section" id="pin-sec"><h3 class="sub-h">Time clock PIN</h3>
           <p class="small">${state.pay.pins?.[id] ? `PIN on file: <b class="pin-val">${esc(state.pay.pins[id])}</b>${easyPin(state.pay.pins[id]) ? ' <span class="tag due">easy: change it when they give you theirs</span>' : ''}`
@@ -3198,6 +3202,7 @@
       const row = { first_name: formVal(form, 'first_name'), last_name: formVal(form, 'last_name') || '', position: formVal(form, 'position'),
         pay_rate: form.pay_rate.value === '' ? null : Number(form.pay_rate.value), lunch_minutes: Number(form.lunch_minutes.value),
         schedule: formVal(form, 'schedule'), notes: formVal(form, 'notes'), active: form.active.checked,
+        ...(form.paid ? { paid: form.paid.checked } : {}),
         ...(form.start_time ? { start_time: form.start_time.value || null } : {}) };
       if (!row.first_name) return toast('Enter their first name', true);
       const { error } = id ? await sb.from('employees').update(row).eq('id', id) : await sb.from('employees').insert(row);

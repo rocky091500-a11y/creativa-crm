@@ -1,15 +1,16 @@
 -- Creativa CRM — the scheduled lunch comes off automatically (Payroll → Staff → Lunch).
 -- Run once in the Supabase SQL editor, after 024_scheduled_start.sql. Safe to run again (and run it again after running
--- 008 or 024 again, since those put back their own versions of the functions below).
+-- 008 or 024 again, since those put back their own versions of the functions below). If 026_unpaid_staff.sql has been
+-- run, run 026 again after this.
 --
 --   Staff no longer clock out and back in for lunch: the time clock has just Clock in and Clock out.
 --   lunch_off            the minutes that come off a day: when someone is clocked in more than 6 hours that day, their
 --                        scheduled lunch (30 minutes, 1 hour, none), less any break already off the clock that day (a lunch
 --                        they did clock out for, or leaving and coming back). A short day keeps all its time.
 --   time_entries.lunch_minutes   the scheduled lunch, kept with each stretch of time when it's made, so changing someone's
---                        lunch on the Staff page changes their days from then on and in pay periods not yet entered in
---                        Patriot, never ones already entered. Time from before this file (in periods already entered in
---                        Patriot) has none, so it stays as it was sent.
+--                        lunch on the Staff page changes their days from the current pay period on, never earlier
+--                        periods or ones entered in Patriot. Time from before this file in periods already entered in
+--                        Patriot has none, so it stays as it was sent.
 --   payroll_hours        the same as in 008, with lunch_off taken off each day before overtime is worked out (the
 --                        timesheet shows it as "N min lunch off" under the day's hours).
 --   _timeclock_status    the time clock's hours (today, this week, this pay period) have lunch off the same way, and it
@@ -32,13 +33,20 @@ drop trigger if exists time_entries_lunch on public.time_entries;
 create trigger time_entries_lunch before insert or update of employee_id on public.time_entries
   for each row execute function public.time_entries_lunch();
 
--- Changing someone's lunch changes their time in pay periods not yet entered in Patriot.
+-- Changing someone's lunch changes their time from the current pay period on (not if entered in Patriot). The update runs as the time
+-- clock does (crm.timeclock), so it isn't an office edit of the times and an early clock-in still waiting for its start
+-- time is updated too.
 create or replace function public.employees_lunch()
 returns trigger language plpgsql security definer set search_path = public as '
+declare
+  prev text := coalesce(current_setting(''crm.timeclock'', true), '''');
 begin
+  perform set_config(''crm.timeclock'', ''on'', true);
   update public.time_entries t set lunch_minutes = new.lunch_minutes
    where t.employee_id = new.id and t.lunch_minutes is distinct from new.lunch_minutes
+     and t.work_date >= (public.payroll_period((now() at time zone ''America/New_York'')::date)).period_start
      and not exists (select 1 from public.payroll_periods p where t.work_date between p.period_start and p.period_end);
+  perform set_config(''crm.timeclock'', prev, true);
   return new;
 end';
 drop trigger if exists employees_lunch on public.employees;
@@ -46,10 +54,15 @@ create trigger employees_lunch after update of lunch_minutes on public.employees
   for each row when (new.lunch_minutes is distinct from old.lunch_minutes) execute function public.employees_lunch();
 
 -- Time already in the CRM, outside pay periods entered in Patriot.
-update public.time_entries t set lunch_minutes = e.lunch_minutes
-  from public.employees e
- where e.id = t.employee_id and t.lunch_minutes is null
-   and not exists (select 1 from public.payroll_periods p where t.work_date between p.period_start and p.period_end);
+do '
+begin
+  perform set_config(''crm.timeclock'', ''on'', true);
+  update public.time_entries t set lunch_minutes = e.lunch_minutes
+    from public.employees e
+   where e.id = t.employee_id and t.lunch_minutes is null
+     and not exists (select 1 from public.payroll_periods p where t.work_date between p.period_start and p.period_end);
+  perform set_config(''crm.timeclock'', '''', true);
+end';
 
 -- p_worked: minutes clocked in that day; p_span: from the first clock-in to the last clock-out; p_lunch: the scheduled lunch.
 create or replace function public.lunch_off(p_worked numeric, p_span numeric, p_lunch int)

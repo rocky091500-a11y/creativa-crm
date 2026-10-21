@@ -21,6 +21,7 @@ window.CRM_GUIDE = {
       ['Enrollment', 'Every child: class, status, documents, family contacts, tuition and funding.', [
         'Class cards at the top show how many are enrolled, the capacity, and how many are waiting (and paid registration). Tap a card to filter.',
         'Tick a document (packet, blue form, yellow form, birth certificate) when it comes in; the date is saved.',
+        'Print for inspection: a numbered checklist of every child enrolled, by last name, with their date of birth and the total at the top.',
         'Open a child: start date, status (Enrolled, Waitlist, Withdrawn, Graduated), last day, contacts (Primary = mother, Secondary = father, Emergency), RBT and therapies.',
         'Funding & tuition: tick the program (FES-UA, FES-EO, SR, VPK, Step Up pending) and pick the class rate from the list: until 3:00 or until 5:45 with after care.',
         'A different rate on purpose (a sibling discount)? Type it and write why under “Why the rate is different”.',
@@ -88,6 +89,7 @@ window.CRM_GUIDE = {
       ['Inscripción', 'Cada niño: clase, estado, documentos, contactos de la familia, matrícula y fondos.', [
         'Las tarjetas de clase arriba muestran cuántos hay inscritos, la capacidad, y cuántos esperan (y pagaron la matrícula). Toque una para filtrar.',
         'Marque un documento (paquete, formulario azul, amarillo, acta de nacimiento) cuando llegue; se guarda la fecha.',
+        'Imprimir para inspección: una lista numerada de todos los niños inscritos, por apellido, con su fecha de nacimiento y el total arriba.',
         'Abra un niño: fecha de inicio, estado (Inscrito, Lista de espera, Retirado, Graduado), último día, contactos (Principal = madre, Secundario = padre, Emergencia), RBT y terapias.',
         'Fondos y matrícula: marque el programa (FES-UA, FES-EO, SR, VPK, Step Up pendiente) y elija la tarifa de la clase en la lista: hasta las 3:00 o hasta las 5:45 con cuidado extendido.',
         '¿Una tarifa diferente a propósito (descuento por hermano)? Escríbala y ponga por qué en “Por qué la tarifa es diferente”.',

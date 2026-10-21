@@ -35,7 +35,7 @@
   const INV_STATUS = { paid: 'Paid', partial: 'Partly paid', open: 'Open', overdue: 'Late', void: 'Void',
     check: 'Check amount', missing: 'Not on the sheet',
     not_invoiced: 'Not billed yet', stepup: 'Step Up pending', school_year: 'School-year tuition', not_billed: 'Not billed to family', unset: 'No rate set',
-    none: 'Nothing due' };
+    none: 'Nothing due', paused: 'Paused' };
   const FUNDING = { ...PROGRAMS_FUNDING, private: 'Private pay' };
   const FREQ = { monthly: 'monthly', biweekly: 'biweekly', weekly: 'weekly', school_year: 'a school year' };
   // How many payments of each kind make up a month's tuition on the Tuition page (a school year: 10 months).
@@ -483,6 +483,8 @@
       state.classrooms = c.data;
       state.hasClassRates = c.data.length > 0 && 'rate_full' in c.data[0];   // 020
       state.students = st.data || [];
+      state.hasPause = state.students.length > 0 && 'paused_until' in state.students[0];   // 027
+      if (!state.students.length) state.hasPause = !(await sb.from('students').select('paused_until').limit(1)).error;
       state.settings = set.data || null;
       state.hasV5 = !!state.settings && 'telegram_forms' in state.settings;
       state.hasV6 = !!state.settings && 'billing_anchor' in state.settings;
@@ -1097,6 +1099,19 @@
   }
   const byLastName = (a, b) => lastFirst(a).localeCompare(lastFirst(b), undefined, { sensitivity: 'base' }) || String(a).localeCompare(String(b));
   const sortStudents = (a, b) => byLastName(a.name, b.name);
+  // Paused (027): out from paused_from until paused_until, the day they're back (a Saturday or Sunday counts as the Monday
+  // after), still enrolled. For a billing period the pause has started by (end: its last day), tuition counts from the later
+  // of their start date and the day they're back, like create_period_invoices; earlier periods as usual.
+  const pausedNow = (s) => !!s.paused_until && s.paused_until > todayStr();
+  function backDay(s) {
+    if (!s.paused_until) return null;
+    const dow = new Date(`${s.paused_until}T12:00:00`).getDay();
+    return dow === 6 ? addDays(s.paused_until, 2) : dow === 0 ? addDays(s.paused_until, 1) : s.paused_until;
+  }
+  const pauseBack = (s, end) => (backDay(s) && (!s.paused_from || s.paused_from <= end) ? backDay(s) : null);
+  const firstDay = (s, end) => [s.start_date, pauseBack(s, end)].filter(Boolean).sort().pop() || null;
+  const isBack = (s, end) => { const b = pauseBack(s, end); return !!b && b === firstDay(s, end) && b !== s.start_date; };
+  const pauseTag = (s) => (pausedNow(s) ? ` <span class="tag due" title="${esc(s.pause_note || '')}">Paused until ${esc(fmtDate(s.paused_until))}</span>` : '');
   function upsertStudent(row) {
     const i = state.students.findIndex((x) => x.id === row.id);
     if (i >= 0) state.students[i] = row; else state.students.push(row);
@@ -1139,7 +1154,7 @@
     const today = todayStr();
     const enrolled = state.students.filter((s) => s.status === 'enrolled');
     const kids = enrolled.filter((s) => !s.start_date || s.start_date <= today).sort(sortStudents);
-    const later = enrolled.length - kids.length, noDob = kids.filter((s) => !s.dob).length;
+    const later = enrolled.length - kids.length, noDob = kids.filter((s) => !s.dob).map((s) => s.name);
     const mdy = (d) => (d ? `${d.slice(5, 7)}/${d.slice(8, 10)}/${d.slice(0, 4)}` : '');
     const asOf = new Date(`${today}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
     const sheet = document.createElement('div');
@@ -1147,7 +1162,8 @@
     sheet.setAttribute('role', 'dialog');
     sheet.innerHTML = `<div class="print-bar no-print"><b>For inspection</b>
         <span class="muted small pb-note">${[later && `${later} enrolled ${later === 1 ? 'child starts' : 'children start'} later (not listed)`,
-          noDob && `${noDob} without a date of birth: add it on their page`].filter(Boolean).join(' · ')}</span><span class="spacer"></span>
+          noDob.length && `No date of birth yet: ${esc(noDob.slice(0, 5).join(', '))}${noDob.length > 5 ? ` and ${noDob.length - 5} more` : ''} (add it on their page)`]
+          .filter(Boolean).join(' · ')}</span><span class="spacer"></span>
         <button class="btn primary" type="button" id="in-print">Print / Save as PDF</button>
         <button class="btn" type="button" id="in-close">Close</button></div>
       <article class="receipt inspect-sheet">
@@ -1186,7 +1202,8 @@
           ${wait ? `<span class="tag">${wait} waiting · ${waitL.filter(regPaid).length} paid</span>` : ''}</button>`;
       }).join('')}
         <div class="class-card total"><span class="c-name">Whole school</span><span class="c-count">${enrolled.length}</span>
-          <span class="c-teachers">${waitAll.length} on waiting lists${waitAll.length ? ` (${waitAll.filter(regPaid).length} paid registration)` : ''}</span></div>
+          <span class="c-teachers">${waitAll.length} on waiting lists${waitAll.length ? ` (${waitAll.filter(regPaid).length} paid registration)` : ''}</span>
+          <button class="btn small c-print" id="r-inspect" type="button">Print for inspection</button></div>
       </div>
       <div class="toolbar">
         <input type="search" id="r-q" placeholder="Search student, parent, phone…" value="${esc(f.q)}">
@@ -1196,7 +1213,6 @@
         ${fin ? `<select id="r-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding === 'unset' ? 'private' : f.funding)).join('')}</select>` : ''}
         <span class="spacer"></span>
         <span class="muted small" id="r-count"></span>
-        <button class="btn small" id="r-inspect" type="button">Print for inspection</button>
         <button class="btn small" id="r-csv" type="button">Download CSV</button>
         <button class="btn small primary" id="r-add" type="button">+ Add student</button>
       </div>
@@ -1251,8 +1267,8 @@
       const rows = rosterRows();
       $('#r-count').textContent = `${rows.length} student${rows.length === 1 ? '' : 's'}`;
       $('#roster-rows').innerHTML = rows.map((s) => `<tr data-id="${s.id}" class="${s.status !== 'enrolled' ? 'st-' + s.status : ''}">
-          <td><b>${esc(s.name)}</b>${s.status !== 'enrolled' ? ` <span class="stage-pill st-${s.status}">${STUDENT_STATUS[s.status]}</span>` : ''}
-            <div class="muted small">${esc(s.parent_name || '')}</div></td>
+          <td><b>${esc(s.name)}</b>${s.status !== 'enrolled' ? ` <span class="stage-pill st-${s.status}">${STUDENT_STATUS[s.status]}</span>` : pauseTag(s)}
+            <div class="muted small">${esc([s.parent_name, pausedNow(s) && s.pause_note].filter(Boolean).join(' · '))}</div></td>
           <td>${esc(classroomName(s.classroom_id))}</td>
           <td class="nowrap">${esc(ageOf(s.dob))}</td>
           ${DOCS.map(([k, long]) => `<td class="doc"><input type="checkbox" class="check" data-doc="${k}" ${s[k] ? 'checked' : ''}
@@ -1306,6 +1322,13 @@
           ${fSelect('status', 'Status', Object.entries(STUDENT_STATUS), s.status)}
           ${fInput('start_date', 'Start date', s.start_date, 'date')}
           <span></span>
+          ${state.hasPause ? `<div class="full grid2" id="pause-wrap" ${s.status === 'enrolled' ? '' : 'hidden'}>
+            ${fInput('paused_from', 'Paused from', s.paused_from, 'date')}
+            ${fInput('paused_until', 'Paused until (the day they’re back)', s.paused_until, 'date')}
+            ${fInput('pause_note', 'Why', s.pause_note, 'text', 'maxlength="200" placeholder="e.g. Out sick"')}
+            <p class="full muted small">Out for a while? Put the day they’re back (and when it started, or leave that empty for today). They stay
+              enrolled, but get no tuition bills while they’re away (one week if they’re back in the second week of a billing period). Billing starts
+              again by itself. Leave it empty when they’re here.</p></div>` : ''}
           <div class="full grid2" id="withdraw-wrap" ${LEFT.has(s.status) ? '' : 'hidden'}>
             ${fInput('withdrawn_on', 'Last day at school', s.withdrawn_on, 'date')}
             ${fInput('withdraw_reason', 'Reason / notes', s.withdraw_reason, 'text', 'placeholder="e.g. Moved, went to kindergarten"')}
@@ -1395,6 +1418,7 @@
     if (!id) form.name.focus();
     form.status.addEventListener('change', () => {
       $('#withdraw-wrap', drawer).hidden = !LEFT.has(form.status.value);
+      if ($('#pause-wrap', drawer)) $('#pause-wrap', drawer).hidden = form.status.value !== 'enrolled';
       if (LEFT.has(form.status.value) && !form.withdrawn_on.value) form.withdrawn_on.value = todayStr();
     });
     $$('[data-doc]', drawer).forEach((box) => box.addEventListener('change', () => {
@@ -1510,6 +1534,15 @@
       const patch = {};
       STUDENT_FIELDS.forEach((k) => { patch[k] = formVal(form, k); });
       if (state.hasV6) patch.family_account = formVal(form, 'family_account');
+      if (form.paused_until) {
+        patch.paused_until = patch.status === 'enrolled' ? formVal(form, 'paused_until') : null;
+        patch.paused_from = patch.paused_until ? formVal(form, 'paused_from') || todayStr() : null;
+        patch.pause_note = patch.paused_until ? formVal(form, 'pause_note') : null;
+        if (patch.paused_until && patch.paused_from >= patch.paused_until) {
+          form.paused_until.focus();
+          return toast('The day they’re back has to be after the pause starts', true);
+        }
+      }
       if (!patch.name) { form.name.focus(); return toast('Add the student’s name', true); }
       if (LEFT.has(patch.status)) patch.withdrawn_on = patch.withdrawn_on || todayStr();
       else { patch.withdrawn_on = null; patch.withdraw_reason = null; }
@@ -1543,6 +1576,7 @@
       }
       ctl.dirty = false;
       toast(id ? 'Saved' : `${data.name} added`);
+      if (data.paused_until && state.hasV6) await offerPauseBills(data);
       renderView();
       openStudent(data.id);
     }
@@ -2213,6 +2247,7 @@
       const inv = state.invoices.find((i) => i.student_id === s.id && i.kind === 'tuition' && i.period_start === p && !i.void);
       let status;
       if (inv) status = invoiceStatus(inv);
+      else if (pausedFor(s, p)) status = 'paused';
       else if (hasFunding(s.id, 'stepup_pending')) status = 'stepup';
       else if (fr.bill_family === false) status = 'not_billed';
       else if (fr.tuition_amount == null) status = 'unset';
@@ -2226,9 +2261,26 @@
   const periodAmount = (fr) => round2(Number(fr.tuition_amount) * (fr.tuition_frequency === 'weekly' ? 2 : 1));
   // A child who starts in the second week of a period is billed that one week, due their first Monday (019).
   function periodBill(fr, s, p) {
-    const amount = periodAmount(fr), wk2 = addDays(p, 7);
-    return s.start_date && s.start_date >= wk2 ? { amount: round2(amount / 2), due_date: wk2, note: `Starts ${fmtDate(s.start_date)}: one week` }
+    const amount = periodAmount(fr), wk2 = addDays(p, 7), end = addDays(p, billing().days - 1), first = firstDay(s, end);
+    return first && first >= wk2 ? { amount: round2(amount / 2), due_date: wk2, note: `${isBack(s, end) ? 'Back' : 'Starts'} ${fmtDate(first)}: one week` }
       : { amount, due_date: p };
+  }
+  // Paused (027) and away for the whole billing period.
+  const pausedFor = (s, p) => isBack(s, addDays(p, billing().days - 1)) && firstDay(s, addDays(p, billing().days - 1)) >= addDays(p, billing().days);
+  // Just paused: offer to take off their unpaid tuition bills for periods they're away for (and those bills' unpaid late fees).
+  async function offerPauseBills(s) {
+    const away = state.invoices.filter((i) => i.student_id === s.id && i.kind === 'tuition' && !i.void && i.period_start
+      && !invoicePaid(i) && pausedFor(s, i.period_start));
+    if (!away.length || !confirm(`${s.name} is paused until ${fmtDate(s.paused_until)}. Take off ${away.length === 1 ? 'the unpaid tuition bill' : `${away.length} unpaid tuition bills`}`
+      + ` for ${away.map((i) => fmtPeriod(i.period_start)).join(', ')} (${money(round2(away.reduce((t, i) => t + Number(i.amount), 0)))})?`)) return;
+    const ids = away.map((i) => i.id), fees = state.invoices.filter((f) => ids.includes(f.late_fee_for) && !f.void && !invoicePaid(f));
+    for (const inv of [...away, ...fees]) {
+      const { data, error } = await sb.from('invoices').update({ void: true,
+        note: [inv.note, `Taken off ${fmtDate(todayStr())}: paused until ${fmtDate(s.paused_until)}`].filter(Boolean).join(' · ') }).eq('id', inv.id).select().single();
+      if (error) return fail(error, 'Could not take off the bill');
+      state.invoices = state.invoices.map((i) => (i.id === data.id ? data : i));
+    }
+    toast(`${away.length === 1 ? 'Bill' : `${away.length} bills`} taken off for ${s.name}`);
   }
 
   function renderTuition(el) {
@@ -2260,7 +2312,7 @@
     const familyOf = (sid) => state.students.find((s) => s.id === sid)?.family_account || '';
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
     const late = (i) => { const d = daysBetween(i.due_date, todayStr()); return d <= 0 ? 'current' : d <= 30 ? '1–30 days' : d <= 60 ? '31–60 days' : d <= 90 ? '61–90 days' : 'over 90 days'; };
-    el.innerHTML = `${weekBoxHtml()}<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period" ${before && p <= earliest ? 'disabled' : ''}>‹</button>
+    el.innerHTML = `<div class="month-bar"><button class="btn small" id="p-prev" type="button" aria-label="Previous billing period" ${before && p <= earliest ? 'disabled' : ''}>‹</button>
         <b>${esc(fmtPeriod(p))}, ${p.slice(0, 4)}</b>
         <button class="btn small" id="p-next" type="button" aria-label="Next billing period">›</button>
         ${p !== periodOf(todayStr()) ? '<button class="btn small ghost" id="p-now" type="button">This period</button>' : ''}
@@ -2274,7 +2326,7 @@
       </div>
       <div class="toolbar">
         <input type="search" id="t-q" placeholder="Search student or family…" value="${esc(f.q)}">
-        <select id="t-status">${opt('', 'Everyone', f.status)}${opt('owing', 'Owes money', f.status)}${opt('paid', 'Paid', f.status)}${opt('not_invoiced', 'Not billed yet', f.status)}${opt('stepup', 'Step Up pending', f.status)}${opt('unset', 'No rate set', f.status)}${before ? opt('check', 'Check amount', f.status) + opt('missing', 'Not on the sheet', f.status) : ''}</select>
+        <select id="t-status">${opt('', 'Everyone', f.status)}${opt('owing', 'Owes money', f.status)}${opt('paid', 'Paid', f.status)}${opt('not_invoiced', 'Not billed yet', f.status)}${opt('stepup', 'Step Up pending', f.status)}${state.hasPause ? opt('paused', 'Paused', f.status) : ''}${opt('unset', 'No rate set', f.status)}${before ? opt('check', 'Check amount', f.status) + opt('missing', 'Not on the sheet', f.status) : ''}</select>
         <select id="t-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding)).join('')}</select>
         <span class="spacer"></span>
         ${edit && toBill ? `<button class="btn small primary" id="t-bill" type="button">Bill this period (${toBill})</button>` : ''}
@@ -2394,7 +2446,7 @@
         return true;
       });
       $('#t-rows', el).innerHTML = shown.map((r) => `<tr data-id="${r.s.id}">
-          <td><b>${esc(r.s.name)}</b><div class="muted small">${esc([classroomName(r.s.classroom_id), r.s.family_account].filter(Boolean).join(' · '))}</div></td>
+          <td><b>${esc(r.s.name)}</b>${pauseTag(r.s)}<div class="muted small">${esc([classroomName(r.s.classroom_id), r.s.family_account, pausedNow(r.s) && r.s.pause_note].filter(Boolean).join(' · '))}</div></td>
           <td>${fundingTags(r.s.id)}</td>
           <td class="num">${r.fr.tuition_amount != null ? `${money(r.fr.tuition_amount)}<div class="muted small">${FREQ[r.fr.tuition_frequency] || ''}</div>` : ''}</td>
           <td class="num">${r.inv ? money(r.inv.amount) : r.pre?.with ? `<span class="muted small">with ${esc(r.pre.with.split(' ')[0])}</span>` : ''}
@@ -3661,66 +3713,21 @@
     for (; p <= last; p = addDays(p, days)) out.push(p);
     return out;
   }
-  function childInMonth(rate, freq, start, last, ym) {   // starting in a period's second week pays just that week
+  function childInMonth(rate, freq, start, last, ym, who) {   // starting (or back, who paused) in a period's second week pays just that week
     if (!(Number(rate) > 0)) return 0;
-    const here = (!start || start <= monthEnd(ym)) && (!last || last >= monthStart(ym));
+    const from = (end) => (who ? firstDay(who, end) : start);
+    const here = (!from(monthEnd(ym)) || from(monthEnd(ym)) <= monthEnd(ym)) && (!last || last >= monthStart(ym));
     if (freq === 'monthly') return here ? Number(rate) : 0;
     if (freq === 'school_year') return here && !['06', '07'].includes(ym.slice(5, 7)) ? round2(Number(rate) / 10) : 0;   // 10 payments, Aug–May
     const { days } = billing();
     return round2(periodsIn(ym).reduce((t, p) => {
-      const end = addDays(p, days - 1);
-      if ((start && start > end) || (last && last < p)) return t;
+      const end = addDays(p, days - 1), first = from(end);
+      if ((first && first > end) || (last && last < p)) return t;
       const full = Number(rate) * (freq === 'weekly' ? 2 : 1);
-      return t + (start && start >= addDays(p, 7) ? full / 2 : full);
+      return t + (first && first >= addDays(p, 7) ? full / 2 : full);
     }, 0));
   }
-  // Tuition for one week (Mon–Fri): a weekly rate, half a two-week rate; a school-year rate is a tenth of it a month, Aug–May.
-  // Families pay through holidays and breaks (no credit), so closed days don't change it.
-  function childInWeek(rate, freq, start, last, mon) {
-    if (!(Number(rate) > 0) || (start && start > addDays(mon, 4)) || (last && last < mon)) return 0;
-    const r = Number(rate);
-    if (freq === 'weekly') return r;
-    if (freq === 'biweekly') return r / 2;
-    if (freq === 'school_year') return ['06', '07'].includes(mon.slice(5, 7)) ? 0 : (r / 10) * 12 / 52;
-    return (r * 12) / 52;   // monthly
-  }
   const closuresIn = (from, to) => (state.closures || []).filter((c) => c.starts_on <= to && c.ends_on >= from);
-  function weekTuition(mon) {   // the tuition expected for the week starting that Monday, by who pays
-    const w = { mon, fri: addDays(mon, 4), private: 0, fes: 0, sr: 0, kinder: 0, total: 0, billed: 0, starting: 0, leaving: 0 };
-    const kids = state.students.filter((s) => s.status === 'enrolled' || (LEFT.has(s.status) && s.withdrawn_on && s.withdrawn_on >= mon))
-      .map((s) => ({ fr: state.finance[s.id] || {}, start: s.start_date, last: LEFT.has(s.status) ? s.withdrawn_on : null }))
-      .map((k) => ({ ...k, amount: k.fr.tuition_amount, freq: k.fr.tuition_frequency }))
-      .concat(newFamilies().filter((f) => f.plan === 'start').map((f) => ({ fr: f.fr, start: f.start, last: null, amount: f.rate.amount, freq: f.rate.freq })));
-    kids.forEach(({ fr, start, last, amount, freq }) => {
-      const x = childInWeek(amount, freq, start, last, mon);
-      if (!x) return;
-      w[paysFor(fr)] += x;
-      w.total += x;
-      // What goes on the families' bill every two weeks (create_period_invoices): not Kindergarten (Step Up pending), not "don't bill".
-      if (['weekly', 'biweekly'].includes(freq) && fr.bill_family !== false && paysFor(fr) !== 'kinder') w.billed += x;
-      if (start && start >= mon && start <= w.fri) w.starting++;
-      if (last && last <= w.fri) w.leaving++;
-    });
-    w.closed = closuresIn(mon, w.fri).map((c) => c.name.replace(/ \(staff (not )?paid\)$/, ''));
-    return w;
-  }
-  // The box at the top of Tuition: this week (next week on a weekend) and the three after it.
-  function weekBoxHtml() {
-    const today = nyToday(), dow = new Date(`${today}T12:00:00`).getDay();
-    const first = addDays(today, dow === 0 ? 1 : dow === 6 ? 2 : 1 - dow);
-    const weeks = [0, 1, 2, 3].map((k) => weekTuition(addDays(first, 7 * k)));
-    const w0 = weeks[0], label0 = dow === 0 || dow === 6 ? 'Next week' : 'This week', split = [['private', 'Private-pay families'], ['fes', 'FES / Step Up'], ['sr', 'School Readiness families’ share'], ['kinder', 'Kindergarten (Step Up pending)']]
-      .filter(([k]) => w0[k] > 0);
-    const notes = (w) => [w.starting && `${w.starting} starting`, w.leaving && `${w.leaving} leaving`, ...w.closed.map((c) => `${c}: tuition still due`)].filter(Boolean);
-    return `<section class="panel week-box" id="week-box"><div class="wb-head"><h2>Tuition expected each week</h2>
-        <span class="muted small">From each child’s rate. Two weeks of “on the bill” make one bill; Kindergarten (Step Up) and children not billed to their family aren’t on it.</span></div>
-      <div class="wb-weeks">${weeks.map((w, i) => `<div class="wb-week ${i === 0 ? 'wb-now' : ''}">
-          <span class="wb-label">${i === 0 ? label0 : `Week of ${esc(fmtDate(w.mon))}`}</span>
-          <b>${money0(w.total)}</b><span class="muted small">${esc(fmtDate(w.mon))} – ${esc(fmtDate(w.fri))}</span>
-          ${round2(w.billed) !== round2(w.total) ? `<span class="muted small">On the bill: ${money(round2(w.billed))}</span>` : ''}
-          ${notes(w).map((t) => `<span class="small wb-note">${esc(t)}</span>`).join('')}</div>`).join('')}</div>
-      ${split.length > 1 ? `<p class="small wb-split">${label0}: ${split.map(([k, label]) => `${esc(label)} <b>${money0(w0[k])}</b>`).join(' · ')}</p>` : ''}</section>`;
-  }
   // A family that hasn't started: their own rate, or else their class's full-time rate (every 2 weeks; Kindergarten a school year).
   function startRate(amount, freq, classId) {
     if (Number(amount) > 0) return { amount: Number(amount), freq, cls: false };
@@ -3777,7 +3784,7 @@
     const here = state.students.filter((s) => s.status === 'enrolled' || (LEFT.has(s.status) && s.withdrawn_on && s.withdrawn_on >= from));
     const fin = (s) => state.finance[s.id] || {};
     const per = (fn) => months.map(fn);
-    const tuition = (kids) => per((m) => round2(kids.reduce((t, s) => t + childInMonth(fin(s).tuition_amount, fin(s).tuition_frequency, s.start_date, lastDay(s), m), 0)));
+    const tuition = (kids) => per((m) => round2(kids.reduce((t, s) => t + childInMonth(fin(s).tuition_amount, fin(s).tuition_frequency, s.start_date, lastDay(s), m, s), 0)));
     const claims = M.claims.filter((c) => ccfpTotal(c) > 0).sort((a, b) => b.claim_month.localeCompare(a.claim_month)).slice(0, 3);
     const ccfp = claims.length ? round2(claims.reduce((t, c) => t + ccfpTotal(c), 0) / claims.length) : 0;
     const past = [1, 2, 3].map((k) => shiftMonth(thisMonth(), -k));
@@ -3834,6 +3841,8 @@
     const coming = [
       ...here.filter((s) => s.start_date && s.start_date >= from && s.start_date <= end)
         .map((s) => ({ kind: 'start', who: s.name, on: s.start_date, where: 'Enrolled', rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
+      ...here.filter((s) => backDay(s) && backDay(s) > (s.start_date || '') && backDay(s) >= from && backDay(s) <= end)
+        .map((s) => ({ kind: 'back', who: s.name, on: backDay(s), where: `Paused${s.pause_note ? ': ' + s.pause_note : ''}`, rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
       ...here.filter((s) => lastDay(s) && lastDay(s) <= end)
         .map((s) => ({ kind: 'leave', who: s.name, on: lastDay(s), where: STUDENT_STATUS[s.status], rate: fin(s).tuition_amount, freq: fin(s).tuition_frequency, sid: s.id })),
     ].sort((a, b) => a.on.localeCompare(b.on));
@@ -3970,13 +3979,14 @@
         <div class="table-wrap flat"><table><thead><tr><th>Child</th><th>When</th><th class="num">Tuition</th></tr></thead>
           <tbody id="proj-coming">${P.coming.map((x) => `<tr ${x.sid ? `data-sid="${x.sid}"` : `data-iid="${x.iid}"`} class="proj-${x.kind}">
             <td><b>${esc(x.who)}</b><div class="muted small">${esc(x.where)}</div></td>
-            <td>${x.kind === 'leave' ? 'Last day ' : x.kind === 'maybe' ? 'Could start ' : 'Starts '}${esc(fmtDate(x.on))}</td>
+            <td>${x.kind === 'leave' ? 'Last day ' : x.kind === 'maybe' ? 'Could start ' : x.kind === 'back' ? 'Back ' : 'Starts '}${esc(fmtDate(x.on))}</td>
             <td class="num">${Number(x.rate) > 0 ? `${money(x.rate)}<div class="muted small">${esc(FREQ_TEXT[x.freq] || '')}</div>` : '<span class="muted small">no rate yet</span>'}</td></tr>`).join('')
             || '<tr><td colspan="3" class="muted">No enrolled child starts or leaves in these months. New families are listed above.</td></tr>'}</tbody></table></div></section>
       <details class="panel proj-how"><summary>How it’s worked out</summary>
         <ul class="small">
           <li><b>Tuition</b>: each enrolled child’s rate (on their page) for every billing period they’ll be here, from their start date until a last day set
-            on their page; everyone else is assumed to stay. Families pay full tuition through holidays and breaks, so those don’t change it.
+            on their page; everyone else is assumed to stay. A child paused on their page counts again from the day they’re back.
+            Families pay full tuition through holidays and breaks, so those don’t change it.
             A month where three billing periods start is higher than the others.</li>
           <li><b>Payroll</b>: gross pay from Patriot (the average of the last two payrolls) on each payday. Days on the school calendar marked “staff not paid”
             (Settings → School calendar), like one week of winter break, come off that payroll. A month with three paydays is higher. Taxes the school pays

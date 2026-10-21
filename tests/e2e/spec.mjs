@@ -266,6 +266,24 @@ try {
   await page.click('#in-close');
   await insp.waitFor({ state: 'detached' });
   ok('Enrollment: print for inspection, a numbered list by last name with dates of birth and the total');
+
+  // Pause (027): out sick until a day after this billing period; tagged on Enrollment and Tuition, then cleared.
+  const backOn = new Date(Date.now() + 40 * 864e5).toISOString().slice(0, 10);
+  await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('td').first().click();
+  await drawer.locator('input[name=paused_until]').fill(backOn);
+  await drawer.locator('input[name=pause_note]').fill('Out sick');
+  await drawer.locator('#st-save').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await drawer.locator('[data-close]').first().click();
+  await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('.tag', { hasText: 'Paused until' }).waitFor();
+  assert.ok(await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('text=Out sick').count(), 'why, under the name');
+  await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('td').first().click();
+  await drawer.locator('input[name=paused_until]').fill('');
+  await drawer.locator('#st-save').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await drawer.locator('[data-close]').first().click();
+  assert.equal(await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('.tag', { hasText: 'Paused until' }).count(), 0, 'pause cleared');
+  ok('Enrollment: pause a child until the day they’re back (tagged with why), and clear it');
   await page.click('#r-add');
   await drawer.locator('input[name=name]').fill('Grad Kid');
   await drawer.locator('select[name=status]').selectOption('graduated');
@@ -398,9 +416,7 @@ try {
   assert.match(await tRow('Test Kid Alpha').textContent(), /\$520\.00[\s\S]*Check amount[\s\S]*sheet -\$40\.00/);
   await page.click('#p-now');
   await tRow('Test Kid Alpha').waitFor();
-  assert.equal(await page.locator('#week-box .wb-week').count(), 4, 'this week and the three after it');
-  assert.match(await page.locator('#week-box .wb-split').textContent(), /FES \/ Step Up \$280[\s\S]*School Readiness families’ share \$40/,
-    'a two-week rate is half a week; by who pays');
+  assert.equal(await page.locator('#week-box').count(), 0, 'just the period’s numbers at the top, no weekly box');
   await shot(page, '12-tuition');
   ok('credits: keep a payment as a credit, apply it to an invoice; owed list; FES-UA receipts; next period; Aug–Sep periods show the old sheets');
 
@@ -1328,7 +1344,7 @@ try {
   await page.click('[data-mtab=projection]');
   await page.locator('.proj-summary', { hasText: 'sobrante al mes' }).waitFor();
   await page.click('header nav button[data-view=tuition]');
-  await page.locator('#week-box h2', { hasText: 'Matrícula esperada cada semana' }).waitFor();
+  await page.locator('.stat', { hasText: 'Cobrado este período' }).waitFor();
   assert.equal(await page.locator('#t-q').getAttribute('placeholder'), 'Buscar estudiante o familia…', 'placeholders too');
   await page.click('header nav button[data-view=roster]');
   await page.locator('#roster-rows tr', { hasText: 'Test Kid Alpha' }).waitFor();   // names stay as they are

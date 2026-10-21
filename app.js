@@ -1134,6 +1134,40 @@
     }).sort(sortStudents);
   }
 
+  // For the inspector: a numbered checklist of every child enrolled (and started), by last name, with their date of birth.
+  function showInspectionList() {
+    const today = todayStr();
+    const enrolled = state.students.filter((s) => s.status === 'enrolled');
+    const kids = enrolled.filter((s) => !s.start_date || s.start_date <= today).sort(sortStudents);
+    const later = enrolled.length - kids.length, noDob = kids.filter((s) => !s.dob).length;
+    const mdy = (d) => (d ? `${d.slice(5, 7)}/${d.slice(8, 10)}/${d.slice(0, 4)}` : '');
+    const asOf = new Date(`${today}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    const sheet = document.createElement('div');
+    sheet.className = 'print-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.innerHTML = `<div class="print-bar no-print"><b>For inspection</b>
+        <span class="muted small pb-note">${[later && `${later} enrolled ${later === 1 ? 'child starts' : 'children start'} later (not listed)`,
+          noDob && `${noDob} without a date of birth: add it on their page`].filter(Boolean).join(' · ')}</span><span class="spacer"></span>
+        <button class="btn primary" type="button" id="in-print">Print / Save as PDF</button>
+        <button class="btn" type="button" id="in-close">Close</button></div>
+      <article class="receipt inspect-sheet">
+        <header class="r-band"><img src="/assets/logo.png" alt="${esc(state.settings?.school_name || 'Creativa Academy')}">
+          <div class="r-title"><h1>Children enrolled</h1><span class="r-year">As of ${esc(asOf)}</span></div></header>
+        <p class="inspect-total">Total children enrolled: <b>${kids.length}</b></p>
+        <table class="r-table"><thead><tr><th class="num">#</th><th class="ck-col">✓</th><th>Child’s name</th><th>Date of birth</th></tr></thead>
+          <tbody>${kids.map((s, i) => `<tr><td class="num">${i + 1}</td><td class="ck-col"><span class="ck"></span></td>
+            <td><b>${esc(s.name)}</b></td><td>${esc(mdy(s.dob))}</td></tr>`).join('') || '<tr><td colspan="4">No children enrolled.</td></tr>'}</tbody></table>
+        <p class="r-note">In alphabetical order by last name. Printed ${esc(fmtDateTime(new Date().toISOString()))}.</p>
+      </article>`;
+    document.body.append(sheet);
+    document.body.classList.add('printing');
+    const close = () => { sheet.remove(); document.body.classList.remove('printing'); };
+    $('#in-print', sheet).addEventListener('click', () => window.print());
+    $('#in-close', sheet).addEventListener('click', close);
+    sheet.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') close(); });
+    $('#in-close', sheet).focus();
+  }
+
   function renderRoster(el) {
     if (state.registrations && canViewFinance() && state.rosterTab === 'reg') return renderRegistration(el);
     const f = state.rosterFilters;
@@ -1162,6 +1196,7 @@
         ${fin ? `<select id="r-funding">${opt('', 'Any funding', f.funding)}${Object.entries(FUNDING).map(([k, v]) => opt(k, v, f.funding === 'unset' ? 'private' : f.funding)).join('')}</select>` : ''}
         <span class="spacer"></span>
         <span class="muted small" id="r-count"></span>
+        <button class="btn small" id="r-inspect" type="button">Print for inspection</button>
         <button class="btn small" id="r-csv" type="button">Download CSV</button>
         <button class="btn small primary" id="r-add" type="button">+ Add student</button>
       </div>
@@ -1189,6 +1224,7 @@
     });
     bindRosterTabs(el);
     $('#r-add').addEventListener('click', () => openStudent(null, f.classroom && f.classroom !== 'none' ? { classroom_id: f.classroom } : {}));
+    $('#r-inspect').addEventListener('click', showInspectionList);
     $('#r-csv').addEventListener('click', () => {
       const rows = rosterRows();
       csvDownload(`creativa-students-${todayStr()}.csv`,

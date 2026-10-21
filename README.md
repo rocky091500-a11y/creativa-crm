@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql` and `026_unpaid_staff.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql` and `027_pause.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -371,9 +371,6 @@ each child once, plus Pipeline families with a start date or at Waitlisted. A st
 place) counts as starting (money in); a start date without it, as possible; no start date, not at all. A child on the
 waiting list whose Pipeline stage is earlier is flagged. With no rate, their class's full-time rate is used.
 
-**Tuition** opens with the tuition expected each week: this week (next week on a weekend) and the three after it, from each
-child's rate (a two-week rate is half a week; Kindergarten's school-year rate a tenth a month, Aug–May), by who pays.
-
 **Settings → School calendar** (021) keeps holidays and closed days. Families pay full tuition through them; days marked
 *staff not paid* (one of the two weeks of winter break) come off payroll in the projection.
 
@@ -442,6 +439,23 @@ then **Send test**. The token is stored in Supabase Vault (`telegram_bot_token`)
 Move a family to **Reschedule** (Pipeline, or the stage picker) when their tour has to move. They show on Today
 under *Tours to reschedule* with the old time and call/text buttons, leave the tour calendar, and get no reminder
 email. Moving them back to *Tour scheduled* asks for the new date and time.
+
+## Pausing a child (027)
+
+**Enrollment → (a child) → Paused from / Paused until** (the day they're back; a weekend counts as the Monday after) and
+**Why**: for a child out for a while (sick, a long trip). They stay enrolled (class counts, the inspection list) and show
+"Paused until …" on Enrollment and Tuition. For the billing period the pause starts in and later ones,
+`create_period_invoices` doesn't bill them for a period they're away for, bills one week if they're back in its second
+week, and bills normally from then on; earlier periods are billed as usual. Saving a pause offers to take off their
+unpaid tuition bills (and those bills' late fees) for periods they're away for. Money's projection counts them from the
+day they're back ("Back Jan 4" under Starting and leaving). Billing starts again by itself; change the date if they come
+back early.
+
+## Printing for inspection
+
+**Enrollment → Whole school card → Print for inspection**: a numbered checklist of every child enrolled and started, by
+last name, with first and last name and date of birth, and the total at the top. The screen (not the paper) names
+children without a date of birth.
 
 ## Staff not paid for now (026)
 

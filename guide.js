@@ -21,14 +21,14 @@ window.CRM_GUIDE = {
       ['Enrollment', 'Every child: class, status, documents, family contacts, tuition and funding.', [
         'Class cards at the top show how many are enrolled, the capacity, and how many are waiting (and paid registration). Tap a card to filter.',
         'Tick a document (packet, blue form, yellow form, birth certificate) when it comes in; the date is saved.',
-        'Print for inspection: a numbered checklist of every child enrolled, by last name, with their date of birth and the total at the top.',
+        'Print for inspection (on the Whole school card): a numbered checklist of every child enrolled, by last name, with their date of birth and the total at the top.',
+        'Out for a while (sick)? Open the child and fill in “Paused until” (the day they’re back): no tuition bills until then (saving offers to take off this period’s unpaid bill); billing starts again by itself.',
         'Open a child: start date, status (Enrolled, Waitlist, Withdrawn, Graduated), last day, contacts (Primary = mother, Secondary = father, Emergency), RBT and therapies.',
         'Funding & tuition: tick the program (FES-UA, FES-EO, SR, VPK, Step Up pending) and pick the class rate from the list: until 3:00 or until 5:45 with after care.',
         'A different rate on purpose (a sibling discount)? Type it and write why under “Why the rate is different”.',
         'Brothers and sisters: “Copy from a brother or sister” copies the parents; the same family account bills them together.',
         'Registration 2027–28 (tab at the top): who’s coming back, the class they move up to, the registration fee, and Record payment (with a receipt). Mark “No” for families not returning.']],
       ['Tuition and payments', 'Tuition is billed every two weeks, on Monday, with grace until Friday.', [
-        'The box at the top shows the tuition expected this week and the next three.',
         'Bill this period creates the two-week bills for everyone (children on Step Up pending, with no rate, or not billed to the family are skipped).',
         'Record payment: who paid (parent, FES, SR, VPK), how (cash, check, Zelle, card), and which bill. A payment without a bill stays as a credit.',
         'Each payment has a receipt to print or save as PDF, signed and with the license and tax ID. Print FES-UA receipts prints them for Step Up.',
@@ -89,14 +89,14 @@ window.CRM_GUIDE = {
       ['Inscripción', 'Cada niño: clase, estado, documentos, contactos de la familia, matrícula y fondos.', [
         'Las tarjetas de clase arriba muestran cuántos hay inscritos, la capacidad, y cuántos esperan (y pagaron la matrícula). Toque una para filtrar.',
         'Marque un documento (paquete, formulario azul, amarillo, acta de nacimiento) cuando llegue; se guarda la fecha.',
-        'Imprimir para inspección: una lista numerada de todos los niños inscritos, por apellido, con su fecha de nacimiento y el total arriba.',
+        'Imprimir para inspección (en la tarjeta Toda la escuela): una lista numerada de todos los niños inscritos, por apellido, con su fecha de nacimiento y el total arriba.',
+        '¿Faltará un tiempo (enfermo)? Abra al niño y ponga “En pausa hasta” (el día que regresa): no se cobra matrícula hasta entonces (al guardar, ofrece quitar el cobro sin pagar de este período); el cobro vuelve a empezar solo.',
         'Abra un niño: fecha de inicio, estado (Inscrito, Lista de espera, Retirado, Graduado), último día, contactos (Principal = madre, Secundario = padre, Emergencia), RBT y terapias.',
         'Fondos y matrícula: marque el programa (FES-UA, FES-EO, SR, VPK, Step Up pendiente) y elija la tarifa de la clase en la lista: hasta las 3:00 o hasta las 5:45 con cuidado extendido.',
         '¿Una tarifa diferente a propósito (descuento por hermano)? Escríbala y ponga por qué en “Por qué la tarifa es diferente”.',
         'Hermanos: “Copiar de un hermano o hermana” copia a los padres; la misma cuenta de familia los cobra juntos.',
         'Matrícula 2027–28 (pestaña arriba): quién regresa, la clase a la que pasa, la matrícula y Registrar pago (con recibo). Marque “No” para las familias que no regresan.']],
       ['Matrícula y pagos', 'La matrícula se cobra cada dos semanas, el lunes, con plazo hasta el viernes.', [
-        'El cuadro de arriba muestra la matrícula esperada esta semana y las tres siguientes.',
         'Cobrar este período crea los cobros de dos semanas para todos (se saltan los de Step Up pendiente, sin tarifa o que no se le cobran a la familia).',
         'Registrar pago: quién pagó (padres, FES, SR, VPK), cómo (efectivo, cheque, Zelle, tarjeta) y qué cobro. Un pago sin cobro queda como crédito.',
         'Cada pago tiene un recibo para imprimir o guardar en PDF, firmado y con la licencia y el número fiscal. Imprimir recibos FES-UA los imprime para Step Up.',

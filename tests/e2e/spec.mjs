@@ -284,6 +284,34 @@ try {
   await drawer.locator('[data-close]').first().click();
   assert.equal(await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('.tag', { hasText: 'Paused until' }).count(), 0, 'pause cleared');
   ok('Enrollment: pause a child until the day they’re back (tagged with why), and clear it');
+
+  // Calendar (029): add an activity, see it on the month and on Today, change it, delete it.
+  await page.click('header nav button[data-view=calendar]');
+  await page.locator('.cal-grid .cal-head', { hasText: 'Monday' }).waitFor();
+  await page.click('#cal-add');
+  await drawer.locator('input[name=title]').fill('Picture day');
+  await drawer.locator('textarea[name=details]').fill('1st floor');
+  await drawer.locator('#ev-save').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  const ev = page.locator('.cal-grid .cal-item', { hasText: 'Picture day' });
+  const weekendNow = await page.evaluate(() => [0, 6].includes(new Date().getDay()));
+  if (!weekendNow) await ev.waitFor();   // a weekday: in today's box (a weekend day goes in the week's first column)
+  assert.equal(await page.locator('.cal-grid .cal-item', { hasText: 'Picture day' }).count(), 1, 'on the calendar once');
+  await page.click('header nav button[data-view=today]');
+  await page.locator('.cal-soon .cal-item', { hasText: 'Picture day' }).waitFor();
+  assert.match(await page.locator('.cal-soon').textContent(), /Today[\s\S]*Picture day[\s\S]*1st floor/);
+  await page.click('#see-cal');
+  await page.locator('.cal-grid .cal-item', { hasText: 'Picture day' }).click();
+  await drawer.locator('input[name=title]').fill('Picture day (Christmas)');
+  await drawer.locator('#ev-save').click();
+  await page.locator('.cal-grid .cal-item', { hasText: 'Picture day (Christmas)' }).waitFor();
+  await page.locator('.cal-grid .cal-item', { hasText: 'Picture day (Christmas)' }).click();
+  await drawer.locator('#ev-del').click();   // confirm() accepted
+  await page.waitForSelector('#toast:has-text("Deleted")');
+  assert.equal(await page.locator('.cal-grid .cal-item', { hasText: 'Picture day' }).count(), 0);
+  ok('Calendar: add an activity, see it on the month and on Today, change it, delete it');
+  await page.click('header nav button[data-view=roster]');
+  await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).waitFor();
   await page.click('#r-add');
   await drawer.locator('input[name=name]').fill('Grad Kid');
   await drawer.locator('select[name=status]').selectOption('graduated');

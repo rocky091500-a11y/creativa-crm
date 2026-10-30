@@ -21,6 +21,7 @@ window.CRM_GUIDE = {
       ['Enrollment', 'Every child: class, status, documents, family contacts, tuition and funding.', [
         'Class cards at the top show how many are enrolled, the capacity, and how many are waiting (and paid registration). Tap a card to filter.',
         'Tick a document (packet, blue form, yellow form, birth certificate) when it comes in; the date is saved.',
+        'Calendar: the month at school (activities, reminders for families, each week’s theme and menu, closed days, tuition days and birthdays). Tap a day to add something; Today shows this week.',
         'Print for inspection (on the Whole school card): a numbered checklist of every child enrolled, by last name, with their date of birth and the total at the top.',
         'Out for a while (sick)? Open the child and fill in “Paused until” (the day they’re back): no tuition bills until then (saving offers to take off this period’s unpaid bill); billing starts again by itself.',
         'Open a child: start date, status (Enrolled, Waitlist, Withdrawn, Graduated), last day, contacts (Primary = mother, Secondary = father, Emergency), RBT and therapies.',
@@ -89,6 +90,7 @@ window.CRM_GUIDE = {
       ['Inscripción', 'Cada niño: clase, estado, documentos, contactos de la familia, matrícula y fondos.', [
         'Las tarjetas de clase arriba muestran cuántos hay inscritos, la capacidad, y cuántos esperan (y pagaron la matrícula). Toque una para filtrar.',
         'Marque un documento (paquete, formulario azul, amarillo, acta de nacimiento) cuando llegue; se guarda la fecha.',
+        'Calendario: el mes en la escuela (actividades, recordatorios para las familias, el tema y el menú de cada semana, días cerrados, días de matrícula y cumpleaños). Toque un día para agregar algo; Hoy muestra esta semana.',
         'Imprimir para inspección (en la tarjeta Toda la escuela): una lista numerada de todos los niños inscritos, por apellido, con su fecha de nacimiento y el total arriba.',
         '¿Faltará un tiempo (enfermo)? Abra al niño y ponga “En pausa hasta” (el día que regresa): no se cobra matrícula hasta entonces (al guardar, ofrece quitar el cobro sin pagar de este período); el cobro vuelve a empezar solo.',
         'Abra un niño: fecha de inicio, estado (Inscrito, Lista de espera, Retirado, Graduado), último día, contactos (Principal = madre, Secundario = padre, Emergencia), RBT y terapias.',

@@ -448,7 +448,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, rg] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -469,6 +469,7 @@
       canOffice() ? selectAll('todos', 'due_on') : Promise.resolve({ error: true }),
       sb.from('inquiries').select('start_on,reg_paid_on').limit(1),                                   // missing until 019
       sb.from('school_closures').select('*').order('starts_on'),                                       // missing until 021
+      sb.from('school_events').select('*').order('starts_on'),                                         // missing until 029
       fin ? selectAll('registrations', 'created_at') : Promise.resolve({ error: true }),              // missing until 023
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
@@ -510,6 +511,7 @@
     state.hasTodos = !td.error;
     state.hasStartOn = !so.error;
     state.closures = cl.error ? null : cl.data;
+    state.events = ev.error ? null : ev.data;
     state.registrations = rg.error ? null : rg.data;
     state.todos = td.error ? [] : td.data;
     watchInquiries();
@@ -578,7 +580,7 @@
   const VIEWS = { today: 'Today', board: 'Pipeline', list: 'All inquiries' };
 
   function renderShell() {
-    const views = { ...VIEWS,
+    const views = { today: VIEWS.today, ...(state.events ? { calendar: 'Calendar' } : {}), ...VIEWS,
       ...(state.hasEnrollment ? { roster: 'Enrollment' } : {}),
       ...(state.hasEnrollment && canViewFinance() ? { tuition: 'Tuition', reports: 'Reports' } : {}),
       ...(canPayroll() ? { payroll: 'Payroll' } : {}),
@@ -619,7 +621,7 @@
     if (!el) return;
     ({ today: renderToday, board: renderBoard, list: renderList, staff: renderStaff,
       roster: renderRoster, tuition: renderTuition, reports: renderReports, payroll: renderPayroll, changes: renderChanges, messages: renderMessages,
-      money: renderMoney, todo: renderTodo })[state.view](el);
+      money: renderMoney, todo: renderTodo, calendar: renderCalendar })[state.view](el);
   }
 
   // ───────────── filters ─────────────
@@ -717,6 +719,7 @@
         ${state.hasEnrollment ? `<div class="stat"><b>${state.students.filter((s) => s.status === 'enrolled').length}</b><span>Students enrolled now</span></div>` : ''}
       </div>
       <div class="today-grid">
+        ${state.events || state.closures ? weekAtSchoolHtml() : ''}
         ${canPayroll() ? '<section class="panel staff-today" id="staff-today"><h2>Staff today</h2><p class="muted small">Loading…</p></section>' : ''}
         <section class="panel"><h2>Follow-ups due</h2>
           ${due.map((i) => row(i, i.next_follow_up < today ? `<span class="tag overdue">overdue · ${fmtDate(i.next_follow_up)}</span>` : '<span class="tag due">today</span>')).join('')
@@ -745,6 +748,139 @@
     const todoBox = $('.today-todo', el);
     if (todoBox) bindTodos(todoBox, renderView);
     $('#see-todo', el)?.addEventListener('click', () => { state.view = 'todo'; store.set('view', 'todo'); renderShell(); });
+    $('#see-cal', el)?.addEventListener('click', () => { state.view = 'calendar'; store.set('view', 'calendar'); renderShell(); });
+  }
+
+  // ───────────── Calendar (029) ─────────────
+  // The school's month: activities and reminders for families, each week's theme and menu (school_events), closed days
+  // (school_closures), tuition days (billing Mondays) and the children's birthdays (their dates of birth).
+  const EVENT_KIND = { event: 'Activity', reminder: 'Reminder for families', theme: 'Theme of the week', menu: 'Menu of the week' };
+  const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const onDay = (x, day) => x.starts_on <= day && (x.ends_on || x.starts_on) >= day;
+  const birthdaysOn = (day) => (state.students || []).filter((s) => s.status === 'enrolled' && s.dob && s.dob.slice(5) === day.slice(5)).sort(sortStudents);
+  function dayItems(day) {
+    const items = [];
+    (state.closures || []).filter((c) => onDay(c, day))
+      .forEach((c) => items.push({ cls: 'cal-closed', text: `School closed: ${c.name.replace(/ \(staff (not )?paid\)$/, '')}` }));
+    if (state.hasV6 && periodOf(day) === day) items.push({ cls: 'cal-tuition', text: 'Tuition due' });
+    (state.events || []).filter((e) => (e.kind === 'event' || e.kind === 'reminder') && onDay(e, day))
+      .forEach((e) => items.push({ cls: `cal-${e.kind}`, text: e.title, details: e.details, id: e.id }));
+    birthdaysOn(day).forEach((s) => items.push({ cls: 'cal-bday', text: `Birthday: ${s.name}` }));
+    return items;
+  }
+  const weekEvents = (mon) => (state.events || []).filter((e) => (e.kind === 'theme' || e.kind === 'menu')
+    && e.starts_on <= addDays(mon, 4) && (e.ends_on || e.starts_on) >= mon).sort((a, b) => (a.kind === 'theme' ? 0 : 1) - (b.kind === 'theme' ? 0 : 1));
+  const calItem = (x) => `<li class="cal-item ${x.cls}" ${x.id ? `data-ev="${x.id}"` : ''}>${esc(x.text)}${x.details ? `<span class="cal-det">${esc(x.details)}</span>` : ''}</li>`;
+  const weekLine = (e) => `<div class="cal-${e.kind}" data-ev="${e.id}"><span class="cal-lbl">${e.kind === 'theme' ? 'Theme' : 'Menu'}</span>${esc(e.title)}</div>`;
+  const mondayOf = (day) => addDays(day, -((new Date(`${day}T12:00:00`).getDay() + 6) % 7));
+
+  function renderCalendar(el) {
+    const ym = state.calMonth || (state.calMonth = thisMonth()), today = todayStr(), edit = canOffice();
+    const first = monthStart(ym), last = monthEnd(ym);
+    const weeks = [];
+    for (let mon = mondayOf(first); mon <= last; mon = addDays(mon, 7)) weeks.push(mon);   // a week with a weekend day in the month counts too
+    const cell = (day, i) => {
+      const inMonth = day.slice(0, 7) === ym, items = inMonth ? dayItems(day) : [];
+      return `<div class="cal-day${inMonth ? '' : ' cal-out'}${day === today ? ' cal-today' : ''}${items.length ? '' : ' cal-empty'}" ${inMonth && edit ? `data-day="${day}"` : ''}>
+        <span class="cal-date"><span class="cal-wd">${WEEKDAYS[i]}</span> ${Number(day.slice(8))}</span>
+        <ul class="cal-list">${items.map(calItem).join('')}</ul></div>`;
+    };
+    const weekCell = (mon) => {
+      const w = weekEvents(mon);
+      const weekend = [addDays(mon, 5), addDays(mon, 6)].filter((d) => d.slice(0, 7) === ym)
+        .flatMap((d) => dayItems(d).map((x) => ({ ...x, text: `${dayLabel(d)}: ${x.text}` })));
+      return `<div class="cal-week${w.length || weekend.length ? '' : ' cal-empty'}">${w.map(weekLine).join('')}
+        ${weekend.length ? `<ul class="cal-list cal-weekend">${weekend.map(calItem).join('')}</ul>` : ''}</div>`;
+    };
+    const bdays = (state.students || []).filter((s) => s.status === 'enrolled' && s.dob && s.dob.slice(5, 7) === ym.slice(5))
+      .sort((a, b) => a.dob.slice(8).localeCompare(b.dob.slice(8)) || sortStudents(a, b));
+    el.innerHTML = `<div class="month-bar"><button class="btn small" id="cal-prev" type="button" aria-label="Previous month">‹</button>
+        <b>${esc(fmtMonth(ym))}</b>
+        <button class="btn small" id="cal-next" type="button" aria-label="Next month">›</button>
+        ${ym !== thisMonth() ? '<button class="btn small ghost" id="cal-now" type="button">This month</button>' : ''}
+        <span class="spacer"></span>
+        ${edit ? '<button class="btn small primary" id="cal-add" type="button">+ Add to calendar</button>' : ''}</div>
+      <div class="cal-wrap">
+        <div class="cal-grid">
+          <div class="cal-head">Week</div>${WEEKDAYS.map((d) => `<div class="cal-head">${d}</div>`).join('')}
+          ${weeks.map((mon) => weekCell(mon) + [0, 1, 2, 3, 4].map((i) => cell(addDays(mon, i), i)).join('')).join('')}
+        </div>
+        <aside class="panel cal-side"><h3>Birthdays</h3>
+          <ul class="cal-list">${bdays.map((s) => `<li><span class="muted">${Number(ym.slice(5))}/${Number(s.dob.slice(8))}</span> ${esc(s.name)}</li>`).join('')
+            || '<li class="muted small">No birthdays this month.</li>'}</ul></aside>
+      </div>
+      <p class="muted small">${edit ? 'Tap a day to add something to it, or tap an activity, theme or menu to change it. ' : ''}Closed days are on Settings → School calendar;
+        tuition days come from the billing schedule, and birthdays from each child’s date of birth.</p>`;
+    const go = (m) => { state.calMonth = m; renderCalendar(el); };
+    $('#cal-prev', el).addEventListener('click', () => go(shiftMonth(ym, -1)));
+    $('#cal-next', el).addEventListener('click', () => go(shiftMonth(ym, 1)));
+    $('#cal-now', el)?.addEventListener('click', () => go(thisMonth()));
+    if (!edit) return;
+    $('#cal-add', el).addEventListener('click', () => openEvent({ starts_on: ym === thisMonth() ? today : first }));
+    $$('.cal-grid [data-ev]', el).forEach((x) => x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEvent((state.events || []).find((v) => v.id === x.dataset.ev));
+    }));
+    $$('.cal-day[data-day]', el).forEach((d) => d.addEventListener('click', () => openEvent({ starts_on: d.dataset.day })));
+  }
+
+  // Add or change one thing on the calendar.
+  function openEvent(ev0) {
+    if (!ev0) return;
+    const isNew = !ev0.id, ev = { kind: 'event', title: '', details: '', ends_on: null, ...ev0 };
+    const ctl = mountDrawer({
+      title: isNew ? 'Add to the calendar' : esc(ev.title),
+      sub: isNew ? '' : esc(EVENT_KIND[ev.kind]),
+      body: `<div class="section"><div class="grid2">
+          <label class="full">What<input name="title" value="${esc(ev.title)}" maxlength="120" required placeholder="e.g. Christmas pictures"></label>
+          ${fSelect('kind', 'Kind', Object.entries(EVENT_KIND), ev.kind)}
+          <span></span>
+          ${fInput('starts_on', 'On (or from)', ev.starts_on, 'date', 'required')}
+          ${fInput('ends_on', 'Until (if more than one day)', ev.ends_on || '', 'date')}
+          <label class="full">Details<textarea name="details" maxlength="500" rows="3" placeholder="e.g. 1st floor and the 3s classes">${esc(ev.details || '')}</textarea></label>
+          <p class="full muted small">A theme or a menu runs all week: put its Monday and Friday.</p>
+        </div></div>`,
+      foot: `${isNew ? '' : '<button class="btn danger" id="ev-del" type="button">Delete</button>'}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="ev-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    $('#ev-save', drawer).addEventListener('click', async () => {
+      const row = { title: formVal(form, 'title'), kind: form.kind.value, starts_on: form.starts_on.value, ends_on: form.ends_on.value || null,
+        details: formVal(form, 'details') };
+      if (!row.title) { form.title.focus(); return toast('Say what it is', true); }
+      if (!row.starts_on) { form.starts_on.focus(); return toast('Pick the day', true); }
+      if (row.ends_on === row.starts_on) row.ends_on = null;
+      if (row.ends_on && row.ends_on < row.starts_on) { form.ends_on.focus(); return toast('“Until” has to be after the first day', true); }
+      const { data, error } = isNew ? await sb.from('school_events').insert(row).select().single()
+        : await sb.from('school_events').update(row).eq('id', ev.id).select().single();
+      if (error) return fail(error, 'Could not save');
+      state.events = [...(state.events || []).filter((x) => x.id !== data.id), data].sort((a, b) => a.starts_on.localeCompare(b.starts_on));
+      ctl.dirty = false;
+      closeDrawer();
+      toast('Saved');
+      renderView();
+    });
+    $('#ev-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Delete “${ev.title}” from the calendar?`)) return;
+      const { error } = await sb.from('school_events').delete().eq('id', ev.id);
+      if (error) return fail(error, 'Could not delete');
+      state.events = state.events.filter((x) => x.id !== ev.id);
+      ctl.dirty = false;
+      closeDrawer();
+      toast('Deleted');
+      renderView();
+    });
+  }
+
+  // Today: what's on at school today and over the next week.
+  function weekAtSchoolHtml() {
+    const today = todayStr(), w = weekEvents(mondayOf(today));
+    const rows = Array.from({ length: 7 }, (_, i) => addDays(today, i)).map((d) => [d, dayItems(d)]).filter(([, xs]) => xs.length);
+    return `<section class="panel cal-soon"><h2 class="h-row">This week at school
+        ${state.events ? '<button class="btn ghost small" type="button" id="see-cal">Calendar</button>' : ''}</h2>
+      ${w.map(weekLine).join('')}
+      ${rows.map(([d, xs]) => `<div class="cal-row"><b>${d === today ? 'Today' : esc(dayLabel(d))}</b><ul class="cal-list">${xs.map(calItem).join('')}</ul></div>`).join('')
+        || '<p class="empty">Nothing on the calendar for the next 7 days.</p>'}</section>`;
   }
 
   // Who's at work right now, from the time clock: in (since when), at lunch, gone for the day, not in yet (and how late).

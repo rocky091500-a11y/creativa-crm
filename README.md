@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql` and `027_pause.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql` and `028_website_form_backup.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -416,6 +416,25 @@ repeats, and how many days before to remind. From then until it's checked off it
 counted on the To do tab; a repeating one comes back for its next date when checked off. It starts with the food
 program claim and the SR and VPK attendance, due the 1st of every month, reminded a week before. Reminders stay in the
 CRM.
+
+## Website forms: Netlify's copy as a backup (028)
+
+The website sends each enrollment form to the CRM from the family's browser (with the robot check) and to Netlify. If
+the browser copy fails (the robot check expired while they typed, the phone dropped the connection as the thank-you
+page opened), the request used to reach Netlify, and anything Netlify passes it to, but not the CRM. Now Netlify also
+sends its copy to the CRM's `website-form` function, signed with a shared secret, and `submit_inquiry_netlify()` saves
+it unless the CRM already has it (the same Netlify submission, or the browser copy: same form, same email or phone,
+within an hour). Blocked senders and the per-device limit still apply; only the server can call it.
+
+Setup, once:
+1. Run `028_website_form_backup.sql` in Supabase.
+2. The CRM's Netlify site → Site configuration → Environment variables: add `WEBSITE_FORM_SECRET` (a long random text)
+   and make sure `SUPABASE_SERVICE_ROLE_KEY` is there (tour emails use it too). Redeploy so the function sees them.
+3. The **website's** Netlify site → Site configuration → Forms → Form notifications → Add notification → Outgoing
+   webhook: event *New form submission*, URL `https://crm.creativaacademy.com/.netlify/functions/website-form`, form
+   *Any form*, **JWS secret token** = the same text as `WEBSITE_FORM_SECRET`. Save.
+
+Netlify's function log shows each one: `saved`, `already in the CRM`, or `not saved: …` (blocked sender, a bot).
 
 ## Telegram alerts
 

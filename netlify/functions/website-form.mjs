@@ -18,21 +18,28 @@ const b64url = (buf) => Buffer.from(buf).toString('base64').replace(/=+$/, '').r
 const fromB64url = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 
 // Netlify signs each webhook with a JWS (HS256) whose payload is {"iss": "netlify", "sha256": <hex SHA-256 of the body>}.
-export function validSignature(jws, body, secret) {
-  const parts = String(jws || '').split('.');
-  if (parts.length !== 3 || !secret) return false;
+// Returns '' when it's valid, otherwise why not (for the log; never the secret or the signature itself).
+export function signatureProblem(jws, body, secret) {
+  if (!jws) return 'no X-Webhook-Signature header (is the JWS secret token set on the webhook?)';
+  const parts = String(jws).split('.');
+  if (parts.length !== 3) return `the signature isn't a JWS (${parts.length} parts)`;
   const want = Buffer.from(b64url(createHmac('sha256', secret).update(`${parts[0]}.${parts[1]}`).digest()));
   const got = Buffer.from(parts[2]);
-  if (want.length !== got.length || !timingSafeEqual(want, got)) return false;
+  if (want.length !== got.length || !timingSafeEqual(want, got)) {
+    return 'signed with a different secret: the JWS secret token on the webhook must match WEBSITE_FORM_SECRET exactly';
+  }
   try {
     const header = JSON.parse(fromB64url(parts[0]).toString('utf8'));
     const claims = JSON.parse(fromB64url(parts[1]).toString('utf8'));
-    return header.alg === 'HS256' && claims.iss === 'netlify'
-      && claims.sha256 === createHash('sha256').update(body).digest('hex');
+    if (header.alg !== 'HS256') return `unexpected algorithm ${header.alg}`;
+    if (claims.iss !== 'netlify') return `unexpected issuer ${claims.iss}`;
+    if (claims.sha256 !== createHash('sha256').update(body).digest('hex')) return 'the body doesn\'t match its signature';
+    return '';
   } catch {
-    return false;
+    return 'unreadable signature';
   }
 }
+export const validSignature = (jws, body, secret) => !!secret && signatureProblem(jws, body, secret) === '';
 
 // For tests: what Netlify would put in the X-Webhook-Signature header.
 export function sign(body, secret) {
@@ -48,16 +55,21 @@ export async function handle(req, env, fetchImpl = fetch, log = console.log) {
     return new Response('Not configured', { status: 503 });
   }
   const body = await req.text();
-  if (!validSignature(req.headers.get('x-webhook-signature'), body, env.WEBSITE_FORM_SECRET)) {
-    log('website-form: refused a request without a valid Netlify signature');
+  const problem = signatureProblem(req.headers.get('x-webhook-signature'), body, env.WEBSITE_FORM_SECRET);
+  if (problem) {
+    log(`website-form: refused: ${problem}`);
     return new Response('Forbidden', { status: 403 });
   }
   let sub;
-  try { sub = JSON.parse(body); } catch { return new Response('Bad request', { status: 400 }); }
+  try { sub = JSON.parse(body); } catch { log('website-form: the body isn\'t JSON'); return new Response('Bad request', { status: 400 }); }
+  if (sub && sub.payload && typeof sub.payload === 'object') sub = sub.payload;   // some Netlify events wrap the submission
   const data = sub && typeof sub.data === 'object' && sub.data ? sub.data : {};
   const form = sub?.form_name || data['form-name'] || '';
-  if (!FORMS.has(form)) return new Response('Not a CRM form');
-  if (!sub.id) return new Response('Bad request', { status: 400 });
+  if (!FORMS.has(form)) {
+    log(`website-form: skipped form "${form}" (not a CRM form; the request had ${Object.keys(sub || {}).slice(0, 12).join(', ')})`);
+    return new Response('Not a CRM form');
+  }
+  if (!sub.id) { log(`website-form: ${form} without a submission id`); return new Response('Bad request', { status: 400 }); }
 
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
   const url = `${(env.SUPABASE_URL || DEFAULT_SUPABASE_URL).replace(/\/$/, '')}/rest/v1/rpc/submit_inquiry_netlify`;

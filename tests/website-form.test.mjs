@@ -47,6 +47,21 @@ test('no signature, a wrong secret, or a changed body: refused, nothing sent to 
   assert.equal(validSignature(sign(body, SECRET), body, ''), false);
 });
 
+test('a submission wrapped in {payload} is read too; the log says why one is refused', async () => {
+  const body = JSON.stringify({ payload: submission });
+  const { calls, fetchImpl } = fakeSupabase('saved');
+  const res = await handle(request(body, sign(body, SECRET)), env, fetchImpl, quiet);
+  assert.equal(await res.text(), 'saved');
+  assert.equal(calls[0].body.p_netlify_id, '6720a1b2c3');
+  const logs = [];
+  const plain = JSON.stringify(submission);
+  await handle(request(plain, sign(plain, 'some-other-secret')), env, fakeSupabase().fetchImpl, (m) => logs.push(m));
+  await handle(request(plain, null), env, fakeSupabase().fetchImpl, (m) => logs.push(m));
+  assert.match(logs[0], /different secret/);
+  assert.match(logs[1], /no X-Webhook-Signature/);
+  assert.ok(logs.every((m) => !m.includes(SECRET)), 'the secret is never logged');
+});
+
 test('not set up yet: 503, and only POST', async () => {
   const body = JSON.stringify(submission);
   const { calls, fetchImpl } = fakeSupabase();

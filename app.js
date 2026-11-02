@@ -822,8 +822,10 @@
   const weekEvents = (mon, v = {}) => (state.events || []).filter((e) => (e.kind === 'theme' || e.kind === 'menu')
     && e.starts_on <= addDays(mon, 4) && (e.ends_on || e.starts_on) >= mon && (!v.family || familyShows(e, v)))
     .sort((a, b) => (a.kind === 'theme' ? 0 : 1) - (b.kind === 'theme' ? 0 : 1));
+  // Possible dates in a few words: "Nov 10 or Nov 17", or "Dec 10 – Dec 18 (7 possible days)".
+  const optionsText = (ds, f = fmtDate) => (ds.length <= 3 ? ds.map(f).join(' or ') : `${f(ds[0])} – ${f(ds[ds.length - 1])} (${ds.length} possible days)`);
   const calItem = (x) => `<li class="cal-item ${x.cls}${x.draft ? ' cal-draft' : ''}${x.replaced ? ' cal-replaced' : ''}" ${x.id ? `data-ev="${x.id}"` : ''}>${
-    x.tentative ? `<span class="cal-flag">Not decided: ${esc(x.tentative.map(fmtDate).join(' or '))}</span>` : x.draft ? '<span class="cal-flag">Draft</span>' : ''}${
+    x.tentative ? `<span class="cal-flag">Not decided: ${esc(optionsText(x.tentative))}</span>` : x.draft ? '<span class="cal-flag">Draft</span>' : ''}${
     x.replaced ? '<span class="cal-flag">A draft replaces this</span>' : ''}${esc(x.text)}${x.aud ? `<span class="cal-aud">${esc(x.aud)}</span>` : ''}${
     x.details ? `<span class="cal-det">${esc(x.details)}</span>` : ''}${x.prep ? `<span class="cal-prep">${x.prep} prep</span>` : ''}</li>`;
   const weekLine = (e) => `<div class="cal-${e.kind}${isDraft(e) ? ' cal-draft' : ''}" data-ev="${e.id}"><span class="cal-lbl">${e.kind === 'theme' ? 'Theme' : 'Menu'}${isDraft(e) ? ' · draft' : ''}</span>${esc(e.title)}</div>`;
@@ -929,7 +931,7 @@
     return r;
   }
   const activitiesOn = (day) => (state.events || []).filter((e) => ['event', 'closure'].includes(e.kind) && settled(e) && onDay(e, day));
-  const whenText = (e) => (pendingDate(e) ? e.date_options.map(dayLabel).join(' or ')
+  const whenText = (e) => (pendingDate(e) ? optionsText(e.date_options, dayLabel)
     : `${dayLabel(e.starts_on)}${e.ends_on && e.ends_on !== e.starts_on ? ` – ${dayLabel(e.ends_on)}` : ''}`);
   function renderPlanCheck(el) {
     const ym = state.calMonth || (state.calMonth = thisMonth());

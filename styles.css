@@ -761,3 +761,31 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
   .cal-wd { display: inline; }
   .cal-row { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* Pick-up, allergies and medicine (030) */
+.tag.allergy { background: #F3D9D4; color: var(--danger); font-weight: 600; }
+.allergy-alert { background: #F3D9D4; color: var(--danger); border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; }
+.allergy-text { color: var(--danger); }
+.pu-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.pu-card { background: var(--white); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; cursor: pointer; }
+.pu-card:hover, .pu-card:focus { outline: 2px solid var(--line); }
+.pu-kid { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; margin-bottom: 6px; }
+.pu-kid .muted { margin-left: auto; }
+.pu-people { list-style: none; margin: 0; padding: 0; }
+.pu-people li { display: grid; grid-template-columns: 1fr auto; gap: 0 10px; padding: 5px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.pu-people li .muted { grid-column: 1; font-size: 12px; }
+.pu-people li a, .pu-people li > .small { grid-column: 2; grid-row: 1 / span 2; align-self: center; white-space: nowrap; }
+.health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px; align-items: start; }
+.health-grid .table-wrap { box-shadow: none; }
+.health-grid > .panel { margin-top: 0; }
+.med-due { list-style: none; margin: 0 0 8px; padding: 0; }
+.med-due li { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid var(--line); }
+.med-due li:first-child { border-top: 0; }
+.med-due .linkish { flex: 1; min-width: 0; display: flex; gap: 8px; flex-wrap: wrap; background: none; border: 0; padding: 0; text-align: left;
+  font: inherit; color: inherit; cursor: pointer; }
+.med-due .linkish span { color: var(--ink-soft); }
+.pickup-sheet .pu-line { padding: 1px 0; color: var(--ink); }
+.pickup-sheet .pu-allergy { color: var(--danger); font-size: 12px; font-weight: 600; }
+.receipt.inspect-sheet .r-table td.allergy-text { color: var(--danger); }
+@media (max-width: 720px) { .health-grid { grid-template-columns: 1fr; } .pu-list { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .seg { border-radius: 16px; } }

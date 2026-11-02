@@ -312,6 +312,51 @@ try {
   ok('Calendar: add an activity, see it on the month and on Today, change it, delete it');
   await page.click('header nav button[data-view=roster]');
   await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).waitFor();
+
+  // Pick-up, allergies and medicine (030): an allergy and an EpiPen on the child's page, an Authorized pick-up person;
+  // the Pick-up list finds them, Allergies & medicine lists both, and Today warns the EpiPen expires soon.
+  const openKid = () => page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('td').first().click();
+  await openKid();
+  await drawer.locator('input[name=allergies]').fill('Peanuts');
+  await drawer.locator('#st-save').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await drawer.locator('[data-close]').first().click();
+  await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('.tag.allergy').waitFor();
+  await openKid();
+  assert.match(await drawer.locator('.allergy-alert').textContent(), /Allergies: Peanuts/);
+  await drawer.locator('#med-add').click();
+  await drawer.locator('input[name=name]').fill('EpiPen Jr');
+  await drawer.locator('input[name=expires_on]').fill(new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10));
+  await drawer.locator('#md-save').click();
+  await page.waitForSelector('#toast:has-text("Medicine saved")');
+  await drawer.locator('[data-med]').waitFor();   // back on the child's page, with the medicine
+  await drawer.locator('#contact-add').click();
+  await drawer.locator('select[name=role]').selectOption('pickup');
+  await drawer.locator('input[name=relationship]').fill('Grandmother');
+  await drawer.locator('input[name=first_name]').fill('Rosa');
+  await drawer.locator('input[name=last_name]').fill('Lima');
+  await drawer.locator('input[name=cell_phone]').fill('(305) 555-0199');
+  await drawer.locator('#ct-save').click();
+  await page.waitForSelector('#toast:has-text("Contact saved")');
+  await drawer.locator('.contact-list .tag', { hasText: 'Authorized pick-up' }).waitFor();
+  await drawer.locator('[data-close]').first().click();
+  await page.click('[data-rtab=pickup]');
+  const card = page.locator('.pu-card', { hasText: 'Walk-in Kid' });
+  assert.match(await card.textContent(), /Rosa Lima[\s\S]*Grandmother[\s\S]*\(305\) 555-0199/);
+  await page.fill('#pu-q', 'rosa');
+  assert.deepEqual(await page.locator('.pu-card .pu-kid b').allTextContents(), ['Walk-in Kid'], 'search by the person');
+  await page.fill('#pu-q', '');
+  await page.click('[data-rtab=health]');
+  assert.match(await page.locator('.health-grid').textContent(), /Walk-in Kid[\s\S]*Peanuts[\s\S]*EpiPen Jr[\s\S]*Expires/);
+  await page.click('header nav button[data-view=today]');
+  assert.match(await page.locator('.med-due').textContent(), /Walk-in Kid[\s\S]*EpiPen Jr[\s\S]*Expires/);
+  await page.click('#see-meds');
+  await page.locator('.health-grid tr[data-med]', { hasText: 'EpiPen Jr' }).click();
+  await drawer.locator('#md-del').click();   // confirm() accepted
+  await page.waitForSelector('#toast:has-text("Medicine removed")');
+  ok('Pick-up, allergies and medicine: allergy tag, Authorized pick-up on the list (searchable), medicine expiring on Today');
+  await page.click('[data-rtab=children]');
+  await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).waitFor();
   await page.click('#r-add');
   await drawer.locator('input[name=name]').fill('Grad Kid');
   await drawer.locator('select[name=status]').selectOption('graduated');

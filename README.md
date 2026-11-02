@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql` and `029_school_events.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql`, `029_school_events.sql` and `030_pickup_health.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -425,6 +425,17 @@ day to add, an item to change it), closed days (`school_closures`, Settings → 
 billing Mondays) and enrolled children's birthdays (their dates of birth), with the month's birthdays on the side.
 Weekend items go in the week's first column; on a phone it's a list of the days that have something. **Today** shows
 *This week at school*: the week's theme and menu and the next 7 days.
+
+## Pick-up, allergies and medicine (030)
+
+**Enrollment → Pick-up** lists each enrolled child (by last name) with who may pick them up: the parents (Primary and
+Secondary contacts) and the people added with the role **Authorized pick-up** (first and last name, relationship,
+phone). Search a child, a person or a phone number; filter by class; **Print pick-up list** for the front desk.
+Emergency contacts are kept apart and aren't on that list. **Allergies & medicine** lists the children with allergies
+(`students.allergies`, on the child's page; **Print allergy list** sorts by class for the classrooms and the kitchen)
+and the medicine families leave at school (`student_medications`: what it's for and how it's given, and its
+expiration date), soonest to expire first. All staff see and change these. **Today** warns about medicine that has
+expired or expires within 30 days, and the roster tags children with allergies.
 
 ## Website forms: Netlify's copy as a backup (028)
 

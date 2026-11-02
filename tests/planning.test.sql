@@ -8,6 +8,8 @@ create or replace function pg_temp.as_user(uid uuid) returns void language plpgs
   perform set_config(''request.jwt.claim.sub'', coalesce(uid::text, ''''), false); end';
 \ir ../supabase/migrations/032_school_planning.sql
 \ir ../supabase/migrations/032_school_planning.sql
+\ir ../supabase/migrations/033_planning_import_memory.sql
+\ir ../supabase/migrations/033_planning_import_memory.sql
 select pg_temp.as_user(null);
 delete from public.school_events;
 insert into public.school_events (kind, title, starts_on, ends_on) values ('theme', 'Fall', '2026-11-09', '2026-11-13');
@@ -39,6 +41,15 @@ select pg_temp.ok((select public.school_events_import('binder', j) = '{"added": 
 select pg_temp.ok((select count(*) = 2 from public.school_event_prep) and (select title = 'Pictures (both floors)' from public.school_events where source_key = 'pics2'),
   '... no prep twice, and the staff edit stays');
 select pg_temp.ok((select count(*) = 1 from public.school_events where title = 'Pizza Fundraiser' and status = 'approved'), 'nothing already on the calendar changes');
+delete from public.school_events where source_key = 'pics2';   -- "Keep the old one": the draft is deleted
+select pg_temp.ok((select public.school_events_import('binder', j) = '{"added": 0, "skipped": 4}' from plan), 'a deleted draft doesn''t come back');
+reset role;
+insert into public.school_events (kind, title, starts_on, status, source, source_key)
+  select 'event', 'Pictures', '2026-11-06', 'draft', 'binder', 'pics2';   -- put back for the rest of the test
+set role authenticated;
+insert into public.school_event_prep (event_id, assignee, classroom_id, task, supplies, due_on)
+  select id, 'Ms. A', (select id from public.classrooms where name = 'VPK'), 'Backdrop', 'Paper', '2026-11-05' from public.school_events where source_key = 'pics2';
+insert into public.school_event_prep (event_id, assignee, task) select id, 'Ms. B', 'Combs' from public.school_events where source_key = 'pics2';
 
 -- Decisions before approval.
 do 'begin perform public.school_event_approve((select id from public.school_events where source_key = ''fund'')); raise exception ''FAIL: approved undecided'';

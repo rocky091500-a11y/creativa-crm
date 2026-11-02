@@ -809,7 +809,9 @@
     const items = [], fam = !!v.family, gone = replacedBy(v);
     (state.closures || []).filter((c) => onDay(c, day)).forEach((c) => items.push({ cls: 'cal-closed', text: `School closed: ${closureName(c)}` }));
     if (!fam && state.hasV6 && periodOf(day) === day) items.push({ cls: 'cal-tuition', text: 'Tuition due' });
-    (state.events || []).filter((e) => ['event', 'reminder', 'closure'].includes(e.kind) && (pendingDate(e) ? !fam && e.date_options.includes(day) : onDay(e, day)))
+    const shut = closureOn(day);   // the whole school is closed: no need to say some classes are off too
+    (state.events || []).filter((e) => ['event', 'reminder', 'closure'].includes(e.kind) && !(shut && e.kind === 'closure')
+      && (pendingDate(e) ? !fam && e.date_options.includes(day) : onDay(e, day)))
       .filter((e) => !fam || (familyShows(e, v) && !gone.has(e.id)))
       .forEach((e) => items.push({ cls: e.kind === 'closure' ? 'cal-closed' : `cal-${e.kind}`, text: e.title, details: e.details, id: e.id,
         aud: audienceLabel(e.classroom_ids), draft: !fam && isDraft(e), tentative: !fam && pendingDate(e) ? e.date_options : null,

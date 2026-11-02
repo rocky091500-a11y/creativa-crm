@@ -31,7 +31,7 @@
   const PROGRAMS_FUNDING = { sr: 'School Readiness', sr_bpiece: 'SR – BPIECE', fes_ua: 'FES-UA', fes_eo: 'FES-EO', vpk: 'VPK',
     stepup_pending: 'Step Up (pending)' };
   // Biweekly billing (007_billing_contacts.sql)
-  const CONTACT_ROLE = { primary: 'Primary', secondary: 'Secondary', emergency: 'Emergency / authorized' };
+  const CONTACT_ROLE = { primary: 'Primary', secondary: 'Secondary', pickup: 'Authorized pick-up', emergency: 'Emergency contact' };
   const INV_STATUS = { paid: 'Paid', partial: 'Partly paid', open: 'Open', overdue: 'Late', void: 'Void',
     check: 'Check amount', missing: 'Not on the sheet',
     not_invoiced: 'Not billed yet', stepup: 'Step Up pending', school_year: 'School-year tuition', not_billed: 'Not billed to family', unset: 'No rate set',
@@ -224,6 +224,8 @@
     moneyTab: store.get('moneyTab', 'overview'),
     lang: store.get('lang', 'en'),
     rosterTab: store.get('rosterTab', 'children'),
+    pickupFilters: { q: '', classroom: store.get('pickupClass', '') },
+    healthFilters: { classroom: store.get('healthClass', '') },
     regFilters: { q: '', cls: '', status: '' },
     todoFilter: store.get('todoFilter', 'all'),
     projMonths: store.get('projMonths', 6),
@@ -302,6 +304,7 @@
     return t ? `${inv.description} · ${fmtPeriod(t.period_start)}` : `${inv.description} · ${fmtDate(inv.invoice_date)}`;
   }
   const contactName = (c) => [c.first_name, c.last_name].filter(Boolean).join(' ');
+  const isParent = (c) => c.role === 'primary' || c.role === 'secondary';
   // Registration is what holds a spot on the waiting list: marked Paid on the student, or a registration bill paid in full.
   const regPaid = (s) => s.reg_fee === 'paid' || (state.invoices || []).some((i) => i.student_id === s.id && i.kind !== 'tuition' && !i.void
     && /regist/i.test(i.description) && Number(i.amount) > 0 && invoiceBalance(i) <= 0
@@ -448,7 +451,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -471,6 +474,7 @@
       sb.from('school_closures').select('*').order('starts_on'),                                       // missing until 021
       sb.from('school_events').select('*').order('starts_on'),                                         // missing until 029
       fin ? selectAll('registrations', 'created_at') : Promise.resolve({ error: true }),              // missing until 023
+      sb.from('student_medications').select('*').order('expires_on'),                                  // missing until 030
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -513,6 +517,8 @@
     state.closures = cl.error ? null : cl.data;
     state.events = ev.error ? null : ev.data;
     state.registrations = rg.error ? null : rg.data;
+    state.meds = md.error ? null : md.data;   // 030: also students.allergies and Authorized pick-up contacts
+    state.hasHealth = !!state.meds;
     state.todos = td.error ? [] : td.data;
     watchInquiries();
     state.loadedAt = Date.now();
@@ -720,6 +726,7 @@
       </div>
       <div class="today-grid">
         ${state.events || state.closures ? weekAtSchoolHtml() : ''}
+        ${state.hasHealth ? medsDueHtml() : ''}
         ${canPayroll() ? '<section class="panel staff-today" id="staff-today"><h2>Staff today</h2><p class="muted small">Loading…</p></section>' : ''}
         <section class="panel"><h2>Follow-ups due</h2>
           ${due.map((i) => row(i, i.next_follow_up < today ? `<span class="tag overdue">overdue · ${fmtDate(i.next_follow_up)}</span>` : '<span class="tag due">today</span>')).join('')
@@ -743,7 +750,9 @@
         ${state.hasEnrollment ? tourEmailsPanel() : ''}
       </div>`;
     $$('a.sms', el).forEach((a) => a.addEventListener('click', (e) => e.stopPropagation()));
-    $$('.row', el).forEach((r) => r.addEventListener('click', () => openDrawer(r.dataset.id)));
+    $$('.row[data-id]', el).forEach((r) => r.addEventListener('click', () => openDrawer(r.dataset.id)));
+    $$('.med-due [data-kid]', el).forEach((b) => b.addEventListener('click', () => openStudent(b.dataset.kid)));
+    $('#see-meds', el)?.addEventListener('click', () => { state.view = 'roster'; state.rosterTab = 'health'; store.set('view', 'roster'); store.set('rosterTab', 'health'); renderShell(); });
     if (canPayroll()) drawStaffToday(el);
     const todoBox = $('.today-todo', el);
     if (todoBox) bindTodos(todoBox, renderView);
@@ -1278,7 +1287,7 @@
       if (f.docs === 'complete' && missingDocs(s).length) return false;
       if (f.funding && canViewFinance() && !hasFunding(s.id, f.funding === 'unset' ? 'private' : f.funding)) return false;
       if (q) {
-        const hay = [s.name, s.parent_name, s.parent_email, s.notes, s.therapy, state.finance[s.id]?.award_id].join(' ').toLowerCase();
+        const hay = [s.name, s.parent_name, s.parent_email, s.notes, s.therapy, s.allergies, state.finance[s.id]?.award_id].join(' ').toLowerCase();
         if (!hay.includes(q) && !(qd.length >= 3 && digits(s.parent_phone).includes(qd))) return false;
       }
       return true;
@@ -1320,8 +1329,218 @@
     $('#in-close', sheet).focus();
   }
 
+  // ───────────── Pick-up, allergies and medicine (030) ─────────────
+  // Who may pick a child up: the parents (Primary and Secondary contacts) and the people added as Authorized pick-up.
+  const pickupPeople = (sid) => state.contacts.filter((c) => c.student_id === sid && (isParent(c) || c.role === 'pickup'))
+    .sort((a, b) => Object.keys(CONTACT_ROLE).indexOf(a.role) - Object.keys(CONTACT_ROLE).indexOf(b.role));
+  const contactPhone = (c) => c.cell_phone || c.sms_phone || c.home_phone || c.work_phone || '';
+  const allergyTag = (s) => (s.allergies ? `<span class="tag allergy" title="${esc('Allergies: ' + s.allergies)}">Allergy</span>` : '');
+  // Medicine at school expires: 'expired', 'soon' (within 30 days), 'ok', or 'none' (no date).
+  const medsOf = (sid) => (state.meds || []).filter((m) => m.student_id === sid);
+  function medState(m) {
+    if (!m.expires_on) return 'none';
+    const today = todayStr();
+    return m.expires_on < today ? 'expired' : m.expires_on <= addDays(today, 30) ? 'soon' : 'ok';
+  }
+  const medTag = (m) => ({
+    expired: `<span class="tag overdue">Expired ${esc(fmtDate(m.expires_on))}</span>`,
+    soon: `<span class="tag due">Expires ${esc(fmtDate(m.expires_on))}</span>`,
+    ok: `<span class="tag">Expires ${esc(fmtDate(m.expires_on))}</span>`,
+    none: '<span class="tag">No expiration date</span>' })[medState(m)];
+  const byExpiry = (a, b) => (a.expires_on || '9999').localeCompare(b.expires_on || '9999');
+  const enrolledKid = (sid) => { const s = state.students.find((x) => x.id === sid); return s && s.status === 'enrolled' ? s : null; };
+  const mdy = (d) => (d ? `${d.slice(5, 7)}/${d.slice(8, 10)}/${d.slice(0, 4)}` : '');
+  const asOfToday = () => new Date(`${todayStr()}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+  // A sheet shown over the app with Print / Close: the only thing printed.
+  function showPrintSheet({ label, note = '', html, cls = '' }) {
+    const sheet = document.createElement('div');
+    sheet.className = 'print-sheet';
+    sheet.setAttribute('role', 'dialog');
+    sheet.innerHTML = `<div class="print-bar no-print"><b>${esc(label)}</b><span class="muted small pb-note">${note}</span><span class="spacer"></span>
+        <button class="btn primary" type="button" id="ps-print">Print / Save as PDF</button>
+        <button class="btn" type="button" id="ps-close">Close</button></div>
+      <article class="receipt inspect-sheet ${cls}">${html}</article>`;
+    document.body.append(sheet);
+    document.body.classList.add('printing');
+    const close = () => { sheet.remove(); document.body.classList.remove('printing'); };
+    $('#ps-print', sheet).addEventListener('click', () => window.print());
+    $('#ps-close', sheet).addEventListener('click', close);
+    sheet.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') close(); });
+    $('#ps-close', sheet).focus();
+  }
+  const sheetBand = (title, sub) => `<header class="r-band"><img src="/assets/logo.png" alt="${esc(state.settings?.school_name || 'Creativa Academy')}">
+    <div class="r-title"><h1>${esc(title)}</h1><span class="r-year">${esc(sub)}</span></div></header>`;
+  const classOpts = (cur) => `<option value="">All classes</option>${state.classrooms.map((c) =>
+    `<option value="${esc(c.id)}" ${c.id === cur ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}`;
+
+  function pickupRows() {
+    const f = state.pickupFilters;
+    const q = f.q.trim().toLowerCase(), qd = digits(f.q);
+    return state.students.filter((s) => s.status === 'enrolled' && (!f.classroom || s.classroom_id === f.classroom)).filter((s) => {
+      if (!q) return true;
+      const people = pickupPeople(s.id);
+      return [s.name, ...people.map(contactName)].join(' ').toLowerCase().includes(q)
+        || (qd.length >= 3 && people.some((c) => digits(contactPhone(c)).includes(qd)));
+    }).sort(sortStudents);
+  }
+  function renderPickup(el) {
+    const f = state.pickupFilters;
+    el.innerHTML = `${rosterTabs()}
+      <div class="toolbar">
+        <input type="search" id="pu-q" placeholder="Search child, person or phone…" value="${esc(f.q)}">
+        <select id="pu-class" aria-label="Class">${classOpts(f.classroom)}</select>
+        <span class="spacer"></span><span class="muted small" id="pu-count"></span>
+        <button class="btn small" id="pu-print" type="button">Print pick-up list</button>
+      </div>
+      <div class="pu-list" id="pu-rows"></div>
+      <p class="muted small">The parents and the people added as ${state.hasHealth ? 'Authorized pick-up' : 'contacts'} on each child’s page.
+        Open a child to add someone or change a number. Don’t know the person? Ask for a photo ID.</p>`;
+    bindRosterTabs(el);
+    const draw = () => {
+      const rows = pickupRows();
+      $('#pu-count', el).textContent = `${rows.length} ${rows.length === 1 ? 'child' : 'children'}`;
+      $('#pu-rows', el).innerHTML = rows.map((s) => {
+        const people = pickupPeople(s.id);
+        return `<div class="pu-card" data-id="${s.id}" tabindex="0">
+          <div class="pu-kid"><b>${esc(s.name)}</b> ${allergyTag(s)}<span class="muted small">${esc(classroomName(s.classroom_id))}</span></div>
+          <ul class="pu-people">${people.map((c) => { const ph = contactPhone(c); return `<li><b>${esc(contactName(c) || '(no name)')}</b>
+            <span class="muted">${esc(c.relationship || CONTACT_ROLE[c.role])}</span>
+            ${ph ? `<a href="tel:${digits(ph)}">${esc(ph)}</a>` : '<span class="muted small">no phone</span>'}</li>`; }).join('')
+            || '<li class="muted small">No one on file yet.</li>'}</ul></div>`;
+      }).join('') || '<p class="empty">No children match.</p>';
+      $$('.pu-card', el).forEach((card) => {
+        card.addEventListener('click', (e) => { if (!e.target.closest('a')) openStudent(card.dataset.id); });
+        card.addEventListener('keydown', (e) => { if (e.key === 'Enter') openStudent(card.dataset.id); });
+      });
+    };
+    $('#pu-q', el).addEventListener('input', (e) => { f.q = e.target.value; draw(); });
+    $('#pu-class', el).addEventListener('change', (e) => { f.classroom = e.target.value; store.set('pickupClass', f.classroom); draw(); });
+    $('#pu-print', el).addEventListener('click', () => showPickupList(pickupRows()));
+    draw();
+  }
+  function showPickupList(kids) {
+    const cls = state.pickupFilters.classroom && classroomName(state.pickupFilters.classroom);
+    showPrintSheet({ label: 'Pick-up list', cls: 'pickup-sheet', html: `${sheetBand('Authorized pick-up', `${cls ? cls + ' · ' : ''}As of ${asOfToday()}`)}
+      <table class="r-table"><thead><tr><th class="num">#</th><th>Child</th><th>Class</th><th>May pick up</th></tr></thead>
+        <tbody>${kids.map((s, i) => `<tr><td class="num">${i + 1}</td><td><b>${esc(s.name)}</b>${s.allergies ? '<div class="pu-allergy">Allergy</div>' : ''}</td>
+          <td>${esc(classroomName(s.classroom_id))}</td>
+          <td>${pickupPeople(s.id).map((c) => `<div class="pu-line"><b>${esc(contactName(c))}</b>${c.relationship ? ` (${esc(c.relationship)})` : ''}
+            ${contactPhone(c) ? `· ${esc(contactPhone(c))}` : ''}</div>`).join('') || '—'}</td></tr>`).join('')
+          || '<tr><td colspan="4">No children.</td></tr>'}</tbody></table>
+      <p class="r-note">Only release a child to the people listed. Ask for a photo ID if you don’t know the person. Printed ${esc(fmtDateTime(new Date().toISOString()))}.</p>` });
+  }
+
+  function renderHealth(el) {
+    const f = state.healthFilters;
+    const inClass = (s) => s && s.status === 'enrolled' && (!f.classroom || s.classroom_id === f.classroom);
+    const allergic = state.students.filter((s) => inClass(s) && s.allergies).sort(sortStudents);
+    const meds = state.meds.filter((m) => inClass(enrolledKid(m.student_id))).sort(byExpiry);
+    const kidOf = (m) => state.students.find((s) => s.id === m.student_id);
+    el.innerHTML = `${rosterTabs()}
+      <div class="toolbar">
+        <select id="h-class" aria-label="Class">${classOpts(f.classroom)}</select>
+        <span class="spacer"></span>
+        <button class="btn small" id="h-print" type="button">Print allergy list</button>
+        <button class="btn small primary" id="h-add" type="button">+ Add medicine</button>
+      </div>
+      <div class="health-grid">
+        <section class="panel"><h2>Allergies <span class="muted small">${allergic.length} ${allergic.length === 1 ? 'child' : 'children'}</span></h2>
+          <div class="table-wrap"><table class="roster"><thead><tr><th>Child</th><th>Class</th><th>Allergic to</th></tr></thead><tbody>
+          ${allergic.map((s) => `<tr data-kid="${s.id}"><td><b>${esc(s.name)}</b></td><td>${esc(classroomName(s.classroom_id))}</td>
+            <td class="allergy-text">${esc(s.allergies)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No allergies on file.</td></tr>'}
+          </tbody></table></div>
+          <p class="muted small">Add or change a child’s allergies on their page (Enrollment → the child → Allergies).</p></section>
+        <section class="panel"><h2>Medicine at school <span class="muted small">${meds.length}</span></h2>
+          <div class="table-wrap"><table class="roster"><thead><tr><th>Child</th><th>Medicine</th><th>Expires</th></tr></thead><tbody>
+          ${meds.map((m) => `<tr data-med="${m.id}"><td><b>${esc(kidOf(m)?.name || '')}</b></td>
+            <td>${esc(m.name)}${m.details ? `<div class="muted small">${esc(m.details)}</div>` : ''}</td><td>${medTag(m)}</td></tr>`).join('')
+            || '<tr><td colspan="3" class="muted">No medicine on file. Add an EpiPen, inhaler or other medicine a family leaves at school.</td></tr>'}
+          </tbody></table></div>
+          <p class="muted small">Soonest to expire first. Today shows the ones that have expired or expire within 30 days.</p></section>
+      </div>`;
+    bindRosterTabs(el);
+    $('#h-class', el).addEventListener('change', (e) => { f.classroom = e.target.value; store.set('healthClass', f.classroom); renderHealth(el); });
+    $('#h-add', el).addEventListener('click', () => openMedicine({}));
+    $('#h-print', el).addEventListener('click', () => showAllergyList(allergic));
+    $$('tr[data-kid]', el).forEach((r) => r.addEventListener('click', () => openStudent(r.dataset.kid)));
+    $$('tr[data-med]', el).forEach((r) => r.addEventListener('click', () => openMedicine({ medId: r.dataset.med })));
+  }
+  // To post in the classrooms and the kitchen: by class, then last name, with any medicine kept at school.
+  function showAllergyList(kids) {
+    const order = new Map(state.classrooms.map((c, i) => [c.id, i]));
+    const rows = kids.slice().sort((a, b) => (order.get(a.classroom_id) ?? 99) - (order.get(b.classroom_id) ?? 99) || sortStudents(a, b));
+    const cls = state.healthFilters.classroom && classroomName(state.healthFilters.classroom);
+    showPrintSheet({ label: 'Allergy list', cls: 'allergy-sheet', html: `${sheetBand('Allergies', `${cls ? cls + ' · ' : ''}As of ${asOfToday()}`)}
+      <table class="r-table"><thead><tr><th>Child</th><th>Class</th><th>Allergic to</th><th>Medicine at school</th></tr></thead>
+        <tbody>${rows.map((s) => `<tr><td><b>${esc(s.name)}</b><div class="muted small">${esc(mdy(s.dob))}</div></td><td>${esc(classroomName(s.classroom_id))}</td>
+          <td class="allergy-text">${esc(s.allergies)}</td>
+          <td>${medsOf(s.id).sort(byExpiry).map((m) => `<div>${esc(m.name)}${m.expires_on ? ` · expires ${esc(mdy(m.expires_on))}` : ''}</div>`).join('') || '—'}</td></tr>`).join('')
+          || '<tr><td colspan="4">No allergies on file.</td></tr>'}</tbody></table>
+      <p class="r-note">${rows.length} ${rows.length === 1 ? 'child' : 'children'} with allergies. Printed ${esc(fmtDateTime(new Date().toISOString()))}.</p>` });
+  }
+
+  function openMedicine({ studentId, medId, back }) {
+    const m = medId ? state.meds.find((x) => x.id === medId) : {};
+    if (!m) return;
+    const sid = m.student_id || studentId;
+    const st = sid && state.students.find((s) => s.id === sid);
+    const kids = state.students.filter((s) => s.status === 'enrolled').sort(sortStudents);
+    const ctl = mountDrawer({
+      title: medId ? esc(m.name) : 'Add medicine',
+      sub: st ? esc(st.name) : '',
+      body: `<div class="section"><div class="grid2">
+          ${sid ? '' : `<label class="full">Child<select name="student_id"><option value="">Choose a child…</option>${kids.map((s) =>
+            `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>`}
+          ${fInput('name', 'Medicine', m.name, 'text', 'maxlength="120" placeholder="e.g. EpiPen Jr, albuterol inhaler"')}
+          ${fInput('expires_on', 'Expires on', m.expires_on, 'date')}
+          <label class="full">What it’s for, how it’s given, where it’s kept<input name="details" value="${esc(m.details)}" maxlength="300"
+            placeholder="e.g. Bee sting: one shot in the thigh, call 911. In the office cabinet"></label>
+        </div><p class="muted small">The expiration date is on the box or the pharmacy label. Today warns 30 days before it expires.</p></div>`,
+      foot: `${medId ? '<button class="btn danger" id="md-del" type="button">Remove</button>' : ''}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button>
+        <button class="btn primary" id="md-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    (form.student_id || form.name).focus();
+    const done = () => { ctl.dirty = false; renderView(); if (back) back(); else closeDrawer(); };
+    $('#md-save', drawer).addEventListener('click', async () => {
+      const row = { student_id: sid || formVal(form, 'student_id'), name: formVal(form, 'name'), details: formVal(form, 'details'), expires_on: formVal(form, 'expires_on') };
+      if (!row.student_id) { form.student_id.focus(); return toast('Choose the child', true); }
+      if (!row.name) { form.name.focus(); return toast('Add the medicine’s name', true); }
+      if (!row.expires_on) { form.expires_on.focus(); return toast('Add the expiration date (on the box or the label)', true); }
+      const q = medId ? sb.from('student_medications').update(row).eq('id', medId) : sb.from('student_medications').insert(row);
+      const { data, error } = await q.select().single();
+      if (error) return fail(error, 'Could not save the medicine');
+      state.meds = [...state.meds.filter((x) => x.id !== data.id), data].sort(byExpiry);
+      toast('Medicine saved');
+      done();
+    });
+    $('#md-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Remove ${m.name}? (The family took it home, or it was thrown away.)`)) return;
+      const { error } = await sb.from('student_medications').delete().eq('id', medId);
+      if (error) return fail(error, 'Could not remove');
+      state.meds = state.meds.filter((x) => x.id !== medId);
+      toast('Medicine removed');
+      done();
+    });
+  }
+
+  // Today: medicine that has expired or expires within 30 days (enrolled children).
+  function medsDueHtml() {
+    const due = (state.meds || []).filter((m) => ['expired', 'soon'].includes(medState(m)) && enrolledKid(m.student_id)).sort(byExpiry);
+    if (!due.length) return '';
+    return `<section class="panel"><h2 class="h-row">Medicine expiring <button class="btn ghost small" type="button" id="see-meds">All medicine</button></h2>
+      <ul class="med-due">${due.map((m) => `<li><button type="button" class="linkish" data-kid="${m.student_id}"><b>${esc(enrolledKid(m.student_id).name)}</b>
+        <span>${esc(m.name)}</span></button>${medTag(m)}</li>`).join('')}</ul>
+      <p class="muted small">Ask the family for a new one, then change the date on the child’s page.</p></section>`;
+  }
+
   function renderRoster(el) {
-    if (state.registrations && canViewFinance() && state.rosterTab === 'reg') return renderRegistration(el);
+    const tab = rosterTabNow();
+    if (tab === 'reg') return renderRegistration(el);
+    if (tab === 'pickup') return renderPickup(el);
+    if (tab === 'health') return renderHealth(el);
     const f = state.rosterFilters;
     const fin = canViewFinance();
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
@@ -1381,12 +1600,13 @@
       const rows = rosterRows();
       csvDownload(`creativa-students-${todayStr()}.csv`,
         ['Student', 'Date of birth', 'Class', 'Status', 'Start date', 'Withdrawn on', 'Parent', 'Phone', 'Email', ...DOCS.map((d) => d[1]),
-          'Registration fee', 'RBT', 'Therapy', ...(fin ? ['Funding', 'Award ID', 'Tuition', 'Frequency'] : []), 'Notes'],
+          'Registration fee', 'RBT', 'Therapy', ...(state.hasHealth ? ['Allergies'] : []), ...(fin ? ['Funding', 'Award ID', 'Tuition', 'Frequency'] : []), 'Notes'],
         rows.map((s) => {
           const fr = state.finance[s.id] || {};
           return [s.name, s.dob, classroomName(s.classroom_id), STUDENT_STATUS[s.status], s.start_date, s.withdrawn_on,
             s.parent_name, s.parent_phone, s.parent_email, ...DOCS.map(([k]) => s[k] || 'missing'),
             regPaid(s) ? REG_FEE.paid : REG_FEE[s.reg_fee] || (s.status === 'waitlist' ? REG_FEE.not_paid : ''), RBT[s.rbt] || '', s.therapy,
+            ...(state.hasHealth ? [s.allergies] : []),
             ...(fin ? [fundingText(s.id), fr.award_id, fr.tuition_amount, fr.tuition_amount != null ? FREQ[fr.tuition_frequency] : ''] : []),
             s.notes];
         }));
@@ -1403,7 +1623,7 @@
       const rows = rosterRows();
       $('#r-count').textContent = `${rows.length} student${rows.length === 1 ? '' : 's'}`;
       $('#roster-rows').innerHTML = rows.map((s) => `<tr data-id="${s.id}" class="${s.status !== 'enrolled' ? 'st-' + s.status : ''}">
-          <td><b>${esc(s.name)}</b>${s.status !== 'enrolled' ? ` <span class="stage-pill st-${s.status}">${STUDENT_STATUS[s.status]}</span>` : pauseTag(s)}
+          <td><b>${esc(s.name)}</b>${s.status !== 'enrolled' ? ` <span class="stage-pill st-${s.status}">${STUDENT_STATUS[s.status]}</span>` : pauseTag(s)} ${allergyTag(s)}
             <div class="muted small">${esc([s.parent_name, pausedNow(s) && s.pause_note].filter(Boolean).join(' · '))}</div></td>
           <td>${esc(classroomName(s.classroom_id))}</td>
           <td class="nowrap">${esc(ageOf(s.dob))}</td>
@@ -1448,6 +1668,7 @@
       title: id ? esc(s.name) : 'New student',
       sub: id ? esc([classroomName(s.classroom_id), STUDENT_STATUS[s.status], ageOf(s.dob)].filter(Boolean).join(' · ')) : '',
       body: `
+        ${s.allergies ? `<p class="allergy-alert"><b>Allergies:</b> ${esc(s.allergies)}</p>` : ''}
         ${id && (tel || s.parent_email) ? `<div class="quick section">
           ${tel ? `<a class="btn small" href="tel:${tel}">Call</a><a class="btn small" href="sms:${tel}">Text</a>` : ''}
           ${s.parent_email ? `<a class="btn small" href="mailto:${esc(s.parent_email)}">Email</a>` : ''}</div>` : ''}
@@ -1458,6 +1679,8 @@
           ${fSelect('status', 'Status', Object.entries(STUDENT_STATUS), s.status)}
           ${fInput('start_date', 'Start date', s.start_date, 'date')}
           <span></span>
+          ${state.hasHealth ? `<label class="full">Allergies<input name="allergies" value="${esc(s.allergies)}" maxlength="300"
+            placeholder="e.g. Peanuts, eggs, bee stings. Leave it empty if none"></label>` : ''}
           ${state.hasPause ? `<div class="full grid2" id="pause-wrap" ${s.status === 'enrolled' ? '' : 'hidden'}>
             ${fInput('paused_from', 'Paused from', s.paused_from, 'date')}
             ${fInput('paused_until', 'Paused until (the day they’re back)', s.paused_until, 'date')}
@@ -1495,6 +1718,11 @@
           <button class="btn ghost small" type="button" id="contact-copy">Copy from a brother or sister</button>
           <div id="contact-copy-box" hidden><input type="search" id="cc-q" placeholder="Brother’s or sister’s name…" autocomplete="off">
             <div class="msg-pick" id="cc-found" hidden></div></div>` : ''}</div>
+        ${id && state.hasHealth ? `<div class="section"><h3>Medicine at school</h3>
+          <ul class="contact-list">${medsOf(id).map((m) => `<li><div class="c-head"><b>${esc(m.name)}</b> ${medTag(m)}
+              <button class="btn ghost small" type="button" data-med="${m.id}">Edit</button></div>
+            ${m.details ? `<div class="muted small">${esc(m.details)}</div>` : ''}</li>`).join('') || '<li class="muted small">No medicine at school.</li>'}</ul>
+          <button class="btn small" type="button" id="med-add">+ Add medicine</button></div>` : ''}
         <div class="section"><h3>Support & registration</h3><div class="grid2">
           ${fSelect('rbt', 'RBT', [['', 'No'], ['yes', 'Yes'], ['in_process', 'In process']], s.rbt)}
           ${fInput('therapy', 'Therapies', s.therapy, 'text', 'placeholder="Speech, OT…"')}
@@ -1636,6 +1864,10 @@
       if (!ctl.dirty || confirm('Discard your changes?')) removeLateFee(b.dataset.rmFee, () => { renderView(); back(); });
     }));
     $('#contact-add', drawer)?.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openContact({ studentId: id, back }); });
+    $('#med-add', drawer)?.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openMedicine({ studentId: id, back }); });
+    $$('[data-med]', drawer).forEach((b) => b.addEventListener('click', () => {
+      if (!ctl.dirty || confirm('Discard your changes?')) openMedicine({ medId: b.dataset.med, back });
+    }));
     // Brothers and sisters: copy the parents from a sibling's page (their Primary and Secondary contacts) onto this one.
     $('#contact-copy', drawer)?.addEventListener('click', () => {
       $('#contact-copy-box', drawer).hidden = false;
@@ -1644,13 +1876,13 @@
     $('#cc-q', drawer)?.addEventListener('input', () => {
       const q = $('#cc-q', drawer).value.trim().toLowerCase(), found = $('#cc-found', drawer);
       const hits = q.length < 2 ? [] : state.students.filter((x) => x.id !== id && x.name.toLowerCase().includes(q)
-        && state.contacts.some((c) => c.student_id === x.id && c.role !== 'emergency')).slice(0, 8);
+        && state.contacts.some((c) => c.student_id === x.id && isParent(c))).slice(0, 8);
       found.hidden = !hits.length;
       found.innerHTML = hits.map((x) => `<button class="btn ghost small" type="button" data-cc="${x.id}">${esc(x.name)}
-        <span class="muted small">${esc(state.contacts.filter((c) => c.student_id === x.id && c.role !== 'emergency').map(contactName).join(', '))}</span></button>`).join('');
+        <span class="muted small">${esc(state.contacts.filter((c) => c.student_id === x.id && isParent(c)).map(contactName).join(', '))}</span></button>`).join('');
       $$('[data-cc]', found).forEach((b) => b.addEventListener('click', async () => {
         const have = new Set(contacts.map((c) => digits(c.sms_phone || c.cell_phone)).filter(Boolean));
-        const copy = state.contacts.filter((c) => c.student_id === b.dataset.cc && c.role !== 'emergency' && !have.has(digits(c.sms_phone || c.cell_phone)))
+        const copy = state.contacts.filter((c) => c.student_id === b.dataset.cc && isParent(c) && !have.has(digits(c.sms_phone || c.cell_phone)))
           .map(({ id: _, created_at: __, student_id: ___, ...c }) => ({ ...c, student_id: id }));
         if (!copy.length) return toast('Those parents are already on this page', true);
         if (ctl.dirty && !confirm('Discard your changes?')) return;
@@ -1670,6 +1902,7 @@
       const patch = {};
       STUDENT_FIELDS.forEach((k) => { patch[k] = formVal(form, k); });
       if (state.hasV6) patch.family_account = formVal(form, 'family_account');
+      if (state.hasHealth) patch.allergies = formVal(form, 'allergies');
       if (form.paused_until) {
         patch.paused_until = patch.status === 'enrolled' ? formVal(form, 'paused_until') : null;
         patch.paused_from = patch.paused_until ? formVal(form, 'paused_from') || todayStr() : null;
@@ -1731,8 +1964,15 @@
   }
 
   // ───── Registration for next school year (023): who's returning, the class they move up to, and their registration paid ─────
-  const rosterTabs = () => (state.registrations && canViewFinance() ? `<div class="seg" role="tablist" aria-label="Enrollment">
-      ${[['children', 'Children'], ['reg', `Registration ${regYearLabel()}`]].map(([k, v]) => `<button type="button" role="tab" data-rtab="${k}" aria-selected="${(state.rosterTab === 'reg') === (k === 'reg')}">${esc(v)}</button>`).join('')}</div>` : '');
+  const rosterTabList = () => [['children', 'Children'], ...(state.hasV6 ? [['pickup', 'Pick-up']] : []),
+    ...(state.hasHealth ? [['health', 'Allergies & medicine']] : []),
+    ...(state.registrations && canViewFinance() ? [['reg', `Registration ${regYearLabel()}`]] : [])];
+  const rosterTabNow = () => (rosterTabList().some(([k]) => k === state.rosterTab) ? state.rosterTab : 'children');
+  const rosterTabs = () => {
+    const tabs = rosterTabList(), cur = rosterTabNow();
+    return tabs.length > 1 ? `<div class="seg" role="tablist" aria-label="Enrollment">
+      ${tabs.map(([k, v]) => `<button type="button" role="tab" data-rtab="${k}" aria-selected="${k === cur}">${esc(v)}</button>`).join('')}</div>` : '';
+  };
   const regYear = () => state.settings?.reg_year || '2027-28';
   const regYearLabel = () => regYear().replace('-', '–');
   function bindRosterTabs(el) {
@@ -2040,7 +2280,7 @@
     }
   }
 
-  // Contacts: parents, guardians and emergency/authorized pick-up people.
+  // Contacts: parents, guardians, authorized pick-up people and emergency contacts.
   function openContact({ studentId, contactId, back }) {
     const c = contactId ? state.contacts.find((x) => x.id === contactId) : { role: 'primary' };
     if (!c) return;
@@ -2050,7 +2290,7 @@
       title: contactId ? esc(contactName(c) || 'Contact') : 'New contact',
       sub: st ? esc(st.name) : '',
       body: `<div class="section"><div class="grid2">
-          ${fSelect('role', 'Role', Object.entries(CONTACT_ROLE), c.role)}
+          ${fSelect('role', 'Role', Object.entries(CONTACT_ROLE).filter(([k]) => k !== 'pickup' || state.hasHealth || c.role === k), c.role)}
           ${fInput('relationship', 'Relationship', c.relationship, 'text', 'placeholder="Mother, Father, Grandmother…"')}
           ${fInput('first_name', 'First name', c.first_name)}
           ${fInput('last_name', 'Last name', c.last_name)}
@@ -4608,7 +4848,7 @@
     kids.forEach((s) => up.set(familyKey(s), familyKey(s)));
     const byId = new Map(kids.map((s) => [s.id, s])), byPhone = new Map();
     state.contacts.forEach((c) => {
-      const s = c.role !== 'emergency' && byId.get(c.student_id);
+      const s = isParent(c) && byId.get(c.student_id);
       const ph = s && e164(c.sms_phone || c.cell_phone);
       if (!ph) return;
       if (byPhone.has(ph)) join(byPhone.get(ph), familyKey(s)); else byPhone.set(ph, familyKey(s));
@@ -5233,6 +5473,7 @@
         if (c.diff?.void && c.diff.void[1] === true) return d.late_fee_for ? `waived the ${money(d.amount)} late fee for ${kid}` : `voided ${kid}’s ${money(d.amount)} bill`;
         return `changed ${kid}’s ${what}: ${dt}`;
       }
+      case 'student_medications': return `${act} medicine ${d.name || ''} for ${kid}${c.action === 'update' ? `: ${dt}` : ''}`;
       case 'student_contacts': return `${act} ${CONTACT_ROLE[d.role]?.toLowerCase() || ''} contact ${[d.first_name, d.last_name].filter(Boolean).join(' ')} for ${kid}${c.action === 'update' ? `: ${dt}` : ''}`;
       case 'classrooms': return `${act} class ${d.name}${c.action === 'update' ? `: ${dt}` : ''}`;
       case 'billing_history': return c.action === 'update' ? `confirmed ${d.family_account || d.customer}’s amount for tuition ${d.period_start ? fmtPeriod(d.period_start) : ''}: ${dt}`

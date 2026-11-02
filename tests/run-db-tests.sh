@@ -34,3 +34,4 @@ psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/website_form.test.sql 2>&1 | grep -
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/events.test.sql 2>&1 | grep -vE "^$"
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/pickup_health.test.sql 2>&1 | grep -vE "^$"
 psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/reregistration.test.sql 2>&1 | grep -vE "^$"
+psql -qtA -v ON_ERROR_STOP=1 -d $DB -f tests/planning.test.sql 2>&1 | grep -vE "^$"

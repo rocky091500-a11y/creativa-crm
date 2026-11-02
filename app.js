@@ -224,6 +224,7 @@
     moneyTab: store.get('moneyTab', 'overview'),
     lang: store.get('lang', 'en'),
     rosterTab: store.get('rosterTab', 'children'),
+    calTab: store.get('calTab', 'month'),
     pickupFilters: { q: '', classroom: store.get('pickupClass', '') },
     healthFilters: { classroom: store.get('healthClass', '') },
     regFilters: { q: '', cls: '', status: '' },
@@ -451,7 +452,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md, pp] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -475,6 +476,7 @@
       sb.from('school_events').select('*').order('starts_on'),                                         // missing until 029
       fin ? selectAll('registrations', 'created_at') : Promise.resolve({ error: true }),              // missing until 023
       sb.from('student_medications').select('*').order('expires_on'),                                  // missing until 030
+      sb.from('school_event_prep').select('*').order('due_on'),                                        // missing until 032
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -516,6 +518,8 @@
     state.hasStartOn = !so.error;
     state.closures = cl.error ? null : cl.data;
     state.events = ev.error ? null : ev.data;
+    state.prep = pp.error ? null : pp.data;   // 032: school planning
+    state.hasPlanning = !!state.events && !!state.prep;
     state.registrations = rg.error ? null : rg.data;
     state.hasSeats = !!state.registrations && (state.registrations.length ? 'reserved_on' in state.registrations[0]   // 031
       : !(await sb.from('registrations').select('reserved_on').limit(1)).error);
@@ -729,13 +733,14 @@
       <div class="today-grid">
         ${state.events || state.closures ? weekAtSchoolHtml() : ''}
         ${state.hasHealth ? medsDueHtml() : ''}
+        ${state.hasPlanning ? prepSoonHtml() : ''}
         ${canPayroll() ? '<section class="panel staff-today" id="staff-today"><h2>Staff today</h2><p class="muted small">Loading…</p></section>' : ''}
         <section class="panel"><h2>Follow-ups due</h2>
           ${due.map((i) => row(i, i.next_follow_up < today ? `<span class="tag overdue">overdue · ${fmtDate(i.next_follow_up)}</span>` : '<span class="tag due">today</span>')).join('')
             || '<p class="empty">Nothing due. Set a follow-up date on an inquiry to see it here.</p>'}
         </section>
         <section class="panel"><h2>Upcoming tours</h2>
-          ${tours.map((i) => row(i, `<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>`)).join('')
+          ${tours.map((i) => row(i, `<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>${state.events ? tourTags(i) : ''}`)).join('')
             || '<p class="empty">No tours scheduled.</p>'}
         </section>
         ${state.hasV5 ? `<section class="panel" id="resched-panel"><h2>Tours to reschedule</h2>
@@ -760,32 +765,94 @@
     if (todoBox) bindTodos(todoBox, renderView);
     $('#see-todo', el)?.addEventListener('click', () => { state.view = 'todo'; store.set('view', 'todo'); renderShell(); });
     $('#see-cal', el)?.addEventListener('click', () => { state.view = 'calendar'; store.set('view', 'calendar'); renderShell(); });
+    $('#see-prep', el)?.addEventListener('click', () => { state.view = 'calendar'; state.calTab = 'prep'; store.set('view', 'calendar'); store.set('calTab', 'prep'); renderShell(); });
   }
 
-  // ───────────── Calendar (029) ─────────────
+  // ───────────── Calendar (029) and school planning (032) ─────────────
   // The school's month: activities and reminders for families, each week's theme and menu (school_events), closed days
-  // (school_closures), tuition days (billing Mondays) and the children's birthdays (their dates of birth).
-  const EVENT_KIND = { event: 'Activity', reminder: 'Reminder for families', theme: 'Theme of the week', menu: 'Menu of the week' };
+  // (school_closures), tuition days (billing Mondays) and the children's birthdays (their dates of birth). With 032 the
+  // office plans it as drafts, says which classes or floors each thing is for, assigns the prep, settles what needs a
+  // decision, and prints a staff calendar and a family one for each floor or class.
+  const EVENT_KIND = { event: 'Activity', reminder: 'Reminder for families', theme: 'Theme of the week', menu: 'Menu of the week',
+    closure: 'No school (some classes)' };
   const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
   const onDay = (x, day) => x.starts_on <= day && (x.ends_on || x.starts_on) >= day;
   const birthdaysOn = (day) => (state.students || []).filter((s) => s.status === 'enrolled' && s.dob && s.dob.slice(5) === day.slice(5)).sort(sortStudents);
-  function dayItems(day) {
-    const items = [];
-    (state.closures || []).filter((c) => onDay(c, day))
-      .forEach((c) => items.push({ cls: 'cal-closed', text: `School closed: ${c.name.replace(/ \(staff (not )?paid\)$/, '')}` }));
-    if (state.hasV6 && periodOf(day) === day) items.push({ cls: 'cal-tuition', text: 'Tuition due' });
-    (state.events || []).filter((e) => (e.kind === 'event' || e.kind === 'reminder') && onDay(e, day))
-      .forEach((e) => items.push({ cls: `cal-${e.kind}`, text: e.title, details: e.details, id: e.id }));
-    birthdaysOn(day).forEach((s) => items.push({ cls: 'cal-bday', text: `Birthday: ${s.name}` }));
+  const pendingDate = (e) => (e.date_options || []).length > 0;
+  const isDraft = (e) => e.status === 'draft';
+  const settled = (e) => !pendingDate(e) && !e.question;
+  const prepOf = (id) => (state.prep || []).filter((p) => p.event_id === id);
+  const closureOn = (day) => (state.closures || []).find((c) => onDay(c, day));
+  const closureName = (c) => c.name.replace(/ \(staff (not )?paid\)$/, '');
+  const floorName = (n) => `${n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`} floor`;
+  const floorList = () => [...new Set(state.classrooms.map((c) => c.floor).filter(Boolean))].sort();
+  const floorClassIds = (n) => state.classrooms.filter((c) => c.floor === n).map((c) => c.id);
+  // Who an entry is for, in words: '' for the whole school, else its floors and classes ("1st floor, VPK").
+  function audienceLabel(ids) {
+    if (!ids?.length) return '';
+    const set = new Set(ids), done = new Set(), parts = [];
+    if (state.classrooms.length && state.classrooms.every((c) => set.has(c.id))) return '';
+    floorList().forEach((f) => {
+      const xs = floorClassIds(f);
+      if (xs.length > 1 && xs.every((id) => set.has(id))) { parts.push(floorName(f)); xs.forEach((id) => done.add(id)); }
+    });
+    state.classrooms.forEach((c) => { if (set.has(c.id) && !done.has(c.id)) parts.push(c.name); });
+    return parts.join(', ');
+  }
+  const isFor = (e, ids) => !ids || !e.classroom_ids?.length || e.classroom_ids.some((id) => ids.includes(id));
+  // A family calendar shows approved entries (and, as a preview, settled drafts in place of what they'd replace).
+  const familyShows = (e, v) => (e.status !== 'draft' || (v.drafts && settled(e))) && isFor(e, v.classes);
+  const replacedBy = (v) => new Set((state.events || []).filter((e) => isDraft(e) && (!v.family || (v.drafts && settled(e))))
+    .flatMap((e) => e.replaces || []));
+  // v: {} for staff; { family: true, classes: [ids] or null, drafts } for a family calendar.
+  function dayItems(day, v = {}) {
+    const items = [], fam = !!v.family, gone = replacedBy(v);
+    (state.closures || []).filter((c) => onDay(c, day)).forEach((c) => items.push({ cls: 'cal-closed', text: `School closed: ${closureName(c)}` }));
+    if (!fam && state.hasV6 && periodOf(day) === day) items.push({ cls: 'cal-tuition', text: 'Tuition due' });
+    (state.events || []).filter((e) => ['event', 'reminder', 'closure'].includes(e.kind) && (pendingDate(e) ? !fam && e.date_options.includes(day) : onDay(e, day)))
+      .filter((e) => !fam || (familyShows(e, v) && !gone.has(e.id)))
+      .forEach((e) => items.push({ cls: e.kind === 'closure' ? 'cal-closed' : `cal-${e.kind}`, text: e.title, details: e.details, id: e.id,
+        aud: audienceLabel(e.classroom_ids), draft: !fam && isDraft(e), tentative: !fam && pendingDate(e) ? e.date_options : null,
+        replaced: !fam && gone.has(e.id), prep: fam ? 0 : prepOf(e.id).length, note: fam ? '' : e.internal_note }));
+    if (!fam) birthdaysOn(day).forEach((s) => items.push({ cls: 'cal-bday', text: `Birthday: ${s.name}` }));
     return items;
   }
-  const weekEvents = (mon) => (state.events || []).filter((e) => (e.kind === 'theme' || e.kind === 'menu')
-    && e.starts_on <= addDays(mon, 4) && (e.ends_on || e.starts_on) >= mon).sort((a, b) => (a.kind === 'theme' ? 0 : 1) - (b.kind === 'theme' ? 0 : 1));
-  const calItem = (x) => `<li class="cal-item ${x.cls}" ${x.id ? `data-ev="${x.id}"` : ''}>${esc(x.text)}${x.details ? `<span class="cal-det">${esc(x.details)}</span>` : ''}</li>`;
-  const weekLine = (e) => `<div class="cal-${e.kind}" data-ev="${e.id}"><span class="cal-lbl">${e.kind === 'theme' ? 'Theme' : 'Menu'}</span>${esc(e.title)}</div>`;
+  const weekEvents = (mon, v = {}) => (state.events || []).filter((e) => (e.kind === 'theme' || e.kind === 'menu')
+    && e.starts_on <= addDays(mon, 4) && (e.ends_on || e.starts_on) >= mon && (!v.family || familyShows(e, v)))
+    .sort((a, b) => (a.kind === 'theme' ? 0 : 1) - (b.kind === 'theme' ? 0 : 1));
+  const calItem = (x) => `<li class="cal-item ${x.cls}${x.draft ? ' cal-draft' : ''}${x.replaced ? ' cal-replaced' : ''}" ${x.id ? `data-ev="${x.id}"` : ''}>${
+    x.tentative ? `<span class="cal-flag">Not decided: ${esc(x.tentative.map(fmtDate).join(' or '))}</span>` : x.draft ? '<span class="cal-flag">Draft</span>' : ''}${
+    x.replaced ? '<span class="cal-flag">A draft replaces this</span>' : ''}${esc(x.text)}${x.aud ? `<span class="cal-aud">${esc(x.aud)}</span>` : ''}${
+    x.details ? `<span class="cal-det">${esc(x.details)}</span>` : ''}${x.prep ? `<span class="cal-prep">${x.prep} prep</span>` : ''}</li>`;
+  const weekLine = (e) => `<div class="cal-${e.kind}${isDraft(e) ? ' cal-draft' : ''}" data-ev="${e.id}"><span class="cal-lbl">${e.kind === 'theme' ? 'Theme' : 'Menu'}${isDraft(e) ? ' · draft' : ''}</span>${esc(e.title)}</div>`;
   const mondayOf = (day) => addDays(day, -((new Date(`${day}T12:00:00`).getDay() + 6) % 7));
+  const calTabs = () => {
+    if (!state.hasPlanning) return '';
+    const n = canOffice() ? planChecks().count : 0;
+    const tabs = [['month', 'Month'], ...(canOffice() ? [['check', `Needs confirmation${n ? ` (${n})` : ''}`]] : []), ['prep', 'Prep']];
+    const cur = tabs.some(([k]) => k === state.calTab) ? state.calTab : 'month';
+    return `<div class="seg" role="tablist" aria-label="Calendar">${tabs.map(([k, v]) => `<button type="button" role="tab" data-ctab="${k}" aria-selected="${k === cur}">${esc(v)}</button>`).join('')}</div>`;
+  };
+  const bindCalTabs = (el) => $$('[data-ctab]', el).forEach((b) => b.addEventListener('click', () => { state.calTab = b.dataset.ctab; store.set('calTab', state.calTab); renderCalendar(el); }));
+  const calMonthBar = (ym, extra = '') => `<div class="month-bar"><button class="btn small" id="cal-prev" type="button" aria-label="Previous month">‹</button>
+      <b>${esc(fmtMonth(ym))}</b>
+      <button class="btn small" id="cal-next" type="button" aria-label="Next month">›</button>
+      ${ym !== thisMonth() ? '<button class="btn small ghost" id="cal-now" type="button">This month</button>' : ''}
+      <span class="spacer"></span>${extra}</div>`;
+  const bindCalMonthBar = (el, ym) => {
+    const go = (m) => { state.calMonth = m; renderCalendar(el); };
+    $('#cal-prev', el).addEventListener('click', () => go(shiftMonth(ym, -1)));
+    $('#cal-next', el).addEventListener('click', () => go(shiftMonth(ym, 1)));
+    $('#cal-now', el)?.addEventListener('click', () => go(thisMonth()));
+  };
+  // Family calendars: the whole school, each floor, each class.
+  const familyChoices = () => [['all', 'Whole school', null], ...floorList().map((f) => [`f${f}`, floorName(f), floorClassIds(f)]),
+    ...state.classrooms.map((c) => [c.id, c.name, [c.id]])];
 
   function renderCalendar(el) {
+    const tab = state.hasPlanning ? state.calTab || 'month' : 'month';
+    if (tab === 'check' && canOffice()) return renderPlanCheck(el);
+    if (tab === 'prep') return renderPrep(el);
     const ym = state.calMonth || (state.calMonth = thisMonth()), today = todayStr(), edit = canOffice();
     const first = monthStart(ym), last = monthEnd(ym);
     const weeks = [];
@@ -805,12 +872,13 @@
     };
     const bdays = (state.students || []).filter((s) => s.status === 'enrolled' && s.dob && s.dob.slice(5, 7) === ym.slice(5))
       .sort((a, b) => a.dob.slice(8).localeCompare(b.dob.slice(8)) || sortStudents(a, b));
-    el.innerHTML = `<div class="month-bar"><button class="btn small" id="cal-prev" type="button" aria-label="Previous month">‹</button>
-        <b>${esc(fmtMonth(ym))}</b>
-        <button class="btn small" id="cal-next" type="button" aria-label="Next month">›</button>
-        ${ym !== thisMonth() ? '<button class="btn small ghost" id="cal-now" type="button">This month</button>' : ''}
-        <span class="spacer"></span>
-        ${edit ? '<button class="btn small primary" id="cal-add" type="button">+ Add to calendar</button>' : ''}</div>
+    const drafts = (state.events || []).filter((e) => isDraft(e) && e.starts_on <= last && (e.ends_on || e.starts_on) >= first).length;
+    el.innerHTML = `${calTabs()}${calMonthBar(ym, `${state.hasPlanning ? `<button class="btn small" id="cal-print-staff" type="button">Print staff calendar</button>
+        <select id="cal-print-family" aria-label="Print a family calendar"><option value="">Family calendar…</option>
+          ${familyChoices().map(([k, label]) => `<option value="${esc(k)}">${esc(label)}</option>`).join('')}</select>` : ''}
+        ${edit ? '<button class="btn small primary" id="cal-add" type="button">+ Add to calendar</button>' : ''}`)}
+      ${drafts ? `<p class="panel small cal-draft-note"><b>${drafts} draft${drafts === 1 ? '' : 's'}</b> this month (dashed): staff only until approved.
+        ${edit ? '<button class="btn ghost small" type="button" id="see-check">Needs confirmation</button>' : ''}</p>` : ''}
       <div class="cal-wrap">
         <div class="cal-grid">
           <div class="cal-head">Week</div>${WEEKDAYS.map((d) => `<div class="cal-head">${d}</div>`).join('')}
@@ -822,10 +890,15 @@
       </div>
       <p class="muted small">${edit ? 'Tap a day to add something to it, or tap an activity, theme or menu to change it. ' : ''}Closed days are on Settings → School calendar;
         tuition days come from the billing schedule, and birthdays from each child’s date of birth.</p>`;
-    const go = (m) => { state.calMonth = m; renderCalendar(el); };
-    $('#cal-prev', el).addEventListener('click', () => go(shiftMonth(ym, -1)));
-    $('#cal-next', el).addEventListener('click', () => go(shiftMonth(ym, 1)));
-    $('#cal-now', el)?.addEventListener('click', () => go(thisMonth()));
+    bindCalTabs(el);
+    bindCalMonthBar(el, ym);
+    $('#cal-print-staff', el)?.addEventListener('click', () => showCalendarSheet(ym, null));
+    $('#cal-print-family', el)?.addEventListener('change', (e) => {
+      const c = familyChoices().find(([k]) => k === e.target.value);
+      e.target.value = '';
+      if (c) showCalendarSheet(ym, { key: c[0], label: c[1], classes: c[2] }, true);
+    });
+    $('#see-check', el)?.addEventListener('click', () => { state.calTab = 'check'; store.set('calTab', 'check'); renderCalendar(el); });
     if (!edit) return;
     $('#cal-add', el).addEventListener('click', () => openEvent({ starts_on: ym === thisMonth() ? today : first }));
     $$('.cal-grid [data-ev]', el).forEach((x) => x.addEventListener('click', (e) => {
@@ -835,52 +908,365 @@
     $$('.cal-day[data-day]', el).forEach((d) => d.addEventListener('click', () => openEvent({ starts_on: d.dataset.day })));
   }
 
-  // Add or change one thing on the calendar.
+  // What still needs the office: a date to pick, a question to answer, a draft that replaces something on the calendar,
+  // drafts ready to approve; and tours on a closed day (to move) or on an activity day (to think about).
+  function planChecks() {
+    const evs = (state.events || []).filter(isDraft);
+    const today = todayStr();
+    const tours = state.inquiries.filter((i) => i.stage === 'tour_scheduled' && i.tour_at && localDate(new Date(i.tour_at)) >= today)
+      .sort((a, b) => a.tour_at.localeCompare(b.tour_at));
+    const r = {
+      dates: evs.filter(pendingDate),
+      questions: evs.filter((e) => !pendingDate(e) && e.question),
+      replaces: evs.filter((e) => settled(e) && (e.replaces || []).length),
+      ready: evs.filter((e) => settled(e) && !(e.replaces || []).length),
+      closedTours: tours.filter((i) => closureOn(localDate(new Date(i.tour_at)))),
+      busyTours: tours.filter((i) => !closureOn(localDate(new Date(i.tour_at))) && activitiesOn(localDate(new Date(i.tour_at))).length),
+    };
+    r.count = r.dates.length + r.questions.length + r.replaces.length + r.closedTours.length;
+    return r;
+  }
+  const activitiesOn = (day) => (state.events || []).filter((e) => ['event', 'closure'].includes(e.kind) && settled(e) && onDay(e, day));
+  const whenText = (e) => (pendingDate(e) ? e.date_options.map(dayLabel).join(' or ')
+    : `${dayLabel(e.starts_on)}${e.ends_on && e.ends_on !== e.starts_on ? ` – ${dayLabel(e.ends_on)}` : ''}`);
+  function renderPlanCheck(el) {
+    const ym = state.calMonth || (state.calMonth = thisMonth());
+    const c = planChecks();
+    const card = (e, actions) => `<li class="plan-card" data-id="${e.id}"><div class="plan-head"><b>${esc(e.title)}</b>
+        <span class="muted small">${esc(whenText(e))}${audienceLabel(e.classroom_ids) ? ` · ${esc(audienceLabel(e.classroom_ids))}` : ' · Whole school'}</span>
+        <button class="btn ghost small" type="button" data-edit="${e.id}">Open</button></div>
+      ${e.question ? `<p class="plan-q">${esc(e.question)}</p>` : ''}
+      ${e.internal_note ? `<p class="muted small">Staff note: ${esc(e.internal_note)}</p>` : ''}
+      ${actions}</li>`;
+    const old = (id) => (state.events || []).find((x) => x.id === id);
+    const tourRow = (i, tag) => `<li class="plan-card"><div class="plan-head"><b>${esc(i.parent_name || i.child_name || 'A family')}</b>
+        <span class="muted small">Tour ${esc(fmtDateTime(i.tour_at))}</span>${tag}
+        <button class="btn ghost small" type="button" data-inq="${i.id}">Open</button></div></li>`;
+    const sec = (title, help, items) => (items ? `<section class="panel plan-sec"><h2>${esc(title)}</h2><p class="muted small">${help}</p><ul class="plan-list">${items}</ul></section>` : '');
+    el.innerHTML = `${calTabs()}
+      ${c.count + c.ready.length + c.busyTours.length === 0 ? '<p class="panel">Nothing needs a decision right now.</p>' : ''}
+      ${sec('Pick a date', 'Not decided yet: staff see it as tentative on each possible day; families don’t see it until it has a date and is approved.',
+        c.dates.map((e) => card(e, `<div class="plan-acts">${e.date_options.map((d) => `<button class="btn small" type="button" data-pick="${e.id}" data-on="${d}">${esc(dayLabel(d))}</button>`).join('')}</div>`)).join(''))}
+      ${sec('Answer before it goes to families', 'Write what was decided (and fix the classes in Open if they change). It stays a draft until you approve it.',
+        c.questions.map((e) => card(e, `<div class="plan-acts"><input type="text" data-ans="${e.id}" maxlength="200" placeholder="What was decided">
+          <button class="btn small" type="button" data-answer="${e.id}">Save answer</button></div>`)).join(''))}
+      ${sec('Replaces something on the calendar', 'The planning file and the calendar disagree. Approve the draft to use it (the old entry is removed), or keep the old one (the draft is deleted).',
+        c.replaces.map((e) => card(e, `<p class="small">Instead of: ${e.replaces.map(old).filter(Boolean).map((o) => `<b>${esc(o.title)}</b>, ${esc(whenText(o))}`).join('; ') || '<span class="muted">(already removed)</span>'}</p>
+          <div class="plan-acts"><button class="btn small primary" type="button" data-approve="${e.id}">Approve the draft</button>
+          <button class="btn small" type="button" data-keep="${e.id}">Keep the old one</button></div>`)).join(''))}
+      ${sec('Ready to approve', `Approved entries go on the family calendar. ${c.ready.length > 1 ? '<button class="btn small" type="button" id="approve-all">Approve all</button>' : ''}`,
+        c.ready.map((e) => card(e, `<div class="plan-acts"><button class="btn small primary" type="button" data-approve="${e.id}">Approve</button></div>`)).join(''))}
+      ${sec('Tours on a closed day', 'Booked before the day was closed: call the family to move the tour.',
+        c.closedTours.map((i) => tourRow(i, `<span class="tag overdue">School closed: ${esc(closureName(closureOn(localDate(new Date(i.tour_at)))))}</span>`)).join(''))}
+      ${sec('Tours on an activity day', 'The school is open, but these classes are busy that morning.',
+        c.busyTours.map((i) => tourRow(i, activitiesOn(localDate(new Date(i.tour_at))).map((e) => `<span class="tag due">${esc(e.title)}${audienceLabel(e.classroom_ids) ? ` · ${esc(audienceLabel(e.classroom_ids))}` : ''}</span>`).join(' '))).join(''))}`;
+    bindCalTabs(el);
+    const put = (row) => { state.events = [...state.events.filter((x) => x.id !== row.id), row].sort((a, b) => a.starts_on.localeCompare(b.starts_on)); };
+    const approve = async (id) => {
+      const e = state.events.find((x) => x.id === id);
+      const { data, error } = await sb.rpc('school_event_approve', { p_id: id });
+      if (error) { fail(error, 'Could not approve'); return false; }
+      state.events = state.events.filter((x) => !(e.replaces || []).includes(x.id));
+      put(data);
+      return true;
+    };
+    $$('[data-edit]', el).forEach((b) => b.addEventListener('click', () => openEvent(state.events.find((x) => x.id === b.dataset.edit))));
+    $$('[data-inq]', el).forEach((b) => b.addEventListener('click', () => openDrawer(b.dataset.inq)));
+    $$('[data-pick]', el).forEach((b) => b.addEventListener('click', async () => {
+      const { data, error } = await sb.rpc('school_event_decide', { p_id: b.dataset.pick, p_on: b.dataset.on, p_answer: null });
+      if (error) return fail(error, 'Could not save');
+      put(data); toast(`Date set: ${dayLabel(b.dataset.on)}`); renderPlanCheck(el);
+    }));
+    $$('[data-answer]', el).forEach((b) => b.addEventListener('click', async () => {
+      const v = $(`[data-ans="${b.dataset.answer}"]`, el).value.trim();
+      if (!v) return toast('Write what was decided', true);
+      const { data, error } = await sb.rpc('school_event_decide', { p_id: b.dataset.answer, p_on: null, p_answer: v });
+      if (error) return fail(error, 'Could not save');
+      put(data); toast('Answer saved'); renderPlanCheck(el);
+    }));
+    $$('[data-approve]', el).forEach((b) => b.addEventListener('click', async () => {
+      if (await approve(b.dataset.approve)) { toast('Approved'); renderPlanCheck(el); }
+    }));
+    $$('[data-keep]', el).forEach((b) => b.addEventListener('click', async () => {
+      const e = state.events.find((x) => x.id === b.dataset.keep);
+      if (!confirm(`Delete the draft “${e.title}” and keep what’s on the calendar?`)) return;
+      const { error } = await sb.from('school_events').delete().eq('id', e.id);
+      if (error) return fail(error, 'Could not delete');
+      state.events = state.events.filter((x) => x.id !== e.id);
+      state.prep = (state.prep || []).filter((p) => p.event_id !== e.id);
+      toast('Kept the old one'); renderPlanCheck(el);
+    }));
+    $('#approve-all', el)?.addEventListener('click', async () => {
+      if (!confirm(`Approve ${c.ready.length} drafts? They’ll be on the family calendar.`)) return;
+      for (const e of c.ready) if (!(await approve(e.id))) break;
+      toast('Approved'); renderPlanCheck(el);
+    });
+    void ym;
+  }
+
+  // Prep: what each teacher needs to have ready, a week at a time (the week of the activity, or when it's due).
+  function prepRows(mon) {
+    const end = addDays(mon, 6);
+    return (state.prep || []).map((p) => ({ p, e: (state.events || []).find((e) => e.id === p.event_id) })).filter(({ p, e }) => e
+      && ((e.starts_on >= mon && e.starts_on <= end) || (pendingDate(e) && e.date_options.some((d) => d >= mon && d <= end)) || (p.due_on && p.due_on >= mon && p.due_on <= end)))
+      .sort((a, b) => a.p.assignee.localeCompare(b.p.assignee) || (a.p.due_on || a.e.starts_on).localeCompare(b.p.due_on || b.e.starts_on));
+  }
+  function renderPrep(el) {
+    const mon = state.prepWeek || (state.prepWeek = mondayOf(todayStr())), edit = canOffice();
+    const all = prepRows(mon), who = [...new Set(all.map((x) => x.p.assignee))].sort();
+    if (state.prepWho && !who.includes(state.prepWho)) state.prepWho = '';
+    const rows = all.filter((x) => !state.prepWho || x.p.assignee === state.prepWho);
+    const groups = [...new Set(rows.map((x) => x.p.assignee))];
+    el.innerHTML = `${calTabs()}
+      <div class="month-bar"><button class="btn small" id="pw-prev" type="button" aria-label="Previous week">‹</button>
+        <b>Week of ${esc(fmtDate(mon))}</b><button class="btn small" id="pw-next" type="button" aria-label="Next week">›</button>
+        <select id="pw-who" aria-label="Teacher"><option value="">Every teacher</option>${who.map((w) => `<option ${w === state.prepWho ? 'selected' : ''}>${esc(w)}</option>`).join('')}</select>
+        <span class="spacer"></span><button class="btn small" id="pw-print" type="button" ${rows.length ? '' : 'disabled'}>Print prep list</button></div>
+      ${groups.map((g) => `<section class="panel prep-sec"><h2>${esc(g)}</h2><ul class="prep-list">${rows.filter((x) => x.p.assignee === g).map(({ p, e }) => `<li>
+          <label class="prep-done"><input type="checkbox" class="check" data-done="${p.id}" ${p.done_at ? 'checked' : ''} aria-label="Done"></label>
+          <div><b class="${p.done_at ? 'prep-is-done' : ''}">${esc(p.task)}</b>${p.supplies ? `<div class="small">Supplies: ${esc(p.supplies)}</div>` : ''}
+            <div class="muted small">${esc(e.title)} · ${esc(whenText(e))}${p.due_on ? ` · ready by ${esc(dayLabel(p.due_on))}` : ''}${isDraft(e) ? ' · draft' : ''}</div></div>
+          ${edit ? `<button class="btn ghost small" type="button" data-prep="${p.id}">Edit</button>` : ''}</li>`).join('')}</ul></section>`).join('')
+        || '<p class="panel">No prep this week. Prep is added inside an activity (open it on the Month tab).</p>'}`;
+    bindCalTabs(el);
+    const go = (n) => { state.prepWeek = addDays(mon, n); renderPrep(el); };
+    $('#pw-prev', el).addEventListener('click', () => go(-7));
+    $('#pw-next', el).addEventListener('click', () => go(7));
+    $('#pw-who', el).addEventListener('change', (e) => { state.prepWho = e.target.value; renderPrep(el); });
+    $('#pw-print', el).addEventListener('click', () => showPrepSheet(mon, groups, rows));
+    $$('[data-done]', el).forEach((box) => box.addEventListener('change', async () => {
+      box.disabled = true;
+      const { data, error } = await sb.rpc('prep_done', { p_id: box.dataset.done, p_done: box.checked });
+      if (error) { box.checked = !box.checked; box.disabled = false; return fail(error, 'Could not save'); }
+      state.prep = state.prep.map((p) => (p.id === data.id ? data : p));
+      renderPrep(el);
+    }));
+    $$('[data-prep]', el).forEach((b) => b.addEventListener('click', () => openPrep({ prepId: b.dataset.prep })));
+  }
+  function showPrepSheet(mon, groups, rows) {
+    showPrintSheet({ label: 'Prep list', cls: 'prep-sheet', html: groups.map((g, i) => `<div class="prep-page${i ? ' prep-break' : ''}">
+        ${sheetBand(`Prep: ${g}`, `Week of ${fmtDate(mon)}`)}
+        <table class="r-table"><thead><tr><th class="ck-col">✓</th><th>What to prepare</th><th>Supplies</th><th>For</th><th>Ready by</th></tr></thead>
+          <tbody>${rows.filter((x) => x.p.assignee === g).map(({ p, e }) => `<tr><td class="ck-col"><span class="ck"></span></td><td><b>${esc(p.task)}</b></td>
+            <td>${esc(p.supplies || '')}</td><td>${esc(e.title)}<div class="muted small">${esc(whenText(e))}</div></td><td>${esc(p.due_on ? dayLabel(p.due_on) : '')}</td></tr>`).join('')}</tbody></table></div>`).join('') });
+  }
+
+  // The month on paper. Staff: drafts, tentative dates, who it's for, staff notes and the prep. Family (a floor, a class or the
+  // whole school): only what's approved for them (or, as a preview, the settled drafts too), no staff notes, no prep.
+  function showCalendarSheet(ym, fam, drafts = false) {
+    const v = fam ? { family: true, classes: fam.classes, drafts } : {};
+    const first = monthStart(ym), last = monthEnd(ym), weeks = [];
+    for (let mon = mondayOf(first); mon <= last; mon = addDays(mon, 7)) if (addDays(mon, 4) >= first) weeks.push(mon);   // weeks with a school day in the month
+    const notes = [];   // staff notes, numbered under the grid so the month fits a page
+    const noteRef = (x) => { notes.push(x); return notes.length; };
+    const item = (x) => `<div class="cp-item ${x.cls}${x.draft ? ' cp-draft' : ''}${x.replaced ? ' cp-replaced' : ''}">${x.tentative ? '<b>Not decided:</b> ' : x.draft ? '<b>Draft:</b> ' : ''}${esc(x.text)}${
+      x.aud && (!fam || !fam.classes || fam.classes.length > 1) ? ` <span class="cp-aud">(${esc(x.aud)})</span>` : ''}${x.details ? `<div class="cp-det">${esc(x.details)}</div>` : ''}${
+      x.note ? `<div class="cp-note">Staff note ${noteRef(x)}</div>` : ''}${x.prep ? `<div class="cp-note">${x.prep} prep (see below)</div>` : ''}</div>`;
+    const grid = `<table class="cal-print"><thead><tr><th>Week</th>${WEEKDAYS.map((d) => `<th>${d}</th>`).join('')}</tr></thead><tbody>
+      ${weeks.map((mon) => `<tr><td class="cp-week">${weekEvents(mon, v).map((e) => `<div class="cp-${e.kind}"><span>${e.kind === 'theme' ? 'Theme' : 'Menu'}${!fam && isDraft(e) ? ' (draft)' : ''}</span>${esc(e.title)}</div>`).join('')}</td>
+        ${[0, 1, 2, 3, 4].map((i) => { const d = addDays(mon, i), inM = d.slice(0, 7) === ym; return `<td class="${inM ? '' : 'cp-out'}"><span class="cp-date">${Number(d.slice(8))}</span>${inM ? dayItems(d, v).map(item).join('') : ''}</td>`; }).join('')}</tr>`).join('')}
+      </tbody></table>`;
+    const evs = (state.events || []).filter((e) => (pendingDate(e) ? e.date_options.some((d) => d >= first && d <= last) : e.starts_on <= last && (e.ends_on || e.starts_on) >= first));
+    const prep = fam ? '' : evs.flatMap((e) => prepOf(e.id).map((p) => ({ p, e }))).sort((a, b) => a.e.starts_on.localeCompare(b.e.starts_on) || a.p.assignee.localeCompare(b.p.assignee));
+    const checks = fam ? null : planChecks();
+    const staffExtra = fam ? '' : `${notes.length ? `<h2 class="r-h">Staff notes</h2><ol class="cp-notes">${notes.map((x) => `<li><b>${esc(x.text)}</b>: ${esc(x.note)}</li>`).join('')}</ol>` : ''}
+      ${prep.length ? `<h2 class="r-h">Prep</h2><table class="r-table cp-prep"><thead><tr><th>Activity</th><th>Teacher</th><th>What to prepare</th><th>Supplies</th><th>Ready by</th></tr></thead>
+        <tbody>${prep.map(({ p, e }) => `<tr><td>${esc(e.title)}<div class="muted small">${esc(whenText(e))}</div></td><td><b>${esc(p.assignee)}</b></td><td>${esc(p.task)}</td>
+          <td>${esc(p.supplies || '')}</td><td>${esc(p.due_on ? dayLabel(p.due_on) : '')}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${checks.dates.length + checks.questions.length + checks.replaces.length ? `<h2 class="r-h">Needs confirmation</h2><ul class="cp-checks">
+        ${[...checks.dates, ...checks.questions, ...checks.replaces].map((e) => `<li><b>${esc(e.title)}</b> (${esc(whenText(e))})${e.question ? `: ${esc(e.question)}` : pendingDate(e) ? ': pick the date' : ': replaces an entry on the calendar'}</li>`).join('')}</ul>` : ''}`;
+    const sheet = showPrintSheet({
+      label: fam ? `Family calendar · ${fam.label}` : 'Staff calendar', cls: `cal-sheet${fam ? ' cal-family' : ''}`,
+      note: fam ? `<label class="pill-check"><input type="checkbox" class="check" id="cs-drafts" ${drafts ? 'checked' : ''}> Preview with drafts (not sent to anyone)</label>` : 'Staff only: drafts, tentative dates and staff notes.',
+      html: `${sheetBand(fmtMonth(ym), fam ? `${fam.label} · Families${drafts ? ' · Preview' : ''}` : 'Staff calendar')}
+        ${grid}
+        ${fam ? `<p class="r-note">Creativa Academy${state.settings?.school_phone ? ` · ${esc(state.settings.school_phone)}` : ''}. Questions? Ask the front desk.</p>`
+          : `${staffExtra}<p class="r-note">Printed ${esc(fmtDateTime(new Date().toISOString()))}. Staff only.</p>`}` });
+    $('#cs-drafts', sheet)?.addEventListener('change', (e) => { sheet.remove(); document.body.classList.remove('printing'); showCalendarSheet(ym, fam, e.target.checked); });
+  }
+
+  // Add or change one thing on the calendar (with 032: who it's for, a draft, staff note, what needs deciding, the prep).
   function openEvent(ev0) {
     if (!ev0) return;
-    const isNew = !ev0.id, ev = { kind: 'event', title: '', details: '', ends_on: null, ...ev0 };
+    const plan = state.hasPlanning, isNew = !ev0.id;
+    const ev = { kind: 'event', title: '', details: '', ends_on: null, classroom_ids: [], date_options: [], replaces: [], status: plan ? 'draft' : 'approved', ...ev0 };
+    const extra = (ev.date_options || []).filter((d) => d !== ev.starts_on);
+    const preps = isNew ? [] : prepOf(ev.id);
+    const kinds = Object.entries(EVENT_KIND).filter(([k]) => k !== 'closure' || plan);
     const ctl = mountDrawer({
       title: isNew ? 'Add to the calendar' : esc(ev.title),
-      sub: isNew ? '' : esc(EVENT_KIND[ev.kind]),
+      sub: isNew ? '' : esc(`${EVENT_KIND[ev.kind]}${plan ? ` · ${isDraft(ev) ? 'Draft (staff only)' : 'Approved'}` : ''}`),
       body: `<div class="section"><div class="grid2">
           <label class="full">What<input name="title" value="${esc(ev.title)}" maxlength="120" required placeholder="e.g. Christmas pictures"></label>
-          ${fSelect('kind', 'Kind', Object.entries(EVENT_KIND), ev.kind)}
+          ${fSelect('kind', 'Kind', kinds, ev.kind)}
           <span></span>
           ${fInput('starts_on', 'On (or from)', ev.starts_on, 'date', 'required')}
           ${fInput('ends_on', 'Until (if more than one day)', ev.ends_on || '', 'date')}
-          <label class="full">Details<textarea name="details" maxlength="500" rows="3" placeholder="e.g. 1st floor and the 3s classes">${esc(ev.details || '')}</textarea></label>
+          <label class="full">Details${plan ? ' (families see these)' : ''}<textarea name="details" maxlength="500" rows="3" placeholder="e.g. 1st floor and the 3s classes">${esc(ev.details || '')}</textarea></label>
           <p class="full muted small">A theme or a menu runs all week: put its Monday and Friday.</p>
-        </div></div>`,
+        </div></div>
+        ${plan ? `<div class="section"><h3>Who it’s for</h3>
+          <div class="aud-quick"><button class="btn small" type="button" data-aud="all">Whole school</button>
+            ${floorList().map((f) => `<button class="btn small" type="button" data-aud="f${f}">${esc(floorName(f))}</button>`).join('')}</div>
+          <div class="funding-boxes">${state.classrooms.map((c) => `<label class="pill-check"><input type="checkbox" class="check" name="cls_${c.id}" ${(ev.classroom_ids || []).includes(c.id) ? 'checked' : ''}> ${esc(c.name)}</label>`).join('')}</div>
+          <p class="muted small">None ticked = the whole school. Floors are on Settings → Classes.</p></div>
+        <div class="section"><h3>Staff only</h3><div class="grid2">
+          <label class="full">Staff note (never on the family calendar)<textarea name="internal_note" maxlength="500" rows="2">${esc(ev.internal_note || '')}</textarea></label>
+          ${fInput('opt1', 'Not decided? Another possible date', extra[0] || '', 'date')}
+          ${fInput('opt2', 'Or', extra[1] || '', 'date')}
+          <label class="full">Question to settle before families see it<input name="question" value="${esc(ev.question || '')}" maxlength="300" placeholder="e.g. Is Kindergarten off too?"></label>
+        </div></div>
+        ${isNew ? '<p class="muted small">Save it first, then add the prep (who prepares what).</p>' : `<div class="section"><h3 class="h-row">Prep <button class="btn small" type="button" id="prep-add">+ Add prep</button></h3>
+          <ul class="contact-list">${preps.map((p) => `<li><div class="c-head"><b>${esc(p.assignee)}</b> <span>${esc(p.task)}</span>
+              <button class="btn ghost small" type="button" data-prep="${p.id}">Edit</button></div>
+            <div class="muted small">${esc([p.supplies && `Supplies: ${p.supplies}`, p.due_on && `ready by ${dayLabel(p.due_on)}`, p.done_at && 'done'].filter(Boolean).join(' · '))}</div></li>`).join('')
+            || '<li class="muted small">No prep yet.</li>'}</ul></div>`}
+        ${!isNew && !isDraft(ev) && state.hasMsgs ? '<div class="section"><button class="btn small" type="button" id="ev-text">Write a text to these families</button> <span class="muted small">Opens Messages; nothing is sent until you send it.</span></div>' : ''}` : ''}`,
       foot: `${isNew ? '' : '<button class="btn danger" id="ev-del" type="button">Delete</button>'}<span class="spacer"></span>
-        <button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="ev-save" type="button">Save</button>`,
+        <button class="btn" data-close type="button">Cancel</button>
+        ${plan ? '<button class="btn" id="ev-draft" type="button">Save as draft</button>' : ''}
+        <button class="btn primary" id="ev-save" type="button">${plan && (isNew || isDraft(ev)) ? 'Save and approve' : 'Save'}</button>`,
     });
     const { drawer, form } = ctl;
-    $('#ev-save', drawer).addEventListener('click', async () => {
+    $$('[data-aud]', drawer).forEach((b) => b.addEventListener('click', () => {
+      const ids = b.dataset.aud === 'all' ? [] : floorClassIds(Number(b.dataset.aud.slice(1)));
+      state.classrooms.forEach((c) => { form[`cls_${c.id}`].checked = ids.includes(c.id); });
+      ctl.dirty = true;
+    }));
+    const save = async (asDraft) => {
       const row = { title: formVal(form, 'title'), kind: form.kind.value, starts_on: form.starts_on.value, ends_on: form.ends_on.value || null,
         details: formVal(form, 'details') };
       if (!row.title) { form.title.focus(); return toast('Say what it is', true); }
       if (!row.starts_on) { form.starts_on.focus(); return toast('Pick the day', true); }
       if (row.ends_on === row.starts_on) row.ends_on = null;
       if (row.ends_on && row.ends_on < row.starts_on) { form.ends_on.focus(); return toast('“Until” has to be after the first day', true); }
+      let approve = false;
+      if (plan) {
+        const opts = [form.opt1.value, form.opt2.value].filter(Boolean);
+        Object.assign(row, { classroom_ids: state.classrooms.filter((c) => form[`cls_${c.id}`].checked).map((c) => c.id),
+          internal_note: formVal(form, 'internal_note'), question: formVal(form, 'question'),
+          date_options: opts.length ? [...new Set([row.starts_on, ...opts])].sort() : [], status: 'draft', updated_at: new Date().toISOString() });
+        approve = !asDraft;
+        if (approve && (row.question || row.date_options.length)) {
+          approve = false;
+          toast('Saved as a draft: it still needs a decision (Needs confirmation)');
+        }
+        if (approve && (ev.replaces || []).length && !confirm('Approving this removes the entry it replaces on the calendar. Approve?')) approve = false;
+      }
       const { data, error } = isNew ? await sb.from('school_events').insert(row).select().single()
         : await sb.from('school_events').update(row).eq('id', ev.id).select().single();
       if (error) return fail(error, 'Could not save');
-      state.events = [...(state.events || []).filter((x) => x.id !== data.id), data].sort((a, b) => a.starts_on.localeCompare(b.starts_on));
+      let saved = data;
+      if (approve) {
+        const r = await sb.rpc('school_event_approve', { p_id: data.id });
+        if (r.error) fail(r.error, 'Saved as a draft, but could not approve');
+        else { saved = r.data; state.events = (state.events || []).filter((x) => !(data.replaces || []).includes(x.id)); }
+      }
+      state.events = [...(state.events || []).filter((x) => x.id !== saved.id), saved].sort((a, b) => a.starts_on.localeCompare(b.starts_on));
       ctl.dirty = false;
       closeDrawer();
-      toast('Saved');
+      toast(plan && saved.status === 'draft' ? 'Saved as a draft' : 'Saved');
       renderView();
+    };
+    $('#ev-save', drawer).addEventListener('click', () => save(false));
+    $('#ev-draft', drawer)?.addEventListener('click', () => save(true));
+    const back = () => openEvent(state.events.find((x) => x.id === ev.id));
+    $('#prep-add', drawer)?.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openPrep({ eventId: ev.id, back }); });
+    $$('[data-prep]', drawer).forEach((b) => b.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openPrep({ prepId: b.dataset.prep, back }); }));
+    $('#ev-text', drawer)?.addEventListener('click', () => {
+      if (ctl.dirty && !confirm('Discard your changes?')) return;
+      const kids = state.students.filter((s) => s.status === 'enrolled' && (!ev.classroom_ids?.length || ev.classroom_ids.includes(s.classroom_id)));
+      closeDrawer();
+      state.msgDraft = { ...newMsgDraft(), who: 'pick', picked: [...new Set(kids.map(familyKey))],
+        body: `${ev.title}: ${whenText(ev)}.${ev.details ? ` ${ev.details}` : ''}` };
+      state.view = 'messages';
+      store.set('view', state.view);
+      renderShell();
     });
     $('#ev-del', drawer)?.addEventListener('click', async () => {
       if (!confirm(`Delete “${ev.title}” from the calendar?`)) return;
       const { error } = await sb.from('school_events').delete().eq('id', ev.id);
       if (error) return fail(error, 'Could not delete');
       state.events = state.events.filter((x) => x.id !== ev.id);
+      state.prep = (state.prep || []).filter((p) => p.event_id !== ev.id);
       ctl.dirty = false;
       closeDrawer();
       toast('Deleted');
       renderView();
     });
+  }
+
+  // One prep job: who, what, the supplies, ready by when.
+  function teacherNames() {
+    const names = state.classrooms.flatMap((c) => String(c.teachers || '').split(/\s*(?:&|,|\band\b)\s*/)).map((x) => x.trim()).filter(Boolean);
+    return [...new Set([...names, ...(state.prep || []).map((p) => p.assignee)])].sort();
+  }
+  function openPrep({ eventId, prepId, back }) {
+    const p = prepId ? (state.prep || []).find((x) => x.id === prepId) : { event_id: eventId };
+    if (!p) return;
+    const ev = (state.events || []).find((e) => e.id === p.event_id);
+    if (!ev) return;
+    const dayBefore = (d) => { let x = addDays(d, -1); while ([0, 6].includes(new Date(`${x}T12:00:00`).getDay())) x = addDays(x, -1); return x; };
+    const ctl = mountDrawer({
+      title: prepId ? esc(p.task) : 'Add prep',
+      sub: esc(`${ev.title} · ${whenText(ev)}`),
+      body: `<div class="section"><div class="grid2">
+          <label>Teacher<input name="assignee" value="${esc(p.assignee || '')}" maxlength="60" list="prep-names" placeholder="The teacher who prepares it" required></label>
+          <datalist id="prep-names">${teacherNames().map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
+          ${fSelect('classroom_id', 'Class', [['', '—'], ...state.classrooms.map((c) => [c.id, c.name])], p.classroom_id || '')}
+          <label class="full">What to prepare<input name="task" value="${esc(p.task || '')}" maxlength="200" placeholder="e.g. Chicken coop station" required></label>
+          <label class="full">Supplies<input name="supplies" value="${esc(p.supplies || '')}" maxlength="300" placeholder="e.g. Shaving cream, cotton or yarn"></label>
+          ${fInput('due_on', 'Ready by', p.due_on || dayBefore(ev.starts_on), 'date')}
+        </div></div>`,
+      foot: `${prepId ? '<button class="btn danger" id="pp-del" type="button">Remove</button>' : ''}<span class="spacer"></span>
+        <button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="pp-save" type="button">Save</button>`,
+    });
+    const { drawer, form } = ctl;
+    form.assignee.focus();
+    const done = () => { ctl.dirty = false; renderView(); if (back) back(); else closeDrawer(); };
+    $('#pp-save', drawer).addEventListener('click', async () => {
+      const row = { event_id: ev.id, assignee: formVal(form, 'assignee'), classroom_id: form.classroom_id.value || null, task: formVal(form, 'task'),
+        supplies: formVal(form, 'supplies'), due_on: form.due_on.value || null };
+      if (!row.assignee) { form.assignee.focus(); return toast('Who prepares it?', true); }
+      if (!row.task) { form.task.focus(); return toast('Say what to prepare', true); }
+      const { data, error } = prepId ? await sb.from('school_event_prep').update(row).eq('id', prepId).select().single()
+        : await sb.from('school_event_prep').insert(row).select().single();
+      if (error) return fail(error, 'Could not save the prep');
+      state.prep = [...(state.prep || []).filter((x) => x.id !== data.id), data];
+      toast('Prep saved');
+      done();
+    });
+    $('#pp-del', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Remove “${p.task}”?`)) return;
+      const { error } = await sb.from('school_event_prep').delete().eq('id', prepId);
+      if (error) return fail(error, 'Could not remove');
+      state.prep = state.prep.filter((x) => x.id !== prepId);
+      toast('Prep removed');
+      done();
+    });
+  }
+
+  // Tours: the school's closed days can't be booked; an activity day shows which classes are busy.
+  function tourDayHtml(day) {
+    if (!day) return '';
+    const c = closureOn(day);
+    if (c) return `<span class="tour-closed">School closed: ${esc(closureName(c))}. Pick another day.</span>`;
+    const xs = activitiesOn(day);
+    return xs.length ? `That day: ${xs.map((e) => `<b>${esc(e.title)}</b> (${esc(audienceLabel(e.classroom_ids) || 'whole school')})`).join('; ')}` : '';
+  }
+  const tourTags = (i) => {
+    const day = localDate(new Date(i.tour_at)), c = closureOn(day), xs = c ? [] : activitiesOn(day);
+    return c ? ` <span class="tag overdue">School closed: ${esc(closureName(c))}</span>` : xs.length ? ` <span class="tag due">${esc(xs[0].title)}</span>` : '';
+  };
+  // Today: the prep due in the next week, by teacher.
+  function prepSoonHtml() {
+    const today = todayStr(), wk = addDays(today, 7);
+    const rows = (state.prep || []).filter((p) => !p.done_at).map((p) => ({ p, e: (state.events || []).find((e) => e.id === p.event_id) }))
+      .filter(({ p, e }) => e && (p.due_on || e.starts_on) >= today && (p.due_on || e.starts_on) <= wk)
+      .sort((a, b) => a.p.assignee.localeCompare(b.p.assignee) || (a.p.due_on || '').localeCompare(b.p.due_on || ''));
+    if (!rows.length) return '';
+    return `<section class="panel"><h2 class="h-row">Prep this week <button class="btn ghost small" type="button" id="see-prep">Prep</button></h2>
+      <ul class="cal-list prep-soon">${rows.map(({ p, e }) => `<li><b>${esc(p.assignee)}</b>: ${esc(p.task)}<span class="cal-det">${esc(e.title)}${p.due_on ? ` · ready by ${esc(dayLabel(p.due_on))}` : ''}</span></li>`).join('')}</ul></section>`;
   }
 
   // Today: what's on at school today and over the next week.
@@ -1370,6 +1756,7 @@
     $('#ps-close', sheet).addEventListener('click', close);
     sheet.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') close(); });
     $('#ps-close', sheet).focus();
+    return sheet;
   }
   const sheetBand = (title, sub) => `<header class="r-band"><img src="/assets/logo.png" alt="${esc(state.settings?.school_name || 'Creativa Academy')}">
     <div class="r-title"><h1>${esc(title)}</h1><span class="r-year">${esc(sub)}</span></div></header>`;
@@ -5532,6 +5919,7 @@
         if (c.diff?.void && c.diff.void[1] === true) return d.late_fee_for ? `waived the ${money(d.amount)} late fee for ${kid}` : `voided ${kid}’s ${money(d.amount)} bill`;
         return `changed ${kid}’s ${what}: ${dt}`;
       }
+      case 'school_event_prep': return `${act} prep “${d.task || ''}” (${d.assignee || ''})${c.action === 'update' ? `: ${dt}` : ''}`;
       case 'student_medications': return `${act} medicine ${d.name || ''} for ${kid}${c.action === 'update' ? `: ${dt}` : ''}`;
       case 'student_contacts': return `${act} ${CONTACT_ROLE[d.role]?.toLowerCase() || ''} contact ${[d.first_name, d.last_name].filter(Boolean).join(' ')} for ${kid}${c.action === 'update' ? `: ${dt}` : ''}`;
       case 'classrooms': return `${act} class ${d.name}${c.action === 'update' ? `: ${dt}` : ''}`;
@@ -5622,11 +6010,12 @@
     return `
       <section class="panel settings-panel"><h2>Classes</h2>
         <p class="muted small">Teachers and capacity show on the Enrollment page. Changes save as you go.</p>
-        <div class="table-wrap flat"><table class="class-table"><thead><tr><th>Class</th><th>Teachers</th><th>Capacity</th><th>Order</th></tr></thead>
+        <div class="table-wrap flat"><table class="class-table"><thead><tr><th>Class</th><th>Teachers</th><th>Capacity</th>${state.hasPlanning ? '<th>Floor</th>' : ''}<th>Order</th></tr></thead>
         <tbody>${state.classrooms.map((c) => `<tr data-cls="${c.id}">
           <td><input data-k="name" value="${esc(c.name)}" aria-label="Class name"></td>
           <td><input data-k="teachers" value="${esc(c.teachers)}" aria-label="Teachers"></td>
           <td><input data-k="capacity" type="number" min="1" max="99" value="${esc(c.capacity)}" aria-label="Capacity"></td>
+          ${state.hasPlanning ? `<td><select data-k="floor" aria-label="${esc(c.name)} floor"><option value="">—</option>${[1, 2, 3].map((n) => `<option value="${n}" ${c.floor === n ? 'selected' : ''}>${n === 1 ? '1st' : n === 2 ? '2nd' : '3rd'}</option>`).join('')}</select></td>` : ''}
           <td><input data-k="sort" type="number" value="${esc(c.sort)}" aria-label="Order"></td></tr>`).join('')}</tbody></table></div>
         <button class="btn small" id="cls-add" type="button">+ Add class</button>
         ${state.hasClassRates ? `<h3 class="sub-h">Tuition rates</h3>
@@ -5903,7 +6292,7 @@
       const id = input.closest('tr').dataset.cls, k = input.dataset.k;
       let v = input.value.trim();
       if (k === 'name' && !v) return renderStaff(el);
-      if (k === 'capacity' || k === 'sort') v = v === '' ? (k === 'sort' ? 100 : null) : Number(v);
+      if (k === 'capacity' || k === 'sort' || k === 'floor') v = v === '' ? (k === 'sort' ? 100 : null) : Number(v);
       if (/^rate_(full|after_care)$|_fee$/.test(k)) {
         if (v !== '' && !(Number(v) >= 0)) { toast('Rates are numbers', true); return renderStaff(el); }
         v = v === '' ? null : Number(v);
@@ -6076,6 +6465,7 @@
           <label>Assigned to${sel('assigned_to', [['', 'Unassigned'], ...state.staff.filter((s) => s.active || s.id === v.assigned_to).map((s) => [s.id, s.full_name || s.email])], v.assigned_to)}</label>
           ${inp('tour_at', 'Tour date & time', 'datetime-local')}
           ${inp('next_follow_up', 'Next follow-up', 'date')}
+          ${state.events || state.closures ? '<p class="full small tour-day" id="tour-day" aria-live="polite"></p>' : ''}
           <label class="full" id="lost-wrap" ${v.stage === 'lost' ? '' : 'hidden'}>Reason lost${inp('lost_reason', '').replace(/^<label>|<\/label>$/g, '')}</label>
           ${!state.hasStartOn ? '' : student ? `<p class="full small">Registration: <b>${regPaid(student) ? 'paid' : 'not paid'}</b>
             <span class="muted">(from ${esc(student.name)}’s page on Students)</span></p>`
@@ -6187,6 +6577,9 @@
     $('#open-student', drawer)?.addEventListener('click', leave(() => openStudent(student.id)));
     $('#to-roster', drawer)?.addEventListener('click', leave(() => studentFromInquiry(inq)));
     (id ? $('[data-close]', drawer) : form.parent_name).focus();
+    const tourDay = () => { const b = $('#tour-day', drawer); if (b) b.innerHTML = tourDayHtml(form.tour_at.value ? form.tour_at.value.slice(0, 10) : ''); };
+    form.tour_at.addEventListener('input', tourDay);
+    tourDay();
 
     async function save() {
       const patch = {};
@@ -6208,6 +6601,10 @@
           form.tour_at.focus();
           return toast('Pick the new tour date and time', true);
         }
+      }
+      if (patch.tour_at && new Date(patch.tour_at).getTime() !== new Date(inq.tour_at || 0).getTime()) {
+        const c = closureOn(localDate(new Date(patch.tour_at)));
+        if (c) { form.tour_at.focus(); return toast(`The school is closed that day (${closureName(c)}). Pick another day for the tour.`, true); }
       }
       if (patch.stage === 'tour_scheduled' && !patch.tour_at && inq.stage !== 'tour_scheduled') {
         form.tour_at.focus();

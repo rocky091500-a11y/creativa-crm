@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql`, `029_school_events.sql`, `030_pickup_health.sql` and `031_reregistration.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql`, `029_school_events.sql`, `030_pickup_health.sql`, `031_reregistration.sql` and `032_school_planning.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -425,6 +425,27 @@ day to add, an item to change it), closed days (`school_closures`, Settings → 
 billing Mondays) and enrolled children's birthdays (their dates of birth), with the month's birthdays on the side.
 Weekend items go in the week's first column; on a phone it's a list of the days that have something. **Today** shows
 *This week at school*: the week's theme and menu and the next 7 days.
+
+## School planning on the Calendar (032)
+
+The office (admins, and staff who record payments or do payroll) plans the month on **Calendar**:
+
+- **Drafts**: an entry is a *draft* (staff only, dashed) until it's **approved** (then it's on the family calendar).
+  Everything that was already on the calendar is approved. **Who it's for**: the whole school, a floor (`classrooms.floor`,
+  Settings → Classes) or classes (`school_events.classroom_ids`). A **staff note** never reaches families.
+- **Prep** inside an activity (`school_event_prep`): teacher, what to prepare, supplies, ready by. The **Prep** tab shows
+  each teacher's week, to tick done (`prep_done`, any staff) or print; Today shows the prep due this week.
+- **Needs confirmation**: a draft with possible dates (`date_options`: tentative, never shown to families) to pick
+  (`school_event_decide`), a question to answer before families see it, a draft that **replaces** an entry already on the
+  calendar (approving it removes that entry; `school_event_approve`), drafts ready to approve, and tours on a closed day or
+  on an activity day.
+- **Print**: the staff calendar (drafts, tentative dates, who it's for, numbered staff notes, prep, what needs
+  confirmation) and a family calendar for the whole school, a floor or a class (approved entries for them only; *Preview
+  with drafts* shows the settled drafts in place of what they replace). Cream and sage, letter paper.
+- **Import** a planning file (`school_events_import`): its items come in as drafts, once (by `source` + `source_key`), never
+  changing or removing what's on the calendar; a week that already has a theme or menu keeps it.
+- **Tours** can't be set on a day the whole school is closed (a trigger on `inquiries.tour_at`); the inquiry shows the
+  day's activities and the classes they're for. Nothing is texted to families unless someone writes and sends it.
 
 ## Pick-up, allergies and medicine (030)
 

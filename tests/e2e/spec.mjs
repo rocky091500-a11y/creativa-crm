@@ -310,6 +310,71 @@ try {
   await page.waitForSelector('#toast:has-text("Deleted")');
   assert.equal(await page.locator('.cal-grid .cal-item', { hasText: 'Picture day' }).count(), 0);
   ok('Calendar: add an activity, see it on the month and on Today, change it, delete it');
+
+  // School planning (032): a draft for one class with a staff note and prep; the teacher's prep list; Needs confirmation
+  // (approve; pick one of two dates); the family calendar shows it only to that class, without the staff note.
+  await page.click('[data-ctab=month]');
+  await page.click('#cal-add');
+  await drawer.locator('input[name=title]').fill('Farm Day');
+  await drawer.locator('.funding-boxes label', { hasText: 'VPK' }).locator('input').check();
+  await drawer.locator('textarea[name=internal_note]').fill('Bring wipes');
+  await drawer.locator('#ev-draft').click();
+  await page.waitForSelector('#toast:has-text("Saved as a draft")');
+  const farm = page.locator('.cal-grid .cal-item.cal-draft', { hasText: 'Farm Day' });
+  assert.match(await farm.first().textContent(), /Draft[\s\S]*Farm Day[\s\S]*VPK/);
+  await farm.first().click();
+  await drawer.locator('#prep-add').click();
+  await drawer.locator('input[name=assignee]').fill('Ms. Test');
+  await drawer.locator('input[name=task]').fill('Pig station');
+  await drawer.locator('input[name=supplies]').fill('Clean mud');
+  await drawer.locator('#pp-save').click();
+  await page.waitForSelector('#toast:has-text("Prep saved")');
+  await drawer.locator('.contact-list', { hasText: 'Pig station' }).waitFor();   // back on the activity
+  await drawer.locator('[data-close]').first().click();
+  await page.click('[data-ctab=prep]');
+  const prepRow = page.locator('.prep-sec', { hasText: 'Ms. Test' });
+  assert.match(await prepRow.textContent(), /Pig station[\s\S]*Supplies: Clean mud[\s\S]*Farm Day/);
+  await prepRow.locator('input[data-done]').check();
+  await page.locator('.prep-sec b.prep-is-done', { hasText: 'Pig station' }).waitFor();
+  await page.click('[data-ctab=check]');
+  await page.locator('.plan-card', { hasText: 'Farm Day' }).locator('[data-approve]').click();
+  await page.waitForSelector('#toast:has-text("Approved")');
+  await page.click('[data-ctab=month]');
+  await page.selectOption('#cal-print-family', { label: 'VPK' });
+  const sheetText = await page.locator('.print-sheet .cal-sheet').textContent();
+  assert.ok(sheetText.includes('Farm Day') && !sheetText.includes('Bring wipes') && !sheetText.includes('Pig station'), 'VPK families: the activity, no staff note or prep');
+  await page.click('#ps-close');
+  await page.selectOption('#cal-print-family', { label: 'Late 3s' });
+  assert.ok(!(await page.locator('.print-sheet .cal-sheet').textContent()).includes('Farm Day'), 'not on another class’s calendar');
+  await page.click('#ps-close');
+  await page.click('#cal-print-staff');
+  assert.match(await page.locator('.print-sheet .cal-sheet').textContent(), /Farm Day[\s\S]*Staff note 1[\s\S]*Staff notes[\s\S]*Farm Day: Bring wipes[\s\S]*Ms\. Test[\s\S]*Pig station/);
+  await page.click('#ps-close');
+  await page.click('#cal-add');
+  await drawer.locator('input[name=title]').fill('Fundraiser night');
+  await drawer.locator('input[name=opt1]').fill(new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10));
+  await drawer.locator('#ev-save').click();
+  await page.waitForSelector('#toast:has-text("still needs a decision")');
+  await page.click('[data-ctab=check]');
+  const fund = page.locator('.plan-card', { hasText: 'Fundraiser night' });
+  assert.equal(await fund.locator('[data-pick]').count(), 2, 'both possible dates');
+  await fund.locator('[data-pick]').nth(1).click();
+  await page.waitForSelector('#toast:has-text("Date set")');
+  await page.locator('.plan-sec', { hasText: 'Ready to approve' }).locator('.plan-card', { hasText: 'Fundraiser night' }).waitFor();
+  await page.locator('.plan-card', { hasText: 'Fundraiser night' }).locator('[data-edit]').click();
+  await drawer.locator('#ev-del').click();   // confirm() accepted
+  await page.waitForSelector('#toast:has-text("Deleted")');
+  await page.click('[data-ctab=month]');
+  await page.locator('.cal-grid .cal-item', { hasText: 'Farm Day' }).first().click();
+  await drawer.locator('#ev-del').click();
+  await page.waitForSelector('#toast:has-text("Deleted")');
+  ok('School planning: a draft for one class with prep; the teacher’s prep list; approve; pick one of two dates; family vs staff print');
+  // Tours: a closed day can't be booked (Veterans Day).
+  await page.click('#add');
+  await drawer.locator('input[name=tour_at]').fill('2026-11-11T10:00');
+  await drawer.locator('#tour-day', { hasText: 'School closed: Veterans Day' }).waitFor();
+  await drawer.locator('[data-close]').first().click();
+  ok('Tours: the inquiry shows the school is closed on Veterans Day');
   await page.click('header nav button[data-view=roster]');
   await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).waitFor();
 
@@ -873,6 +938,7 @@ try {
   await shot(pr, '31-paychecks-add');
   await pr.click('#pc-save');
   await pr.waitForSelector('#toast:has-text("2 paychecks, $1,390.00 gross")');
+  await pr.locator('#pc-runs tr', { hasText: 'Oct 22' }).first().waitFor();   // the table reloads after the toast
   assert.match(await pr.locator('#pc-runs tr').first().textContent(), /Oct 22[\s\S]*Oct 2 – Oct 15[\s\S]*2[\s\S]*90\.00[\s\S]*\$1,390\.00[\s\S]*\$1,283\.14/);
   assert.match(await pr.locator('#pc-people tr', { hasText: 'Cora Seed' }).textContent(), /1[\s\S]*80\.00[\s\S]*\$1,240\.00/);
   await pr.locator('#pc-people tr', { hasText: 'Cora Seed' }).click();

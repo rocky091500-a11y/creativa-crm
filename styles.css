@@ -795,3 +795,64 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 .reg-spots .table-wrap { box-shadow: none; }
 .reg-spots tr.reg-total td { border-top: 2px solid var(--line); }
 .stat .btn.small { margin-left: 4px; padding: 0 8px; font-size: 12px; }
+
+/* School planning (032): drafts, who it's for, needs confirmation, prep, printed calendars */
+.cal-draft { border: 1.5px dashed var(--sage); }
+.cal-item.cal-draft { background: #F4F6EE; }
+.cal-replaced { opacity: .55; text-decoration: line-through; }
+.cal-flag { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--sage-deep); text-decoration: none; }
+.cal-aud { display: block; font-size: 11px; color: var(--sage-deep); }
+.cal-prep { display: inline-block; margin-top: 2px; font-size: 11px; background: var(--white); border-radius: 999px; padding: 0 6px; color: var(--ink-soft); }
+.cal-draft-note { margin-bottom: 12px; }
+#cal-print-family { width: auto; }
+.plan-sec { margin-bottom: 16px; }
+.plan-sec h2 { margin-bottom: 2px; }
+.plan-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.plan-card { border-top: 1px solid var(--line); padding: 10px 0; }
+.plan-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.plan-head .btn { margin-left: auto; }
+.plan-q { margin: 6px 0; padding: 6px 10px; background: #FBF0D5; border-radius: 8px; }
+.plan-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.plan-acts input { flex: 1; min-width: 200px; }
+.aud-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.prep-sec { margin-bottom: 14px; }
+.prep-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.prep-list li { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
+.prep-is-done { text-decoration: line-through; color: var(--ink-soft); }
+.tour-day:empty { display: none; }
+.tour-day { margin: 0; color: var(--ink-soft); }
+.tour-closed { color: var(--danger); font-weight: 600; }
+
+/* The printed month: cream and sage, on letter paper */
+.receipt.cal-sheet { padding: 32px 36px 20px; min-height: 0; }
+.cal-sheet .r-band { margin-bottom: 14px; }
+.cal-print { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; margin-bottom: 14px; }
+.cal-print th { background: var(--sage); color: var(--white); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; padding: 5px 6px; border: 1px solid var(--sage-deep); }
+.cal-print th:first-child { width: 17%; }
+.cal-print td { vertical-align: top; border: 1px solid #CFD5C0; padding: 4px 5px; height: 92px; background: var(--white); color: var(--ink); }
+.cal-print td.cp-week { background: var(--cream); }
+.cal-print td.cp-out { background: #FAF8F3; }
+.cp-date { display: block; font-weight: 700; color: var(--sage-deep); font-size: 12px; }
+.cp-item { margin: 2px 0 4px; line-height: 1.25; }
+.cp-item.cal-closed { color: #8A2F22; font-weight: 600; }
+.cp-item.cal-reminder { color: #7A5A12; }
+.cp-item.cal-bday, .cp-item.cal-tuition { color: var(--ink-soft); }
+.cp-draft { border-left: 2px dashed var(--sage); padding-left: 3px; }
+.cp-replaced { text-decoration: line-through; opacity: .6; }
+.cp-aud { color: var(--sage-deep); }
+.cp-det { color: var(--ink-soft); font-size: 10px; }
+.cp-note { color: var(--sage-deep); font-size: 10px; font-style: italic; }
+.cp-theme, .cp-menu { margin-bottom: 6px; font-weight: 600; }
+.cp-menu { font-weight: 400; }
+.cp-theme span, .cp-menu span { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--sage-deep); }
+.cp-checks { margin: 0 0 12px; padding-left: 18px; font-size: 12px; }
+.receipt.cal-sheet .r-table td { padding: 5px 8px; font-size: 12px; color: var(--ink); }
+.receipt.cal-sheet .r-table th { padding: 6px 8px; }
+.prep-break { break-before: page; }
+@media print {
+  .receipt.cal-sheet { padding: 0; }
+  .cal-print td { height: 1.15in; }
+  .cal-print tr, .r-table tr { break-inside: avoid; }
+}
+.cp-notes { margin: 0 0 12px; padding-left: 22px; font-size: 11px; color: var(--ink); }
+.cp-notes li { margin-bottom: 3px; }

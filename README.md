@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql`, `029_school_events.sql`, `030_pickup_health.sql`, `031_reregistration.sql` and `032_school_planning.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql`, `029_school_events.sql`, `030_pickup_health.sql`, `031_reregistration.sql`, `032_school_planning.sql` and `033_planning_import_memory.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -442,8 +442,9 @@ The office (admins, and staff who record payments or do payroll) plans the month
 - **Print**: the staff calendar (drafts, tentative dates, who it's for, numbered staff notes, prep, what needs
   confirmation) and a family calendar for the whole school, a floor or a class (approved entries for them only; *Preview
   with drafts* shows the settled drafts in place of what they replace). Cream and sage, letter paper.
-- **Import** a planning file (`school_events_import`): its items come in as drafts, once (by `source` + `source_key`), never
-  changing or removing what's on the calendar; a week that already has a theme or menu keeps it.
+- **Import** a planning file (`school_events_import`): its items come in as drafts, once (by `source` + `source_key`, kept in
+  `school_event_imports` (033), so a draft the office deleted doesn't come back), never changing or removing what's on the
+  calendar; a week that already has a theme or menu keeps it.
 - **Tours** can't be set on a day the whole school is closed (a trigger on `inquiries.tour_at`); the inquiry shows the
   day's activities and the classes they're for. Nothing is texted to families unless someone writes and sends it.
 

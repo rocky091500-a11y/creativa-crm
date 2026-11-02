@@ -789,3 +789,9 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 .receipt.inspect-sheet .r-table td.allergy-text { color: var(--danger); }
 @media (max-width: 720px) { .health-grid { grid-template-columns: 1fr; } .pu-list { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .seg { border-radius: 16px; } }
+
+/* Re-registration (031): next year's spots by class */
+.reg-spots { margin-bottom: 20px; }
+.reg-spots .table-wrap { box-shadow: none; }
+.reg-spots tr.reg-total td { border-top: 2px solid var(--line); }
+.stat .btn.small { margin-left: 4px; padding: 0 8px; font-size: 12px; }

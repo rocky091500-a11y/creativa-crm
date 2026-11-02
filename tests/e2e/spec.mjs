@@ -1140,6 +1140,7 @@ try {
   await rgRow('Test Kid Alpha').waitFor();
   assert.equal(await rgRow('Test Kid Alpha').locator('select[data-next] option:checked').textContent(), 'Late 3s', 'moves up to the next class');
   assert.match(await rgRow('Test Kid Alpha').textContent(), /\$300\.00[\s\S]*Not paid yet/);
+  assert.equal(await rgRow('Test Kid Alpha').locator('select[data-status] option:checked').textContent(), 'No answer yet', 'no answer until the family says');
   assert.equal(await rgRow('Test Kid Beta').locator('select[data-next] option:checked').textContent(), 'Kindergarten');
   assert.match(await rgRow('Test Kid Beta').textContent(), /\$350\.00/, 'Kindergarten registration is $350');
   await rgRow('Sofia Lopez').locator('[data-reg-pay]').click();   // open and cancel: nothing is made
@@ -1170,11 +1171,28 @@ try {
   assert.match(await page.locator('.stat', { hasText: 'Registration collected' }).textContent(), /\$300\.00/);
   assert.match(await rgRow('Test Kid Delta').textContent(), /Paid \(on file\)/, 'waiting for next year with registration already paid');
   assert.equal(await rgRow('Test Kid Delta').locator('[data-reg-pay]').count(), 0, 'not billed again');
-  assert.match(await page.locator('.stat', { hasText: 'Returning children registered' }).textContent(), /2 of \d+/);
+  // Re-registration (031): paid in full reserves the seat (on file too); the office ticks one; spots by class; who owes an answer.
+  assert.equal(await rgRow('Test Kid Alpha').locator('select[data-status] option:checked').textContent(), 'Yes', 'paying says yes');
+  assert.ok(await rgRow('Test Kid Alpha').locator('input[data-seat]').isChecked(), 'paid in full: seat reserved');
+  assert.ok(await rgRow('Test Kid Delta').locator('input[data-seat]').isChecked() && await rgRow('Test Kid Delta').locator('input[data-seat]').isDisabled(), 'on file: seat held');
+  assert.equal(await page.locator('.stat', { hasText: 'Seat reserved' }).locator('b').textContent(), '2');
+  await rgRow('Sofia Lopez').locator('input[data-seat]').check();
+  await page.waitForSelector('#toast:has-text("Seat reserved")');
+  await rgRow('Sofia Lopez').locator('input[data-seat]:checked').waitFor();
+  assert.equal(await rgRow('Sofia Lopez').locator('select[data-status] option:checked').textContent(), 'Yes', 'a reserved seat means they’re coming back');
+  assert.equal(await page.locator('.stat', { hasText: 'Seat reserved' }).locator('b').textContent(), '3');
+  assert.match(await page.locator('.reg-spots').textContent(), /Spots for 2027–28[\s\S]*Late 3s[\s\S]*Whole school/);
+  await page.click('#rg-owe');
+  const owe = await page.locator('#rg-rows tr[data-sid] td:first-child b').allTextContents();
+  assert.ok(owe.length > 0 && !owe.includes('Sofia Lopez') && !owe.includes('Test Kid Alpha') && !owe.includes('Test Kid Beta'), 'owe an answer: only those who haven’t said');
   await shot(page, '42-registration');
+  await page.click('#rg-text');
+  assert.match(await page.locator('textarea[name=body]').inputValue(), /Hi \{parent\}! Will \{child\} be back at Creativa Academy for the 2027–28 school year/);
+  await page.click('header nav button[data-view=roster]');
   await page.click('[data-rtab=children]');
   await page.locator('#roster-rows tr').first().waitFor();
   ok('Registration 2027–28: each child moving up with that class’s fee; a payment makes the bill and a receipt; not returning');
+  ok('Re-registration: no answer yet, paid in full reserves the seat, tick a seat, spots by class, who owes an answer, text them');
 
   // ── activated staff, as a non-admin ──
   const p2 = await newPage();

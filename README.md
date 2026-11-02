@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql`, `029_school_events.sql` and `030_pickup_health.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql`, `029_school_events.sql`, `030_pickup_health.sql` and `031_reregistration.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -534,6 +534,14 @@ counts in Money and Reports like any payment. Changing the class moves the fee; 
 bill (`registration_save`). A waiting child who already paid registration shows as *Paid (on file)*. The year and the
 opening date are `settings.reg_year` / `reg_opens` (2027-28, from Nov 9, 2026).
 
+
+**Fall re-registration (031).** Each child has three separate answers for next year: **Coming back?** (*No answer yet*
+until the family says, then Yes / Not sure / No), **Paid**, and **Seat reserved** (`registrations.reserved_on`: set when
+the registration is paid in full, or ticked by the office with `registration_reserve`; "No" gives the seat up).
+**Spots for 2027–28** shows, per class, its capacity (Settings → Classes), the seats reserved, the families who said yes
+without a seat yet, those who owe an answer, and the spots open for new families (capacity − reserved − said yes). The
+*Owe an answer* filter is the short list of families to ask, with **Text these families** (Messages, those families
+picked, a text ready to edit).
 ## Guide
 
 **Settings** opens with a guide to everything the CRM does, by area, with how to use each part (`guide.js`, written in

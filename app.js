@@ -517,6 +517,8 @@
     state.closures = cl.error ? null : cl.data;
     state.events = ev.error ? null : ev.data;
     state.registrations = rg.error ? null : rg.data;
+    state.hasSeats = !!state.registrations && (state.registrations.length ? 'reserved_on' in state.registrations[0]   // 031
+      : !(await sb.from('registrations').select('reserved_on').limit(1)).error);
     state.meds = md.error ? null : md.data;   // 030: also students.allergies and Authorized pick-up contacts
     state.hasHealth = !!state.meds;
     state.todos = td.error ? [] : td.data;
@@ -1989,19 +1991,46 @@
       const i = classes.findIndex((c) => c.id === s.classroom_id);
       const nextDefault = s.status === 'waitlist' ? s.classroom_id : i >= 0 && i < classes.length - 1 ? classes[i + 1].id : null;
       const next = r ? r.next_classroom_id : nextDefault;
-      const status = r ? r.status : next ? 'returning' : 'not_returning';
+      // Waiting (or not started) for next year with registration already paid: nothing more to collect, and they said yes.
+      const paidAlready = regPaid(s) && (s.status === 'waitlist' || (s.start_date && s.start_date >= start));
+      const status = r ? r.status : !next ? 'not_returning' : !state.hasSeats || paidAlready ? 'returning' : 'no_answer';   // 031: no answer yet
       const cls = state.classrooms.find((c) => c.id === next);
       const inv = r?.invoice_id && state.invoices.find((x) => x.id === r.invoice_id && !x.void);
       const fee = inv ? Number(inv.amount) : Number(cls?.registration_fee) || 0;
       const paid = inv ? invoicePaid(inv) : 0;
       const pays = inv ? state.payments.filter((p) => p.invoice_id === inv.id).sort((a, b) => b.paid_on.localeCompare(a.paid_on)) : [];
-      // Waiting (or not started) for next year with registration already paid: nothing more to collect.
-      const onFile = !inv && status === 'returning' && regPaid(s) && (s.status === 'waitlist' || (s.start_date && s.start_date >= start));
-      const state_ = status !== 'returning' ? status : onFile ? 'on_file' : inv && paid >= fee && fee > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
-      return { s, r, next, cls, status, inv, fee, paid, pays, st: state_ };
+      const onFile = !inv && status === 'returning' && paidAlready;
+      const pay = onFile ? 'on_file' : inv && paid >= fee && fee > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
+      // Seat reserved in next year's class (031): saved, or registration already on file.
+      const reserved = state.hasSeats && status === 'returning' && (!!r?.reserved_on || onFile);
+      return { s, r, next, cls, status, inv, fee, paid, pays, pay, st: status !== 'returning' ? status : pay, reserved };
     }).sort((a, b) => (classes.findIndex((c) => c.id === a.next) - classes.findIndex((c) => c.id === b.next)) || byLastName(a.s.name, b.s.name));
   }
-  const REG_ST = { paid: 'Paid', on_file: 'Paid (on file)', partial: 'Partly paid', unpaid: 'Not paid yet', not_returning: 'Not returning', undecided: 'Not sure yet' };
+  const REG_ST = { paid: 'Paid', on_file: 'Paid (on file)', partial: 'Partly paid', unpaid: 'Not paid yet', not_returning: 'Not returning', undecided: 'Not sure yet',
+    no_answer: 'No answer yet' };
+  const REG_BACK = { no_answer: 'No answer yet', returning: 'Yes', undecided: 'Not sure', not_returning: 'No' };
+  const OWES_ANSWER = new Set(['no_answer', 'undecided']);
+  const REG_FILTER = { owe: ['Owe an answer', (x) => OWES_ANSWER.has(x.status)], noseat: ['Said yes, no seat yet', (x) => x.status === 'returning' && !x.reserved],
+    reserved: ['Seat reserved', (x) => x.reserved] };
+  const payPill = (k) => `<span class="pay-pill ps-${['paid', 'on_file'].includes(k) ? 'paid' : k === 'partial' ? 'partial' : k === 'unpaid' ? 'open' : 'none'}">${esc(REG_ST[k])}</span>`;
+  // Next year's open spots by class: its capacity, less the seats reserved and the families who said yes (no seat yet).
+  function regSpotsHtml(all, year) {
+    const rows = state.classrooms.slice().sort((a, b) => a.sort - b.sort).map((c) => {
+      const xs = all.filter((x) => x.next === c.id);
+      const res = xs.filter((x) => x.reserved).length, yes = xs.filter((x) => x.status === 'returning' && !x.reserved).length;
+      return { c, res, yes, owe: xs.filter((x) => OWES_ANSWER.has(x.status)).length, open: c.capacity ? Math.max(c.capacity - res - yes, 0) : null };
+    });
+    const sum = (k) => rows.reduce((t, r) => t + (r[k] || 0), 0), noCap = rows.some((r) => r.open == null);
+    const td = (v) => `<td class="num">${v == null ? '—' : v}</td>`;
+    return `<section class="panel reg-spots"><h2>Spots for ${esc(year)}</h2>
+      <div class="table-wrap"><table class="roster"><thead><tr><th>Class</th><th class="num">Spots</th><th class="num">Seat reserved</th>
+        <th class="num">Said yes, no seat yet</th><th class="num">Owe an answer</th><th class="num">Open for new families</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr><td><b>${esc(r.c.name)}</b></td>${td(r.c.capacity)}${td(r.res)}${td(r.yes)}${td(r.owe)}<td class="num"><b>${r.open ?? '—'}</b></td></tr>`).join('')}
+        <tr class="reg-total"><td><b>Whole school</b></td>${td(noCap ? null : rows.reduce((t, r) => t + r.c.capacity, 0))}${td(sum('res'))}${td(sum('yes'))}${td(sum('owe'))}
+          <td class="num"><b>${noCap ? '—' : sum('open')}</b></td></tr></tbody></table></div>
+      <p class="muted small">Open for new families = spots, less the seats reserved and the families who said yes but haven’t reserved yet. Families who
+        owe an answer could free more. ${noCap ? 'Put each class’s capacity (spots) on Settings → Classes to see the open spots.' : ''}</p></section>`;
+  }
   // Next year's class and "coming back?" (023's registration_save keeps the bill in step) and the bill as it is now.
   async function saveReg(x, patch) {
     const { data, error } = await sb.rpc('registration_save', { p_student: x.s.id, p_year: regYear(),
@@ -2060,7 +2089,7 @@
   function renderRegistration(el) {
     const f = state.regFilters, edit = canEditFinance(), all = regRows(), year = regYearLabel();
     const opens = state.settings?.reg_opens, before = opens && todayStr() < opens;
-    const back = all.filter((x) => x.status === 'returning');
+    const back = all.filter((x) => x.status === 'returning'), owe = all.filter((x) => OWES_ANSWER.has(x.status));
     const collected = round2(all.reduce((t, x) => t + x.paid, 0)), toCollect = round2(back.filter((x) => x.st !== 'on_file').reduce((t, x) => t + Math.max(x.fee - x.paid, 0), 0));
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
     const lastId = state.classrooms.slice().sort((a, b) => b.sort - a.sort)[0]?.id;
@@ -2069,18 +2098,23 @@
     el.innerHTML = `${rosterTabs()}
       ${before ? `<p class="panel small">Registration for ${esc(year)} opens <b>${esc(longDate(opens))}</b>. You can already record anyone who pays early.</p>` : ''}
       <div class="stats">
-        <div class="stat"><b>${all.filter((x) => ['paid', 'on_file'].includes(x.st)).length} of ${back.length}</b><span>Returning children registered for ${esc(year)}</span></div>
+        ${state.hasSeats ? `<div class="stat"><b>${back.length}</b><span>Said yes for ${esc(year)}</span></div>
+        <div class="stat"><b>${all.filter((x) => x.reserved).length}</b><span>Seat reserved</span></div>
+        <div class="stat"><b>${owe.length}</b><span>Owe an answer ${owe.length ? '<button class="btn ghost small" type="button" id="rg-owe">See them</button>' : ''}</span></div>`
+        : `<div class="stat"><b>${all.filter((x) => ['paid', 'on_file'].includes(x.st)).length} of ${back.length}</b><span>Returning children registered for ${esc(year)}</span></div>`}
         <div class="stat"><b>${money(collected)}</b><span>Registration collected</span></div>
         <div class="stat"><b>${money(toCollect)}</b><span>Still to collect</span></div>
-        <div class="stat"><b>${all.filter((x) => x.status === 'not_returning').length}</b><span>Not returning · ${all.filter((x) => x.status === 'undecided').length} not sure</span></div>
+        <div class="stat"><b>${all.filter((x) => x.status === 'not_returning').length}</b><span>Not returning${state.hasSeats ? '' : ` · ${all.filter((x) => x.status === 'undecided').length} not sure`}</span></div>
       </div>
+      ${state.hasSeats ? regSpotsHtml(all, year) : ''}
       <div class="toolbar">
         <input type="search" id="rg-q" placeholder="Search student or family…" value="${esc(f.q)}">
         <select id="rg-cls">${opt('', 'Every class next year', f.cls)}${state.classrooms.map((c) => opt(c.id, c.name, f.cls)).join('')}</select>
-        <select id="rg-st">${opt('', 'Everyone', f.status)}${Object.entries(REG_ST).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
+        <select id="rg-st">${opt('', 'Everyone', f.status)}${state.hasSeats ? Object.entries(REG_FILTER).map(([k, [v]]) => opt(k, v, f.status)).join('') : ''}${Object.entries(REG_ST).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
         <span class="spacer"></span><span class="muted small" id="rg-count"></span>
+        ${state.hasMsgs ? '<button class="btn small" id="rg-text" type="button" hidden>Text these families</button>' : ''}
         <button class="btn small" id="rg-csv" type="button">Download CSV</button></div>
-      <div class="table-wrap"><table class="reg-table"><thead><tr><th>Child</th><th>${esc(year)}</th><th>Coming back?</th><th class="num">Registration</th><th>Paid</th>${edit ? '<th></th>' : ''}</tr></thead>
+      <div class="table-wrap"><table class="reg-table"><thead><tr><th>Child</th><th>${esc(year)}</th><th>Coming back?</th><th class="num">Registration</th><th>Paid</th>${state.hasSeats ? '<th>Seat reserved</th>' : ''}${edit ? '<th></th>' : ''}</tr></thead>
         <tbody id="rg-rows"></tbody></table></div>
       <p class="muted small">Each child is shown moving up to the next class (children on the waiting list keep theirs; Kindergarten moves on to 1st grade).
         Change it if they’ll be in a different class. The registration fee is that class’s (Settings → Classes). Recording a payment makes a
@@ -2088,27 +2122,33 @@
     bindRosterTabs(el);
     const draw = () => {
       const q = f.q.trim().toLowerCase();
-      const rows = all.filter((x) => (!f.cls || x.next === f.cls) && (!f.status || x.st === f.status)
+      const rows = all.filter((x) => (!f.cls || x.next === f.cls) && (!f.status || (REG_FILTER[f.status] ? REG_FILTER[f.status][1](x) : x.st === f.status))
         && (!q || [x.s.name, x.s.parent_name, x.s.family_account].some((v) => (v || '').toLowerCase().includes(q))));
       $('#rg-count', el).textContent = `${rows.length} child${rows.length === 1 ? '' : 'ren'}`;
+      if ($('#rg-text', el)) $('#rg-text', el).hidden = f.status !== 'owe' || !rows.length;
+      shown = rows;
       $('#rg-rows', el).innerHTML = rows.map((x) => `<tr data-sid="${x.s.id}" class="${x.status !== 'returning' ? 'reg-off' : ''}">
           <td><a href="#" data-open-sid="${x.s.id}"><b>${esc(x.s.name)}</b></a><div class="muted small">${esc([classroomName(x.s.classroom_id) || 'No class',
             x.s.status === 'waitlist' ? 'waiting list' : LEFT.has(x.s.status) ? STUDENT_STATUS[x.s.status].toLowerCase() : ''].filter(Boolean).join(' · '))}</div></td>
           <td>${edit ? `<select data-next aria-label="Class in ${esc(year)}">${opt('', noClass(x.s), x.next || '')}
             ${state.classrooms.map((c) => opt(c.id, c.name, x.next || '')).join('')}</select>` : esc(nextName(x))}</td>
-          <td>${edit ? `<select data-status aria-label="Coming back in ${esc(year)}">${opt('returning', 'Yes', x.status)}${opt('undecided', 'Not sure', x.status)}${opt('not_returning', 'No', x.status)}</select>`
-            : esc(x.status === 'returning' ? 'Yes' : x.status === 'undecided' ? 'Not sure' : 'No')}</td>
-          <td class="num">${x.status === 'returning' && x.fee ? money(x.fee) : ''}</td>
-          <td><span class="pay-pill ps-${['paid', 'on_file'].includes(x.st) ? 'paid' : x.st === 'partial' ? 'partial' : x.st === 'unpaid' ? 'open' : 'none'}">${esc(REG_ST[x.st])}</span>
+          <td>${edit ? `<select data-status aria-label="Coming back in ${esc(year)}">${Object.entries(REG_BACK).filter(([k]) => k !== 'no_answer' || state.hasSeats)
+              .map(([k, v]) => opt(k, v, x.status)).join('')}</select>` : esc(REG_BACK[x.status])}</td>
+          <td class="num">${x.status !== 'not_returning' && x.fee ? money(x.fee) : ''}</td>
+          <td>${payPill(state.hasSeats && x.status !== 'not_returning' ? x.pay : x.st)}
             ${x.pays.length ? `<div class="muted small">${esc(x.pays.map((p) => `${money(p.amount)} ${fmtDate(p.paid_on)}${p.method ? ` · ${METHOD[p.method] || p.method}` : ''}`).join(', '))}</div>` : ''}</td>
-          ${edit ? `<td>${x.status === 'returning' && ['unpaid', 'partial'].includes(x.st) && x.fee ? '<button class="btn small" type="button" data-reg-pay>Record payment</button>' : ''}
+          ${state.hasSeats ? `<td><label class="pill-check"><input type="checkbox" class="check" data-seat ${x.reserved ? 'checked' : ''}
+            ${!edit || x.status === 'not_returning' || x.pay === 'on_file' ? 'disabled' : ''} aria-label="Seat reserved in ${esc(year)}">
+            ${x.reserved ? esc(x.r?.reserved_on ? fmtDate(x.r.reserved_on) : 'Yes') : ''}</label></td>` : ''}
+          ${edit ? `<td>${x.status !== 'not_returning' && ['unpaid', 'partial'].includes(x.pay) && x.fee ? '<button class="btn small" type="button" data-reg-pay>Record payment</button>' : ''}
             ${x.pays.length ? '<button class="btn small ghost" type="button" data-reg-receipt>Receipt</button>' : ''}</td>` : ''}</tr>`).join('')
-        || `<tr><td colspan="${edit ? 6 : 5}" class="muted">Nobody matches.</td></tr>`;
+        || `<tr><td colspan="${(edit ? 6 : 5) + (state.hasSeats ? 1 : 0)}" class="muted">Nobody matches.</td></tr>`;
       $$('#rg-rows [data-open-sid]', el).forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openStudent(a.dataset.openSid); }));
       const rowOf = (n) => all.find((x) => x.s.id === n.closest('tr').dataset.sid);
       $$('#rg-rows [data-next]', el).forEach((sel) => sel.addEventListener('change', async () => {
         sel.disabled = true;
-        const ok = await saveReg(rowOf(sel), { next: sel.value || null, status: sel.value ? 'returning' : 'not_returning' });
+        const x = rowOf(sel);
+        const ok = await saveReg(x, { next: sel.value || null, status: !sel.value ? 'not_returning' : x.status === 'not_returning' || !state.hasSeats ? 'returning' : x.status });
         if (ok) toast('Saved');
         renderRegistration(el);
       }));
@@ -2118,16 +2158,35 @@
         if (ok) toast('Saved');
         renderRegistration(el);
       }));
+      $$('#rg-rows [data-seat]', el).forEach((box) => box.addEventListener('change', async () => {
+        box.disabled = true;
+        const x = rowOf(box);
+        const { data, error } = await sb.rpc('registration_reserve', { p_student: x.s.id, p_year: regYear(), p_next: x.next, p_reserved: box.checked });
+        if (error) fail(error, 'Could not save the seat');
+        else { await syncReg(data, x.r?.invoice_id); toast(box.checked ? 'Seat reserved' : 'Seat given up'); }
+        renderRegistration(el);
+      }));
       $$('#rg-rows [data-reg-pay]', el).forEach((b) => b.addEventListener('click', () => openRegPayment(rowOf(b), () => renderRegistration(el))));
       $$('#rg-rows [data-reg-receipt]', el).forEach((b) => b.addEventListener('click', () => showReceipts(rowOf(b).pays)));
     };
+    let shown = [];
+    $('#rg-owe', el)?.addEventListener('click', () => { f.status = 'owe'; $('#rg-st', el).value = 'owe'; draw(); $('#rg-rows', el).scrollIntoView({ block: 'start' }); });
+    // The families who still owe an answer: a text asking them, to the families picked on Messages.
+    $('#rg-text', el)?.addEventListener('click', () => {
+      state.msgDraft = { ...newMsgDraft(), who: 'pick', picked: [...new Set(shown.map((x) => familyKey(x.s)))],
+        body: `Hi {parent}! Will {child} be back at Creativa Academy for the ${year} school year? Please let us know, and pay registration to reserve the spot. / ¡Hola {parent}! ¿{child} regresará a Creativa Academy para el año escolar ${year}? Por favor avísenos, y pague la inscripción para reservar su lugar.` };
+      state.view = 'messages';
+      store.set('view', state.view);
+      renderShell();
+    });
     ['q', 'cls', 'st'].forEach((k) => {
       const input = $(`#rg-${k}`, el);
       input.addEventListener(k === 'q' ? 'input' : 'change', () => { f[k === 'st' ? 'status' : k] = input.value; draw(); });
     });
     $('#rg-csv', el).addEventListener('click', () => csvDownload(`creativa-registration-${regYear()}.csv`,
-      ['Student', 'Class now', `Class ${year}`, 'Coming back', 'Registration fee', 'Paid', 'Status', 'Parent', 'Phone'],
-      all.map((x) => [x.s.name, classroomName(x.s.classroom_id), x.cls?.name || '', x.status, x.status === 'returning' ? x.fee : '', x.paid, REG_ST[x.st], x.s.parent_name, x.s.parent_phone])));
+      ['Student', 'Class now', `Class ${year}`, 'Coming back', 'Registration fee', 'Paid', 'Status', ...(state.hasSeats ? ['Seat reserved'] : []), 'Parent', 'Phone'],
+      all.map((x) => [x.s.name, classroomName(x.s.classroom_id), x.cls?.name || '', REG_BACK[x.status], x.status !== 'not_returning' ? x.fee : '', x.paid,
+        REG_ST[x.status === 'not_returning' ? x.st : x.pay], ...(state.hasSeats ? [x.reserved ? x.r?.reserved_on || 'yes' : ''] : []), x.s.parent_name, x.s.parent_phone])));
     draw();
   }
 

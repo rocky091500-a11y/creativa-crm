@@ -55,7 +55,7 @@ crm.creativaacademy.com (this repo) ── staff login ── row-level security
 1. **Supabase project** — create one at supabase.com (US East). Then:
    - SQL Editor → paste and run `supabase/migrations/001_init.sql`, then `002_calendar_feed.sql`,
      then `003_enrollment_finance.sql`, `004_turnstile.sql`, `005_text_reminders.sql`,
-     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql`, `029_school_events.sql`, `030_pickup_health.sql`, `031_reregistration.sql`, `032_school_planning.sql` and `033_planning_import_memory.sql`, in that order.
+     `006_reschedule_telegram_spam.sql`, `007_billing_contacts.sql`, `008_payroll_timeclock.sql`, `009_tax_statements.sql`, `010_billing_history.sql`, `011_graduated_earlier_payments.sql`, `012_change_log.sql`, `013_family_texts.sql`, `014_message_templates.sql`, `015_message_lists.sql`, `016_paychecks.sql`, `017_money_food_program_todos.sql`, `018_weekly_late_fees.sql`, `019_projection.sql`, `020_class_rates_and_bills.sql`, `021_school_calendar.sql`, `022_pins_on_file.sql`, `023_registration.sql`, `024_scheduled_start.sql`, `025_auto_lunch.sql`, `026_unpaid_staff.sql`, `027_pause.sql`, `028_website_form_backup.sql`, `029_school_events.sql`, `030_pickup_health.sql`, `031_reregistration.sql`, `032_school_planning.sql`, `033_planning_import_memory.sql` and `034_activity_rosters.sql`, in that order.
    - Authentication → Sign In / Providers → turn **off** "Allow new users to sign up"
      (staff are invited, nobody signs themselves up).
    - Authentication → URL Configuration → Site URL `https://crm.creativaacademy.com`,
@@ -425,6 +425,29 @@ day to add, an item to change it), closed days (`school_closures`, Settings → 
 billing Mondays) and enrolled children's birthdays (their dates of birth), with the month's birthdays on the side.
 Weekend items go in the week's first column; on a phone it's a list of the days that have something. **Today** shows
 *This week at school*: the week's theme and menu and the next 7 days.
+
+## Activity rosters, fees and printed forms (034)
+
+**Calendar → Rosters** (office edits; teachers see it, without money): an activity's roster is built from its classes as of
+its day (`roster_build`: enrolled then, started by then, not gone before then); the office adds or takes off children, and
+building again (or saving the activity) keeps every change. Each child: going (undecided / going / not going), permission
+slip (not required / pending / received with its date / declined). Totals and filters for going, missing slips and money.
+
+A **fee** (`activity_collections`) has a name, amount and due date and covers one or more activities. Each child is
+charged once (`collection_charge`; a unique index on `invoices.collection_id, student_id`), paid through the usual Record
+payment (part payments, credits, receipts; each payment window has a `request_id`, so a double-click or a retry records
+it once). A paid fee shows paid on every activity it covers and counts once in the money. Paid but not going is flagged
+for office review; an unpaid charge for a child not going can be taken off.
+
+**Reminders**: *Text families missing a slip* / *who owe* opens Messages with those families picked and an editable text;
+`activity_reminder_targets` checks again just before sending (a family that paid since is left out), and the text is
+recorded with what it was for (`messages.purpose`, `ref_id`), so the roster shows when it went out and how it did.
+
+**Printouts** (each with Excel): the teacher class roster (portrait, no money), the collection sheet (landscape, office
+only: CASH / ZELLE / PARTIAL / UNPAID / NOT GOING from the recorded payments, whole school or one class, notes lines), the
+rotation schedule (`activity_slots`: classes in order with teachers, times, transitions, minutes and overlap warnings),
+and the registration sheet (Enrollment → Registration: by this year's class or next year's confirmed class, the three
+separate answers, New Students Starting, optional blank lines).
 
 ## School planning on the Calendar (032)
 

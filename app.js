@@ -452,7 +452,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md, pp] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md, pp, ac, ar, asl] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -477,6 +477,9 @@
       fin ? selectAll('registrations', 'created_at') : Promise.resolve({ error: true }),              // missing until 023
       sb.from('student_medications').select('*').order('expires_on'),                                  // missing until 030
       sb.from('school_event_prep').select('*').order('due_on'),                                        // missing until 032
+      sb.from('activity_collections').select('*').order('created_at'),                                  // missing until 034
+      selectAll('activity_roster', 'created_at'),
+      sb.from('activity_slots').select('*').order('sort'),
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -520,6 +523,10 @@
     state.events = ev.error ? null : ev.data;
     state.prep = pp.error ? null : pp.data;   // 032: school planning
     state.hasPlanning = !!state.events && !!state.prep;
+    state.collections = ac.error ? null : ac.data;   // 034: rosters, fees, schedules
+    state.roster = ar.error ? null : ar.data;
+    state.slots = asl.error ? null : asl.data;
+    state.hasActivities = state.hasPlanning && !!state.collections && !!state.roster && !!state.slots;
     state.registrations = rg.error ? null : rg.data;
     state.hasSeats = !!state.registrations && (state.registrations.length ? 'reserved_on' in state.registrations[0]   // 031
       : !(await sb.from('registrations').select('reserved_on').limit(1)).error);
@@ -833,7 +840,7 @@
   const calTabs = () => {
     if (!state.hasPlanning) return '';
     const n = canOffice() ? planChecks().count : 0;
-    const tabs = [['month', 'Month'], ...(canOffice() ? [['check', `Needs confirmation${n ? ` (${n})` : ''}`]] : []), ['prep', 'Prep']];
+    const tabs = [['month', 'Month'], ...(state.hasActivities ? [['rosters', 'Rosters']] : []), ...(canOffice() ? [['check', `Needs confirmation${n ? ` (${n})` : ''}`]] : []), ['prep', 'Prep']];
     const cur = tabs.some(([k]) => k === state.calTab) ? state.calTab : 'month';
     return `<div class="seg" role="tablist" aria-label="Calendar">${tabs.map(([k, v]) => `<button type="button" role="tab" data-ctab="${k}" aria-selected="${k === cur}">${esc(v)}</button>`).join('')}</div>`;
   };
@@ -857,6 +864,7 @@
     const tab = state.hasPlanning ? state.calTab || 'month' : 'month';
     if (tab === 'check' && canOffice()) return renderPlanCheck(el);
     if (tab === 'prep') return renderPrep(el);
+    if (tab === 'rosters' && state.hasActivities) return renderRosters(el);
     const ym = state.calMonth || (state.calMonth = thisMonth()), today = todayStr(), edit = canOffice();
     const first = monthStart(ym), last = monthEnd(ym);
     const weeks = [];
@@ -1125,6 +1133,13 @@
               <button class="btn ghost small" type="button" data-prep="${p.id}">Edit</button></div>
             <div class="muted small">${esc([p.supplies && `Supplies: ${p.supplies}`, p.due_on && `ready by ${dayLabel(p.due_on)}`, p.done_at && 'done'].filter(Boolean).join(' · '))}</div></li>`).join('')
             || '<li class="muted small">No prep yet.</li>'}</ul></div>`}
+        ${state.hasActivities && ['event', 'reminder'].includes(ev.kind) ? `<div class="section"><h3>Roster, fee and schedule</h3>
+          <label class="pill-check"><input type="checkbox" class="check" name="needs_permission" ${ev.needs_permission ? 'checked' : ''}> Needs a permission slip</label>
+          ${isNew ? '<p class="muted small">Save it first, then make its roster, fee and schedule.</p>' : `<p class="small">${rosterOf(ev.id).length} on the roster${collectionOf(ev)
+            ? ` · Fee: ${esc(collectionOf(ev).name)} ${money(collectionOf(ev).amount)}` : ''}${(state.slots || []).some((x) => x.event_id === ev.id) ? ' · has a schedule' : ''}</p>
+          <div class="plan-acts"><button class="btn small" type="button" id="ev-roster">Roster</button>
+            ${canEditFinance() ? `<button class="btn small" type="button" id="ev-fee">${collectionOf(ev) ? 'Change the fee' : 'Add a fee'}</button>` : ''}
+            <button class="btn small" type="button" id="ev-sched">Rotation schedule</button></div>`}</div>` : ''}
         ${!isNew && !isDraft(ev) && state.hasMsgs ? '<div class="section"><button class="btn small" type="button" id="ev-text">Write a text to these families</button> <span class="muted small">Opens Messages; nothing is sent until you send it.</span></div>' : ''}` : ''}`,
       foot: `${isNew ? '' : '<button class="btn danger" id="ev-del" type="button">Delete</button>'}<span class="spacer"></span>
         <button class="btn" data-close type="button">Cancel</button>
@@ -1150,6 +1165,7 @@
         Object.assign(row, { classroom_ids: state.classrooms.filter((c) => form[`cls_${c.id}`].checked).map((c) => c.id),
           internal_note: formVal(form, 'internal_note'), question: formVal(form, 'question'),
           date_options: opts.length ? [...new Set([row.starts_on, ...opts])].sort() : [], status: 'draft', updated_at: new Date().toISOString() });
+        if (form.needs_permission) row.needs_permission = form.needs_permission.checked;
         approve = !asDraft;
         if (approve && (row.question || row.date_options.length)) {
           approve = false;
@@ -1167,6 +1183,11 @@
         else { saved = r.data; state.events = (state.events || []).filter((x) => !(data.replaces || []).includes(x.id)); }
       }
       state.events = [...(state.events || []).filter((x) => x.id !== saved.id), saved].sort((a, b) => a.starts_on.localeCompare(b.starts_on));
+      // A roster follows its activity's classes and day; the office's changes to it stay (034).
+      if (state.hasActivities && canOffice() && (state.roster || []).some((r) => r.event_id === saved.id)) {
+        const rb = await sb.rpc('roster_build', { p_event: saved.id });
+        if (!rb.error) { const { data: rr } = await sb.from('activity_roster').select('*').eq('event_id', saved.id); state.roster = [...state.roster.filter((x) => x.event_id !== saved.id), ...(rr || [])]; }
+      }
       ctl.dirty = false;
       closeDrawer();
       toast(plan && saved.status === 'draft' ? 'Saved as a draft' : 'Saved');
@@ -1177,6 +1198,17 @@
     const back = () => openEvent(state.events.find((x) => x.id === ev.id));
     $('#prep-add', drawer)?.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openPrep({ eventId: ev.id, back }); });
     $$('[data-prep]', drawer).forEach((b) => b.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openPrep({ prepId: b.dataset.prep, back }); }));
+    const toRoster = async () => {
+      if (ctl.dirty && !confirm('Discard your changes?')) return;
+      if (canOffice() && !(state.roster || []).some((r) => r.event_id === ev.id) && !(await buildRoster(ev.id))) return;
+      closeDrawer();
+      state.view = 'calendar'; state.calTab = 'rosters'; state.rosterEvent = ev.id;
+      store.set('view', 'calendar'); store.set('calTab', 'rosters');
+      renderShell();
+    };
+    $('#ev-roster', drawer)?.addEventListener('click', toRoster);
+    $('#ev-fee', drawer)?.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openCollection(collectionOf(ev), ev, () => renderView()); });
+    $('#ev-sched', drawer)?.addEventListener('click', () => { if (!ctl.dirty || confirm('Discard your changes?')) openSchedule(ev); });
     $('#ev-text', drawer)?.addEventListener('click', () => {
       if (ctl.dirty && !confirm('Discard your changes?')) return;
       const kids = state.students.filter((s) => s.status === 'enrolled' && (!ev.classroom_ids?.length || ev.classroom_ids.includes(s.classroom_id)));
@@ -1249,6 +1281,420 @@
       done();
     });
   }
+
+  // ───────────── Activity rosters, fees, rotation schedules (034) ─────────────
+  // An activity's roster (built from its classes as of its day; the office adds and takes off children), each child's
+  // going / permission slip, one fee that can cover several activities (charged once, paid through Record payment), a class
+  // rotation schedule, reminders to the families who still owe or still need a slip, and the printouts.
+  const PARTICIPATION = { undecided: 'Undecided', going: 'Going', not_going: 'Not going' };
+  const SLIP = { not_required: 'Not required', pending: 'Pending', received: 'Received', declined: 'Declined' };
+  const rosterOf = (eid) => (state.roster || []).filter((r) => r.event_id === eid && !r.removed);
+  const collectionOf = (e) => e?.collection_id && (state.collections || []).find((c) => c.id === e.collection_id);
+  const collectionEvents = (cid) => (state.events || []).filter((e) => e.collection_id === cid).sort((a, b) => a.starts_on.localeCompare(b.starts_on));
+  const chargeOf = (cid, sid) => (state.invoices || []).find((i) => i.collection_id === cid && i.student_id === sid && !i.void);
+  const kidName = (sid) => state.students.find((s) => s.id === sid)?.name || '';
+  const kidClass = (sid) => state.students.find((s) => s.id === sid)?.classroom_id || null;
+  // A child's money for a fee, from the charge and the payments on it: paid (and how), partly, unpaid, or not charged.
+  function feeState(c, sid) {
+    const inv = chargeOf(c.id, sid), pays = inv ? state.payments.filter((p) => p.invoice_id === inv.id) : [];
+    const paid = round2(pays.reduce((t, p) => t + Number(p.amount), 0)), due = inv ? Number(inv.amount) : Number(c.amount);
+    const how = [...new Set(pays.map((p) => METHOD[p.method] || p.method))].join(' + ');
+    const rows = (state.roster || []).filter((r) => r.student_id === sid && !r.removed && collectionEvents(c.id).some((e) => e.id === r.event_id));
+    const off = (r) => r.participation === 'not_going' || r.permission === 'declined';
+    const notGoing = rows.length > 0 && rows.every(off), going = rows.some((r) => r.participation === 'going');
+    const offFor = rows.filter(off).map((r) => (state.events || []).find((e) => e.id === r.event_id)?.title).filter(Boolean);
+    const k = paid >= due && paid > 0 ? 'paid' : paid > 0 ? 'partial' : inv ? 'unpaid' : 'none';
+    // Owed: what's left on the charge; not charged yet, the fee if they're going to one of its activities.
+    const owed = notGoing ? 0 : inv ? Math.max(round2(due - paid), 0) : going ? Number(c.amount) : 0;
+    return { inv, pays, paid, due, owed, how, k, notGoing, going, offFor, review: notGoing && paid > 0 };
+  }
+  const feeLabel = (f) => (f.review ? `Paid ${f.how} · not going: office review` : f.notGoing && f.k !== 'partial' ? 'Not going'
+    : f.k === 'paid' ? `Paid · ${f.how}` : f.k === 'partial' ? `Partial ${money(f.paid)} of ${money(f.due)} · ${f.how}` : f.k === 'unpaid' || f.going ? 'Unpaid' : 'Not charged');
+
+  // Excel (.xlsx) without any library: a few XML files in a zip (stored, not compressed).
+  function xlsxDownload(name, sheets) {
+    const enc = new TextEncoder(), xml = (s) => String(s ?? '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]);
+    const col = (n) => { let s = ''; for (n += 1; n; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; };
+    const sheetXml = (rows) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${
+      rows.map((r, i) => `<row r="${i + 1}">${r.map((v, j) => { const ref = `${col(j)}${i + 1}`, st = i === 0 ? ' s="1"' : '';
+        return v == null || v === '' ? '' : typeof v === 'number' ? `<c r="${ref}"${st}><v>${v}</v></c>` : `<c r="${ref}" t="inlineStr"${st}><is><t xml:space="preserve">${xml(v)}</t></is></c>`; }).join('')}</row>`).join('')}</sheetData></worksheet>`;
+    const files = [
+      ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`],
+      ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+      ['xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s, i) => `<sheet name="${xml(s.name.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`],
+      ['xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+      ['xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="2"><xf/><xf fontId="1" applyFont="1"/></cellXfs></styleSheet>'],
+      ...sheets.map((s, i) => [`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.rows)]),
+    ].map(([n, t]) => [enc.encode(n), enc.encode(t)]);
+    const crcT = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+    const crc = (b) => { let c = 0xFFFFFFFF; for (const x of b) c = crcT[(c ^ x) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+    const parts = [], central = [];
+    let off = 0;
+    const head = (sig, size) => { const b = new DataView(new ArrayBuffer(size)); b.setUint32(0, sig, true); return b; };
+    for (const [n, d] of files) {
+      const c = crc(d), h = head(0x04034b50, 30);
+      [[4, 20, 2], [8, 0, 2], [10, 0, 2], [12, 0, 2], [14, c, 4], [18, d.length, 4], [22, d.length, 4], [26, n.length, 2], [28, 0, 2]]
+        .forEach(([o, v, w]) => (w === 4 ? h.setUint32(o, v, true) : h.setUint16(o, v, true)));
+      parts.push(new Uint8Array(h.buffer), n, d);
+      const ch = head(0x02014b50, 46);
+      [[4, 20, 2], [6, 20, 2], [8, 0, 2], [10, 0, 2], [16, c, 4], [20, d.length, 4], [24, d.length, 4], [28, n.length, 2], [42, off, 4]]
+        .forEach(([o, v, w]) => (w === 4 ? ch.setUint32(o, v, true) : ch.setUint16(o, v, true)));
+      central.push(new Uint8Array(ch.buffer), n);
+      off += 30 + n.length + d.length;
+    }
+    const size = central.reduce((t, b) => t + b.length, 0), end = head(0x06054b50, 22);
+    end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, size, true); end.setUint32(16, off, true);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // Calendar → Rosters: the office manages each activity's children; teachers see and print it (no money).
+  const rosterActivities = () => (state.events || []).filter((e) => ['event', 'reminder'].includes(e.kind))
+    .filter((e) => rosterOf(e.id).length || e.collection_id || (state.slots || []).some((x) => x.event_id === e.id) || e.needs_permission)
+    .sort((a, b) => a.starts_on.localeCompare(b.starts_on));
+  function renderRosters(el) {
+    const office = canOffice(), fin = canViewFinance(), finEdit = canEditFinance();
+    const acts = rosterActivities();
+    const e = (state.events || []).find((x) => x.id === state.rosterEvent) || acts.find((x) => x.starts_on >= todayStr()) || acts[0];
+    if (!e) {
+      el.innerHTML = `${calTabs()}<p class="panel">No activity has a roster yet. Open an activity on the Month tab and choose <b>Roster</b>.</p>`;
+      return bindCalTabs(el);
+    }
+    state.rosterEvent = e.id;
+    const c = collectionOf(e), f = state.rosterFilters || (state.rosterFilters = { go: '', slip: '', money: '', cls: '' });
+    const rows = rosterOf(e.id).map((r) => ({ r, s: state.students.find((x) => x.id === r.student_id), fee: c && fin ? feeState(c, r.student_id) : null }))
+      .filter((x) => x.s).sort((a, b) => sortStudents(a.s, b.s));
+    const count = (fn) => rows.filter(fn).length;
+    const shown = rows.filter((x) => (!f.go || x.r.participation === f.go) && (!f.cls || x.s.classroom_id === f.cls)
+      && (!f.slip || (f.slip === 'missing' ? x.r.permission === 'pending' && x.r.participation !== 'not_going' : x.r.permission === f.slip))
+      && (!f.money || !x.fee || (f.money === 'owed' ? x.fee.owed > 0 && !x.fee.notGoing : f.money === 'review' ? x.fee.review : x.fee.k === f.money)));
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+    const owed = fin && c ? round2(rows.filter((x) => !x.fee.notGoing).reduce((t, x) => t + x.fee.owed, 0)) : 0;
+    const others = c ? collectionEvents(c.id).filter((x) => x.id !== e.id) : [];
+    const classes = [...new Set(rows.map((x) => x.s.classroom_id))].map((id) => state.classrooms.find((k) => k.id === id)).filter(Boolean).sort((a, b) => a.sort - b.sort);
+    el.innerHTML = `${calTabs()}
+      <div class="month-bar"><select id="ro-event" aria-label="Activity">${acts.map((x) => opt(x.id, `${dayLabel(x.starts_on)} · ${x.title}`, e.id)).join('')}</select>
+        <span class="spacer"></span>
+        ${office ? '<button class="btn small" id="ro-build" type="button">Build from its classes</button><button class="btn small" id="ro-add" type="button">+ Add a child</button>' : ''}
+        <select id="ro-print" aria-label="Print the class roster"><option value="">Print class roster…</option>${opt('all', 'Every class', '')}${classes.map((k) => opt(k.id, k.name, '')).join('')}</select>
+        ${fin && c ? '<button class="btn small" id="ro-sheet" type="button">Collection sheet</button>' : ''}
+        ${(state.slots || []).some((x) => x.event_id === e.id) || office ? '<button class="btn small" id="ro-sched" type="button">Rotation schedule</button>' : ''}</div>
+      <section class="panel ro-head"><h2>${esc(e.title)} <span class="muted small">${esc(whenText(e))} · ${esc(audienceLabel(e.classroom_ids) || 'Whole school')}${isDraft(e) ? ' · draft' : ''}</span></h2>
+        ${c ? `<p class="small">Fee: <b>${esc(c.name)}</b> ${money(c.amount)}${c.due_on ? `, due ${esc(dayLabel(c.due_on))}` : ''}${others.length ? ` · also covers ${others.map((x) => esc(x.title)).join(', ')}` : ''}
+          ${finEdit ? '<button class="btn ghost small" type="button" id="ro-fee">Change the fee</button>' : ''}</p>` : `<p class="muted small">No fee.${finEdit ? ' <button class="btn ghost small" type="button" id="ro-fee">Add a fee</button>' : ''}</p>`}
+        <div class="stats ro-stats">
+          <div class="stat"><b>${count((x) => x.r.participation === 'going')}</b><span>Going · ${count((x) => x.r.participation === 'undecided')} undecided · ${count((x) => x.r.participation === 'not_going')} not going</span></div>
+          ${e.needs_permission || rows.some((x) => x.r.permission !== 'not_required') ? `<div class="stat"><b>${count((x) => x.r.permission === 'pending' && x.r.participation !== 'not_going')}</b><span>Slips missing · ${count((x) => x.r.permission === 'received')} received · ${count((x) => x.r.permission === 'declined')} declined</span></div>` : ''}
+          ${fin && c ? `<div class="stat"><b>${money(owed)}</b><span>Still owed · ${count((x) => x.fee.k === 'paid')} paid · ${count((x) => x.fee.k === 'partial')} partly${count((x) => x.fee.review) ? ` · ${count((x) => x.fee.review)} to review` : ''}</span></div>` : ''}
+        </div>
+        ${state.hasMsgs ? `<div class="ro-remind"><button class="btn small" type="button" id="ro-rem-slip" ${count((x) => x.r.permission === 'pending' && x.r.participation !== 'not_going') ? '' : 'disabled'}>Text families missing a slip</button>
+          ${c ? `<button class="btn small" type="button" id="ro-rem-owe" ${owed > 0 ? '' : 'disabled'}>Text families who owe</button>` : ''}
+          <span class="muted small" id="ro-sent"></span></div>` : ''}</section>
+      <div class="toolbar">
+        <select id="rf-go" aria-label="Going">${opt('', 'Everyone', f.go)}${Object.entries(PARTICIPATION).map(([k, v]) => opt(k, v, f.go)).join('')}</select>
+        <select id="rf-slip" aria-label="Permission slips">${opt('', 'Any slip', f.slip)}${opt('missing', 'Slip missing', f.slip)}${opt('received', 'Slip received', f.slip)}${opt('declined', 'Declined', f.slip)}</select>
+        ${fin && c ? `<select id="rf-money" aria-label="Fee">${opt('', 'Any payment', f.money)}${opt('owed', 'Still owes', f.money)}${opt('paid', 'Paid', f.money)}${opt('partial', 'Partly paid', f.money)}${opt('review', 'Paid, not going', f.money)}</select>` : ''}
+        <select id="rf-cls" aria-label="Class">${opt('', 'Every class', f.cls)}${classes.map((k) => opt(k.id, k.name, f.cls)).join('')}</select>
+        <span class="spacer"></span><span class="muted small">${shown.length} of ${rows.length} children</span></div>
+      <div class="table-wrap"><table class="roster ro-table"><thead><tr><th>Child</th><th>Going?</th><th>Permission slip</th>${fin && c ? '<th>Fee</th>' : ''}${office ? '<th></th>' : ''}</tr></thead><tbody>
+        ${shown.map(({ r, s, fee }) => `<tr data-rid="${r.id}"><td><b>${esc(s.name)}</b><div class="muted small">${esc(classroomName(s.classroom_id))}${pausedNow(s) ? ' · paused' : ''}${r.by_hand ? ' · added by hand' : ''}</div></td>
+          <td>${office ? `<select data-go aria-label="Going">${Object.entries(PARTICIPATION).map(([k, v]) => opt(k, v, r.participation)).join('')}</select>` : esc(PARTICIPATION[r.participation])}</td>
+          <td>${office ? `<select data-slip aria-label="Permission slip">${Object.entries(SLIP).map(([k, v]) => opt(k, v, r.permission)).join('')}</select>` : esc(SLIP[r.permission])}
+            ${r.permission === 'received' ? `<div class="muted small">${office ? `<input type="date" data-slip-on value="${esc(r.permission_on || '')}" aria-label="Slip received on">` : esc(fmtDate(r.permission_on))}</div>` : ''}</td>
+          ${fee ? `<td><span class="pay-pill ps-${fee.review ? 'overdue' : fee.k === 'paid' ? 'paid' : fee.k === 'partial' ? 'partial' : fee.notGoing ? 'none' : 'open'}">${esc(feeLabel(fee))}</span>
+            ${finEdit && fee.k !== 'paid' && !fee.notGoing ? '<button class="btn ghost small" type="button" data-pay>Record payment</button>' : ''}
+            ${fee.pays.length ? '<button class="btn ghost small" type="button" data-rcpt>Receipt</button>' : ''}
+            ${finEdit && fee.inv && !fee.pays.length && fee.notGoing ? '<button class="btn ghost small" type="button" data-uncharge>Take off the charge</button>' : ''}</td>` : ''}
+          ${office ? '<td><button class="btn ghost small" type="button" data-off aria-label="Take off the roster">Take off</button></td>' : ''}</tr>`).join('')
+          || `<tr><td colspan="5" class="muted">${rows.length ? 'Nobody matches.' : 'No children yet: Build from its classes, or add a child.'}</td></tr>`}</tbody></table></div>
+      <p class="muted small">Built from the activity’s classes as of ${esc(dayLabel(pendingDate(e) ? e.date_options[0] : e.starts_on))}; building again adds children who joined those classes and keeps every change made here.
+        ${c ? 'The fee is one charge per child for every activity it covers: paid once, it shows paid on each of them.' : ''}</p>`;
+    bindCalTabs(el);
+    const rerender = () => renderRosters(el);
+    const put = (row) => { state.roster = [...state.roster.filter((x) => x.id !== row.id), row]; };
+    $('#ro-event', el).addEventListener('change', (ev) => { state.rosterEvent = ev.target.value; rerender(); });
+    [['rf-go', 'go'], ['rf-slip', 'slip'], ['rf-money', 'money'], ['rf-cls', 'cls']].forEach(([id, k]) => $(`#${id}`, el)?.addEventListener('change', (ev) => { f[k] = ev.target.value; rerender(); }));
+    $('#ro-build', el)?.addEventListener('click', async () => { if (await buildRoster(e.id)) rerender(); });
+    $('#ro-add', el)?.addEventListener('click', () => addToRoster(e, rerender));
+    $('#ro-print', el).addEventListener('change', (ev) => { const v = ev.target.value; ev.target.value = ''; if (v) showClassRoster(e, v === 'all' ? null : v); });
+    $('#ro-sheet', el)?.addEventListener('click', () => showCollectionSheet(c, null));
+    $('#ro-sched', el)?.addEventListener('click', () => openSchedule(e));
+    $('#ro-fee', el)?.addEventListener('click', () => openCollection(c, e, rerender));
+    const rowOf = (n) => state.roster.find((x) => x.id === n.closest('tr').dataset.rid);
+    const patch = async (n, p) => {
+      const { data, error } = await sb.from('activity_roster').update(p).eq('id', rowOf(n).id).select().single();
+      if (error) { fail(error, 'Could not save'); return rerender(); }
+      put(data); rerender();
+    };
+    $$('[data-go]', el).forEach((s) => s.addEventListener('change', () => patch(s, { participation: s.value })));
+    $$('[data-slip]', el).forEach((s) => s.addEventListener('change', () => patch(s, { permission: s.value })));
+    $$('[data-slip-on]', el).forEach((s) => s.addEventListener('change', () => s.value && patch(s, { permission_on: s.value })));
+    $$('[data-off]', el).forEach((b) => b.addEventListener('click', () => { if (confirm(`Take ${kidName(rowOf(b).student_id)} off this roster?`)) patch(b, { removed: true }); }));
+    $$('[data-pay]', el).forEach((b) => b.addEventListener('click', () => payCollection(c, rowOf(b).student_id, rerender)));
+    $$('[data-rcpt]', el).forEach((b) => b.addEventListener('click', () => showReceipts(feeState(c, rowOf(b).student_id).pays)));
+    $$('[data-uncharge]', el).forEach((b) => b.addEventListener('click', async () => {
+      const inv = feeState(c, rowOf(b).student_id).inv;
+      if (!confirm(`Take the ${money(inv.amount)} charge off ${kidName(inv.student_id)}? Nothing was paid on it.`)) return;
+      const { data, error } = await sb.from('invoices').update({ void: true, note: [inv.note, `Not going · taken off ${fmtDate(todayStr())}`].filter(Boolean).join(' · ') })
+        .eq('id', inv.id).select().single();
+      if (error) return fail(error, 'Could not take it off');
+      state.invoices = state.invoices.map((i) => (i.id === data.id ? data : i));
+      toast('Charge taken off'); rerender();
+    }));
+    $('#ro-rem-slip', el)?.addEventListener('click', () => remind('activity-slip', e, c));
+    $('#ro-rem-owe', el)?.addEventListener('click', () => remind('activity-unpaid', e, c));
+    if ($('#ro-sent', el)) sentReminders(e, c).then((t) => { const box = $('#ro-sent', el); if (box) box.textContent = t; });
+  }
+  async function buildRoster(eid) {
+    const { data, error } = await sb.rpc('roster_build', { p_event: eid });
+    if (error) { fail(error, 'Could not build the roster'); return false; }
+    const { data: rows } = await sb.from('activity_roster').select('*').eq('event_id', eid);
+    state.roster = [...state.roster.filter((x) => x.event_id !== eid), ...(rows || [])];
+    toast(data ? `${data} child${data === 1 ? '' : 'ren'} added` : 'The roster is up to date');
+    return true;
+  }
+  function addToRoster(e, after) {
+    const on = new Set((state.roster || []).filter((r) => r.event_id === e.id && !r.removed).map((r) => r.student_id));
+    const kids = state.students.filter((s) => s.status === 'enrolled' && !on.has(s.id)).sort(sortStudents);
+    const ctl = mountDrawer({ title: 'Add a child', sub: esc(e.title),
+      body: `<div class="section"><label class="full">Child<select name="sid"><option value="">Choose…</option>${kids.map((s) => `<option value="${s.id}">${esc(s.name)} · ${esc(classroomName(s.classroom_id))}</option>`).join('')}</select></label></div>`,
+      foot: '<span class="spacer"></span><button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="ra-save" type="button">Add</button>' });
+    $('#ra-save', ctl.drawer).addEventListener('click', async () => {
+      const sid = ctl.form.sid.value;
+      if (!sid) return toast('Choose the child', true);
+      const old = state.roster.find((r) => r.event_id === e.id && r.student_id === sid);
+      const q = old ? sb.from('activity_roster').update({ removed: false, by_hand: true }).eq('id', old.id)
+        : sb.from('activity_roster').insert({ event_id: e.id, student_id: sid, by_hand: true, permission: e.needs_permission ? 'pending' : 'not_required' });
+      const { data, error } = await q.select().single();
+      if (error) return fail(error, 'Could not add');
+      state.roster = [...state.roster.filter((x) => x.id !== data.id), data];
+      ctl.dirty = false; closeDrawer(); toast(`${kidName(sid)} added`); after();
+    });
+  }
+  // Pay a fee: its charge is made first if it isn't there yet (never twice), then Record payment as usual.
+  async function payCollection(c, sid, after) {
+    const { data, error } = await sb.rpc('collection_charge', { p_collection: c.id, p_students: [sid] });
+    if (error) return fail(error, 'Could not charge the fee');
+    (data || []).forEach((inv) => { state.invoices = [...state.invoices.filter((i) => i.id !== inv.id), inv]; });
+    const inv = (data || []).find((i) => i.student_id === sid);
+    if (inv) openPayment({ studentId: sid, invoiceId: inv.id, back: () => { closeDrawer(); after(); } });
+  }
+  // A fee: name, amount, due, and the activities it covers.
+  function openCollection(c0, ev, after) {
+    const c = c0 || { name: ev ? ev.title : '', amount: '', due_on: '' };
+    const evs = (state.events || []).filter((x) => ['event', 'reminder'].includes(x.kind) && x.starts_on >= addDays(todayStr(), -60)).sort((a, b) => a.starts_on.localeCompare(b.starts_on));
+    const inIt = new Set(c.id ? collectionEvents(c.id).map((x) => x.id) : ev ? [ev.id] : []);
+    const charged = c.id ? (state.invoices || []).filter((i) => i.collection_id === c.id && !i.void).length : 0;
+    const ctl = mountDrawer({ title: c.id ? esc(c.name) : 'New fee', sub: c.id ? esc(`${money(c.amount)} · ${charged} charged`) : '',
+      body: `<div class="section"><div class="grid2">
+          <label class="full">Name (on the bill and the receipt)<input name="name" value="${esc(c.name)}" maxlength="120" placeholder="e.g. Little Farm, Polar Express & Santa Claus"></label>
+          ${fInput('amount', 'Amount', c.amount, 'number', 'min="0.01" step="0.01" inputmode="decimal"')}
+          ${fInput('due_on', 'Due', c.due_on || '', 'date')}
+        </div></div>
+        <div class="section"><h3>Activities it covers</h3><div class="funding-boxes">${evs.map((x) => `<label class="pill-check"><input type="checkbox" class="check" name="ev_${x.id}" ${inIt.has(x.id) ? 'checked' : ''}
+          ${x.collection_id && x.collection_id !== c.id ? 'disabled' : ''}> ${esc(`${fmtDate(x.starts_on)} ${x.title}`)}</label>`).join('')}</div>
+          <p class="muted small">One charge per child covers all of them. ${charged ? 'Changing the amount changes the charges nothing was paid on yet.' : ''}</p></div>`,
+      foot: `<span class="spacer"></span><button class="btn" data-close type="button">Cancel</button><button class="btn primary" id="co-save" type="button">Save</button>` });
+    const { drawer, form } = ctl;
+    $('#co-save', drawer).addEventListener('click', async () => {
+      const row = { name: formVal(form, 'name'), amount: round2(form.amount.value), due_on: form.due_on.value || null };
+      if (!row.name) { form.name.focus(); return toast('Name the fee', true); }
+      if (!(row.amount > 0)) { form.amount.focus(); return toast('Enter the amount', true); }
+      const btn = $('#co-save', drawer); btn.disabled = true;
+      const { data, error } = c.id ? await sb.from('activity_collections').update(row).eq('id', c.id).select().single()
+        : await sb.from('activity_collections').insert(row).select().single();
+      if (error) { btn.disabled = false; return fail(error, 'Could not save the fee'); }
+      state.collections = [...(state.collections || []).filter((x) => x.id !== data.id), data];
+      const want = evs.filter((x) => form[`ev_${x.id}`].checked).map((x) => x.id), had = c.id ? collectionEvents(c.id).map((x) => x.id) : [];
+      for (const [ids, val] of [[want.filter((id) => !had.includes(id)), data.id], [had.filter((id) => !want.includes(id)), null]]) {
+        if (!ids.length) continue;
+        const r = await sb.from('school_events').update({ collection_id: val }).in('id', ids).select();
+        if (r.error) { btn.disabled = false; return fail(r.error, 'Could not change its activities'); }
+        r.data.forEach((x) => { state.events = state.events.map((y) => (y.id === x.id ? x : y)); });
+      }
+      if (c.id) { const r = await sb.from('invoices').select('*').eq('collection_id', c.id); (r.data || []).forEach((inv) => { state.invoices = [...state.invoices.filter((i) => i.id !== inv.id), inv]; }); }
+      ctl.dirty = false; closeDrawer(); toast('Fee saved'); after?.();
+    });
+  }
+  // Reminders: open Messages with the families who still owe / still need a slip, a text to edit. Nothing is sent until
+  // someone sends it there; Messages checks who still needs it again just before sending.
+  async function reminderFamilies(purpose, ref) {
+    const { data, error } = await sb.rpc('activity_reminder_targets', { p_kind: purpose, p_ref: ref });
+    if (error) { fail(error, 'Could not check who needs the reminder'); return null; }
+    const ids = new Set((data || []).map((x) => x.student_id));
+    return [...new Set(state.students.filter((s) => ids.has(s.id)).map(familyKey))];
+  }
+  async function remind(purpose, e, c) {
+    const ref = purpose === 'activity-unpaid' ? c.id : e.id, fams = await reminderFamilies(purpose, ref);
+    if (!fams) return;
+    if (!fams.length) return toast('Nobody needs this reminder right now');
+    const what = purpose === 'activity-unpaid' ? `${c.name} (${money(c.amount)}${c.due_on ? `, due ${dayLabel(c.due_on)}` : ''})` : `${e.title} on ${dayLabel(e.starts_on)}`;
+    state.msgDraft = { ...newMsgDraft(), who: 'pick', picked: fams,
+      reminder: { purpose, ref, label: purpose === 'activity-unpaid' ? `Families who owe: ${c.name}` : `Families missing a slip: ${e.title}` },
+      body: purpose === 'activity-unpaid' ? `Hi {parent}! A reminder that the ${what} for {child} is still due. Thank you!`
+        : `Hi {parent}! We still need {child}’s signed permission slip for ${what}. Thank you!` };
+    state.view = 'messages'; store.set('view', 'messages'); renderShell();
+  }
+  async function sentReminders(e, c) {
+    const refs = [e.id, c?.id].filter(Boolean);
+    const { data, error } = await sb.from('messages').select('id, created_at, purpose, message_recipients(status)').in('ref_id', refs).order('created_at', { ascending: false }).limit(4);
+    if (error || !data?.length) return '';
+    return 'Reminders: ' + data.map((m) => {
+      const st = (m.message_recipients || []).reduce((t, x) => ({ ...t, [x.status]: (t[x.status] || 0) + 1 }), {});
+      return `${m.purpose === 'activity-unpaid' ? 'owe' : 'slip'} ${fmtDateTime(m.created_at)} (${[st.sent && `${st.sent} sent`, st.failed && `${st.failed} failed`,
+        (st.queued || st.sending) && `${(st.queued || 0) + (st.sending || 0)} waiting`, st.opted_out && `${st.opted_out} opted out`].filter(Boolean).join(', ') || 'nothing sent'})`;
+    }).join(' · ');
+  }
+
+  // ───── Printouts: class roster (teachers), collection sheet (office, money), rotation schedule, registration sheet ─────
+  const classBlocks = (groups, line) => groups.map(({ title, sub, kids, blank = 0, flag }) => `<div class="cs-class">
+      <div class="cs-head"><b>${esc(title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}${flag ? `<em>${esc(flag)}</em>` : ''}</div>
+      <ol class="cs-list">${kids.map((k) => `<li>${line(k)}</li>`).join('')}${Array.from({ length: blank }, () => '<li class="cs-blank">&nbsp;</li>').join('')}</ol></div>`).join('');
+  const teacherOf = (cid) => state.classrooms.find((k) => k.id === cid)?.teachers || '';
+  function showClassRoster(e, cid) {
+    const rows = rosterOf(e.id).map((r) => ({ r, s: state.students.find((x) => x.id === r.student_id) })).filter((x) => x.s && (!cid || x.s.classroom_id === cid));
+    const cls = [...new Set(rows.map((x) => x.s.classroom_id))].map((id) => state.classrooms.find((k) => k.id === id)).filter(Boolean).sort((a, b) => a.sort - b.sort);
+    const slip = (r) => (r.permission === 'received' ? `Received ${fmtDate(r.permission_on)}` : SLIP[r.permission]);
+    const pages = cls.map((k, i) => `<div class="${i ? 'prep-break' : ''}">${sheetBand(e.title, `${dayLabel(e.starts_on)} · ${k.name}`)}
+      <p class="r-intro"><span>Teachers: <b>${esc(k.teachers || '—')}</b></span><span>Going: <b>${rows.filter((x) => x.s.classroom_id === k.id && x.r.participation === 'going').length}</b></span></p>
+      <table class="r-table"><thead><tr><th class="num">#</th><th>Child</th><th>Going?</th><th>Permission slip</th><th class="ck-col">Here</th></tr></thead><tbody>
+      ${rows.filter((x) => x.s.classroom_id === k.id).sort((a, b) => sortStudents(a.s, b.s)).map((x, n) => `<tr><td class="num">${n + 1}</td><td><b>${esc(x.s.name)}</b></td>
+        <td>${esc(PARTICIPATION[x.r.participation])}</td><td>${esc(slip(x.r))}</td><td class="ck-col"><span class="ck"></span></td></tr>`).join('')}</tbody></table></div>`).join('');
+    showPrintSheet({ label: 'Class roster', cls: 'roster-sheet', html: pages || '<p>No children on this roster yet.</p>',
+      excel: () => xlsxDownload(`roster-${e.starts_on}.xlsx`, [{ name: 'Roster', rows: [['Class', 'Child', 'Going?', 'Permission slip', 'Slip received'],
+        ...rows.sort((a, b) => classroomName(a.s.classroom_id).localeCompare(classroomName(b.s.classroom_id)) || sortStudents(a.s, b.s))
+          .map((x) => [classroomName(x.s.classroom_id), x.s.name, PARTICIPATION[x.r.participation], SLIP[x.r.permission], x.r.permission_on || ''])] }]) });
+  }
+  // The collection sheet (office): the fee and every child on its activities, by class, with what's recorded.
+  const PAY_TAG = { paid: 'PAID', partial: 'PARTIAL', unpaid: 'UNPAID', none: 'UNPAID' };
+  function showCollectionSheet(c, cid) {
+    const sids = [...new Set((state.roster || []).filter((r) => !r.removed && collectionEvents(c.id).some((e) => e.id === r.event_id)).map((r) => r.student_id))];
+    const kids = sids.map((id) => state.students.find((s) => s.id === id)).filter((s) => s && (!cid || s.classroom_id === cid));
+    const cls = [...new Set(kids.map((s) => s.classroom_id))].map((id) => state.classrooms.find((k) => k.id === id)).filter(Boolean).sort((a, b) => a.sort - b.sort);
+    const label = (s) => { const f = feeState(c, s.id);
+      const base = f.notGoing && !f.paid ? 'NOT GOING' : f.k === 'paid' ? `${f.how.toUpperCase()}${f.review ? ' · REVIEW' : ''}` : f.k === 'partial' ? `PARTIAL ${money(f.paid)}` : f.k === 'none' && !f.going ? 'UNPAID · not decided' : 'UNPAID';
+      return !f.notGoing && f.offFor.length ? `${base} · not going: ${f.offFor.join(', ')}` : base; };
+    const events = collectionEvents(c.id);
+    const html = `${sheetBand(c.name, `${money(c.amount)}${c.due_on ? ` · due ${dayLabel(c.due_on)}` : ''}${cid ? ` · ${classroomName(cid)}` : ''}`)}
+      <p class="cs-covers">Covers: ${events.map((e) => `${esc(e.title)} (${esc(dayLabel(e.starts_on))})`).join(' · ')}</p>
+      <div class="cs-grid">${classBlocks(cls.map((k) => ({ title: k.name, sub: k.teachers, kids: kids.filter((s) => s.classroom_id === k.id).sort(sortStudents) })),
+        (s) => `<span class="cs-name">${esc(s.name)}</span><span class="cs-tag">${esc(label(s))}</span>`)}</div>
+      <p class="cs-legend"><b>Key:</b> CASH / ZELLE / CHECK / CARD = paid in full that way · PARTIAL $ = part paid · UNPAID = nothing recorded · NOT GOING · REVIEW = paid but not going (office to review). From the payments recorded in the CRM.</p>
+      <div class="cs-notes"><b>Notes</b>${Array.from({ length: 4 }, () => '<span></span>').join('')}</div>`;
+    showPrintSheet({ label: `Collection sheet · ${c.name}`, cls: 'coll-sheet', landscape: true, html,
+      note: `<select id="cs-class" aria-label="Class"><option value="">Whole school</option>${state.classrooms.map((k) => `<option value="${k.id}" ${k.id === cid ? 'selected' : ''}>${esc(k.name)}</option>`).join('')}</select>`,
+      excel: () => xlsxDownload(`collection-${c.name.replace(/[^\w]+/g, '-').toLowerCase()}.xlsx`, [{ name: 'Collection', rows: [['Class', 'Child', 'Status', 'Paid', 'Owed', 'How', 'Receipt #'],
+        ...kids.sort((a, b) => classroomName(a.classroom_id).localeCompare(classroomName(b.classroom_id)) || sortStudents(a, b)).map((s) => { const f = feeState(c, s.id);
+          return [classroomName(s.classroom_id), s.name, label(s), f.paid, f.notGoing ? 0 : f.owed, f.how, f.pays.map((p) => p.receipt_no).join(', ')]; })] }]),
+      bind: (sheet) => $('#cs-class', sheet).addEventListener('change', (ev) => { closePrintSheet(sheet); showCollectionSheet(c, ev.target.value || null); }) });
+  }
+
+  // Rotation schedule (the Little Farm one): classes in order, with their teachers and times; transitions in between.
+  const toMin = (t) => { const [h, m] = String(t || '').split(':').map(Number); return h * 60 + m; };
+  const fromMin = (n) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+  const clock = (t) => { const n = toMin(t), h = Math.floor(n / 60), m = n % 60; return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'a.m.' : 'p.m.'}`; };
+  function slotWarnings(rows) {
+    const out = [];
+    rows.forEach((x, i) => {
+      if (!(toMin(x.ends_at) > toMin(x.starts_at))) out.push(`Row ${i + 1}: it ends before it starts.`);
+      rows.slice(i + 1).forEach((y, j) => {
+        if (x.kind === 'class' && y.kind === 'class' && toMin(x.starts_at) < toMin(y.ends_at) && toMin(y.starts_at) < toMin(x.ends_at)) out.push(`Rows ${i + 1} and ${i + j + 2} overlap (${clock(y.starts_at)}).`);
+      });
+    });
+    return out;
+  }
+  function openSchedule(e) {
+    let rows = (state.slots || []).filter((x) => x.event_id === e.id).sort((a, b) => a.sort - b.sort).map((x) => ({ ...x, starts_at: x.starts_at.slice(0, 5), ends_at: x.ends_at.slice(0, 5) }));
+    const office = canOffice();
+    const ctl = mountDrawer({ title: 'Rotation schedule', sub: esc(`${e.title} · ${whenText(e)}`), body: '<div class="section" id="sl-body"></div>',
+      foot: `<button class="btn" id="sl-print" type="button">Print</button><span class="spacer"></span><button class="btn" data-close type="button">Close</button>
+        ${office ? '<button class="btn primary" id="sl-save" type="button">Save</button>' : ''}` });
+    const { drawer } = ctl;
+    const body = $('#sl-body', drawer);
+    const draw = () => {
+      const warn = slotWarnings(rows);
+      body.innerHTML = `<table class="roster sl-table"><thead><tr><th>Class</th><th>Teacher(s)</th><th>Start</th><th>End</th><th class="num">Minutes</th>${office ? '<th></th>' : ''}</tr></thead><tbody>
+        ${rows.map((x, i) => `<tr class="${x.kind === 'transition' ? 'sl-gap' : ''}" data-i="${i}">
+          <td>${x.kind === 'transition' ? '<i>Transition</i>' : office ? `<input data-k="label" value="${esc(x.label || '')}" list="sl-classes" aria-label="Class">` : esc(x.label || '')}</td>
+          <td>${x.kind === 'transition' ? '' : office ? `<input data-k="teachers" value="${esc(x.teachers || '')}" aria-label="Teachers">` : esc(x.teachers || '')}</td>
+          <td>${office ? `<input type="time" data-k="starts_at" value="${esc(x.starts_at)}" aria-label="Start">` : esc(clock(x.starts_at))}</td>
+          <td>${office ? `<input type="time" data-k="ends_at" value="${esc(x.ends_at)}" aria-label="End">` : esc(clock(x.ends_at))}</td>
+          <td class="num">${Math.max(toMin(x.ends_at) - toMin(x.starts_at), 0)}</td>
+          ${office ? `<td class="nowrap"><button class="btn ghost small" type="button" data-up ${i ? '' : 'disabled'} aria-label="Move up">↑</button><button class="btn ghost small" type="button" data-down ${i < rows.length - 1 ? '' : 'disabled'} aria-label="Move down">↓</button><button class="btn ghost small" type="button" data-del aria-label="Remove">✕</button></td>` : ''}</tr>`).join('')
+          || '<tr><td colspan="6" class="muted">No classes yet.</td></tr>'}</tbody></table>
+        <datalist id="sl-classes">${state.classrooms.map((k) => `<option value="${esc(k.name)}">`).join('')}</datalist>
+        ${warn.length ? `<p class="sl-warn">${warn.map(esc).join('<br>')}</p>` : ''}
+        ${office ? '<div class="plan-acts"><button class="btn small" type="button" id="sl-add">+ Add a class</button><button class="btn small" type="button" id="sl-gap">+ Add a transition</button></div>' : ''}`;
+      $$('[data-k]', body).forEach((inp) => inp.addEventListener('change', () => { rows[Number(inp.closest('tr').dataset.i)][inp.dataset.k] = inp.value; ctl.dirty = true; draw(); }));
+      const mv = (i, d) => { const [x] = rows.splice(i, 1); rows.splice(i + d, 0, x); ctl.dirty = true; draw(); };
+      $$('[data-up]', body).forEach((b) => b.addEventListener('click', () => mv(Number(b.closest('tr').dataset.i), -1)));
+      $$('[data-down]', body).forEach((b) => b.addEventListener('click', () => mv(Number(b.closest('tr').dataset.i), 1)));
+      $$('[data-del]', body).forEach((b) => b.addEventListener('click', () => { rows.splice(Number(b.closest('tr').dataset.i), 1); ctl.dirty = true; draw(); }));
+      const next = (len) => { const s = rows.length ? toMin(rows[rows.length - 1].ends_at) : 9 * 60; return { starts_at: fromMin(s), ends_at: fromMin(s + len) }; };
+      $('#sl-add', body)?.addEventListener('click', () => { rows.push({ kind: 'class', label: '', teachers: '', ...next(30) }); ctl.dirty = true; draw(); });
+      $('#sl-gap', body)?.addEventListener('click', () => { rows.push({ kind: 'transition', ...next(5) }); ctl.dirty = true; draw(); });
+    };
+    draw();
+    $('#sl-print', drawer).addEventListener('click', () => showSchedule(e, rows));
+    $('#sl-save', drawer)?.addEventListener('click', async () => {
+      if (rows.some((x) => !(toMin(x.ends_at) > toMin(x.starts_at)))) return toast('A row ends before it starts', true);
+      if (slotWarnings(rows).length && !confirm('Some classes overlap. Save anyway?')) return;
+      const { data, error } = await sb.rpc('activity_slots_save', { p_event: e.id, p_rows: rows.map((x) => ({ kind: x.kind, label: x.label, teachers: x.teachers, starts_at: x.starts_at, ends_at: x.ends_at })) });
+      if (error) return fail(error, 'Could not save the schedule');
+      state.slots = [...(state.slots || []).filter((x) => x.event_id !== e.id), ...(data || [])];
+      ctl.dirty = false; closeDrawer(); toast('Schedule saved'); renderView();
+    });
+  }
+  function showSchedule(e, rows) {
+    const d = new Date(`${e.starts_on}T12:00:00`);
+    showPrintSheet({ label: 'Rotation schedule', cls: 'sched-sheet', html: `<div class="sc-top"><h1>${esc(e.title)}</h1>
+        <p>${esc(d.toLocaleDateString('en-US', { weekday: 'long' }))} · ${esc(d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }))}</p></div>
+      <table class="r-table sc-table"><thead><tr><th>Class</th><th>Time</th><th>Teacher(s)</th><th class="num">Minutes</th></tr></thead><tbody>
+      ${rows.map((x) => `<tr class="${x.kind === 'transition' ? 'sc-gap' : ''}"><td><b>${x.kind === 'transition' ? 'Transition' : esc(x.label || '')}</b></td>
+        <td>${esc(clock(x.starts_at))} – ${esc(clock(x.ends_at))}</td><td>${esc(x.teachers || '')}</td><td class="num">${toMin(x.ends_at) - toMin(x.starts_at)}</td></tr>`).join('')}</tbody></table>`,
+      excel: () => xlsxDownload(`schedule-${e.starts_on}.xlsx`, [{ name: 'Schedule', rows: [['Class', 'Teacher(s)', 'Start', 'End', 'Minutes'],
+        ...rows.map((x) => [x.kind === 'transition' ? 'Transition' : x.label || '', x.teachers || '', clock(x.starts_at), clock(x.ends_at), toMin(x.ends_at) - toMin(x.starts_at)])] }]) });
+  }
+  // Registration sheet: each class's children (by last name, numbered), with the three separate answers; new students by
+  // the class they start in; grouped by this year's class or by next year's confirmed class.
+  function showRegistrationSheet(opts = {}) {
+    const o = { by: 'current', blank: 0, title: `Registration ${regYearLabel()}${regFeeText()}`, ...opts };
+    const all = regRows(), cls = state.classrooms.slice().sort((a, b) => a.sort - b.sort);
+    const isNew = (x) => x.s.status === 'waitlist' || (x.s.start_date && x.s.start_date >= `${regYear().slice(0, 4)}-08-01`);
+    const facts = (x) => `${isNew(x) ? (x.status === 'returning' ? 'Coming' : !x.next ? 'No class yet' : REG_BACK[x.status])
+      : REG_BACK[x.status] === 'Yes' ? 'Back' : REG_BACK[x.status] === 'No' ? 'Not back' : REG_BACK[x.status]} · ${x.pay === 'paid' || x.pay === 'on_file' ? 'Paid' : x.pay === 'partial' ? 'Part paid' : 'Not paid'}${x.reserved ? ' · Seat' : ''}`;
+    const line = (x) => `<span class="cs-name">${esc(x.s.name)}</span><span class="cs-tag">${esc(facts(x))}</span>`;
+    const current = all.filter((x) => !isNew(x) && x.s.status === 'enrolled'), fresh = all.filter(isNew);
+    const confirmed = (x) => x.status === 'returning' && x.r && x.next;
+    const groups = o.by === 'current'
+      ? cls.map((k) => ({ title: k.name, sub: k.teachers, kids: current.filter((x) => x.s.classroom_id === k.id), blank: o.blank })).filter((g) => g.kids.length || o.blank)
+      : [...cls.map((k) => ({ title: k.name, sub: k.teachers, kids: current.filter((x) => confirmed(x) && x.next === k.id), blank: o.blank })),
+        { title: 'Placement not confirmed', sub: 'No answer, not sure, or no class yet', kids: current.filter((x) => !confirmed(x) && x.status !== 'not_returning'), flag: 'Check these' }]
+        .filter((g) => g.kids.length || (o.blank && g.title !== 'Placement not confirmed'));
+    groups.forEach((g) => g.kids.sort((a, b) => sortStudents(a.s, b.s)));
+    const freshGroups = cls.map((k) => ({ title: k.name, sub: 'Starting', kids: fresh.filter((x) => x.next === k.id).sort((a, b) => sortStudents(a.s, b.s)) }))
+      .concat([{ title: 'Class not known', kids: fresh.filter((x) => !x.next), flag: 'Check these' }]).filter((g) => g.kids.length);
+    const html = `<div class="rs-top"><h1>${esc(o.title)}</h1><span>${o.by === 'current' ? `By this year’s class` : `By ${regYearLabel()} class (confirmed)`}</span></div>
+      <div class="cs-grid">${classBlocks(groups, line)}</div>
+      ${freshGroups.length ? `<h2 class="r-h">New Students Starting</h2><div class="cs-grid">${classBlocks(freshGroups, line)}</div>` : ''}
+      <p class="cs-legend"><b>Key:</b> Back / Not back / No answer yet / Not sure = coming back? · Paid / Part paid / Not paid = registration · Seat = seat reserved. From the CRM’s records.</p>`;
+    const sheet = showPrintSheet({ label: 'Registration sheet', cls: 'reg-sheet', landscape: true, html,
+      note: `<input id="rs-title" value="${esc(o.title)}" aria-label="Heading" maxlength="80">
+        <select id="rs-by" aria-label="Group by"><option value="current" ${o.by === 'current' ? 'selected' : ''}>This year’s class</option><option value="next" ${o.by === 'next' ? 'selected' : ''}>Next year’s class (confirmed)</option></select>
+        <select id="rs-blank" aria-label="Blank lines">${[0, 3, 5, 8].map((n) => `<option value="${n}" ${n === o.blank ? 'selected' : ''}>${n ? `${n} blank lines` : 'No blank lines'}</option>`).join('')}</select>`,
+      excel: () => xlsxDownload(`registration-${regYear()}.xlsx`, [{ name: 'Registration', rows: [['Group', 'Child', 'Class now', `Class ${regYearLabel()}`, 'Coming back', 'Registration', 'Seat reserved', 'New student'],
+        ...[...groups.map((g) => [g, false]), ...freshGroups.map((g) => [g, true])].flatMap(([g, n]) => g.kids.map((x) => [g.title, x.s.name, classroomName(x.s.classroom_id), x.cls?.name || '',
+          REG_BACK[x.status], REG_ST[x.pay], x.reserved ? 'Yes' : '', n ? 'Yes' : '']))] }]) });
+    const again = () => { closePrintSheet(sheet); showRegistrationSheet({ title: $('#rs-title', sheet).value, by: $('#rs-by', sheet).value, blank: Number($('#rs-blank', sheet).value) }); };
+    $('#rs-by', sheet).addEventListener('change', again);
+    $('#rs-blank', sheet).addEventListener('change', again);
+    $('#rs-title', sheet).addEventListener('change', again);
+  }
+  const regFeeText = () => { const fees = [...new Set(state.classrooms.map((k) => Number(k.registration_fee)).filter((x) => x > 0))];
+    return fees.length === 1 ? ` · ${money(fees[0])}` : ''; };
 
   // Tours: the school's closed days can't be booked; an activity day shows which classes are busy.
   function tourDayHtml(day) {
@@ -1745,23 +2191,28 @@
   const asOfToday = () => new Date(`${todayStr()}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
   // A sheet shown over the app with Print / Close: the only thing printed.
-  function showPrintSheet({ label, note = '', html, cls = '' }) {
+  function showPrintSheet({ label, note = '', html, cls = '', landscape = false, excel = null, bind = null }) {
     const sheet = document.createElement('div');
-    sheet.className = 'print-sheet';
+    sheet.className = `print-sheet${landscape ? ' print-landscape' : ''}`;
     sheet.setAttribute('role', 'dialog');
     sheet.innerHTML = `<div class="print-bar no-print"><b>${esc(label)}</b><span class="muted small pb-note">${note}</span><span class="spacer"></span>
+        ${landscape ? '<span class="muted small">Landscape</span>' : ''}
+        ${excel ? '<button class="btn" type="button" id="ps-excel">Excel</button>' : ''}
         <button class="btn primary" type="button" id="ps-print">Print / Save as PDF</button>
         <button class="btn" type="button" id="ps-close">Close</button></div>
       <article class="receipt inspect-sheet ${cls}">${html}</article>`;
     document.body.append(sheet);
     document.body.classList.add('printing');
-    const close = () => { sheet.remove(); document.body.classList.remove('printing'); };
+    const close = () => closePrintSheet(sheet);
+    $('#ps-excel', sheet)?.addEventListener('click', excel);
+    bind?.(sheet);
     $('#ps-print', sheet).addEventListener('click', () => window.print());
     $('#ps-close', sheet).addEventListener('click', close);
     sheet.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') close(); });
     $('#ps-close', sheet).focus();
     return sheet;
   }
+  function closePrintSheet(sheet) { sheet.remove(); if (!$('.print-sheet')) document.body.classList.remove('printing'); }
   const sheetBand = (title, sub) => `<header class="r-band"><img src="/assets/logo.png" alt="${esc(state.settings?.school_name || 'Creativa Academy')}">
     <div class="r-title"><h1>${esc(title)}</h1><span class="r-year">${esc(sub)}</span></div></header>`;
   const classOpts = (cur) => `<option value="">All classes</option>${state.classrooms.map((c) =>
@@ -2504,7 +2955,8 @@
         <select id="rg-st">${opt('', 'Everyone', f.status)}${state.hasSeats ? Object.entries(REG_FILTER).map(([k, [v]]) => opt(k, v, f.status)).join('') : ''}${Object.entries(REG_ST).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
         <span class="spacer"></span><span class="muted small" id="rg-count"></span>
         ${state.hasMsgs ? '<button class="btn small" id="rg-text" type="button" hidden>Text these families</button>' : ''}
-        <button class="btn small" id="rg-csv" type="button">Download CSV</button></div>
+        <button class="btn small" id="rg-csv" type="button">Download CSV</button>
+        ${state.hasActivities ? '<button class="btn small" id="rg-print" type="button">Print registration sheet</button>' : ''}</div>
       <div class="table-wrap"><table class="reg-table"><thead><tr><th>Child</th><th>${esc(year)}</th><th>Coming back?</th><th class="num">Registration</th><th>Paid</th>${state.hasSeats ? '<th>Seat reserved</th>' : ''}${edit ? '<th></th>' : ''}</tr></thead>
         <tbody id="rg-rows"></tbody></table></div>
       <p class="muted small">Each child is shown moving up to the next class (children on the waiting list keep theirs; Kindergarten moves on to 1st grade).
@@ -2574,6 +3026,7 @@
       const input = $(`#rg-${k}`, el);
       input.addEventListener(k === 'q' ? 'input' : 'change', () => { f[k === 'st' ? 'status' : k] = input.value; draw(); });
     });
+    $('#rg-print', el)?.addEventListener('click', () => showRegistrationSheet());
     $('#rg-csv', el).addEventListener('click', () => csvDownload(`creativa-registration-${regYear()}.csv`,
       ['Student', 'Class now', `Class ${year}`, 'Coming back', 'Registration fee', 'Paid', 'Status', ...(state.hasSeats ? ['Seat reserved'] : []), 'Parent', 'Phone'],
       all.map((x) => [x.s.name, classroomName(x.s.classroom_id), x.cls?.name || '', REG_BACK[x.status], x.status !== 'not_returning' ? x.fee : '', x.paid,
@@ -2620,6 +3073,7 @@
     const p = paymentId ? state.payments.find((x) => x.id === paymentId) : null;
     const sid = p ? p.student_id : studentId;
     const v6 = state.hasV6;
+    const reqId = !p && state.hasActivities && crypto.randomUUID ? crypto.randomUUID() : null;   // 034: this window's payment is recorded once
     const m = p ? p.covers_month.slice(0, 7) : (month || thisMonth());
     // With billing: suggest the chosen (or oldest open) invoice and its balance. Before 007: the month's tuition.
     const invId = p ? p.invoice_id : invoiceId || (sid && v6 && !month ? openInvoices(sid)[0]?.id : null);
@@ -2719,8 +3173,9 @@
         ...(v6 ? { invoice_id: inv ? inv.id : null } : {}),
       };
       $$('.drawer-foot .btn', drawer).forEach((b) => { b.disabled = true; });
-      const q = p ? sb.from('payments').update(row).eq('id', p.id) : sb.from('payments').insert({ ...row, created_by: state.me.id });
-      const { data, error } = await q.select().single();
+      const q = p ? sb.from('payments').update(row).eq('id', p.id) : sb.from('payments').insert({ ...row, created_by: state.me.id, ...(reqId ? { request_id: reqId } : {}) });
+      let { data, error } = await q.select().single();
+      if (error && reqId && error.code === '23505') ({ data, error } = await sb.from('payments').select('*').eq('request_id', reqId).single());   // already saved (a retry)
       $$('.drawer-foot .btn', drawer).forEach((b) => { b.disabled = false; });
       if (error) return fail(error, 'Could not save the payment');
       state.payments = [data, ...state.payments.filter((x) => x.id !== data.id)];
@@ -2795,6 +3250,10 @@
     const inv = p.invoice_id && state.invoices.find((i) => i.id === p.invoice_id);
     const t = inv && lateFeeFor(inv);
     if (t) return `${inv.description} — tuition ${longPeriod(t.period_start)}`;
+    if (inv?.collection_id && state.events) {
+      const evs = collectionEvents(inv.collection_id);
+      return evs.length ? `${inv.description} — ${evs.map((e) => `${e.title}, ${longDate(e.starts_on)}`).join('; ')}` : inv.description;
+    }
     if (inv) return inv.kind === 'tuition' ? `Tuition (${inv.description}) — ${longPeriod(inv.period_start)}` : inv.description;
     return state.hasV6 ? 'Payment on account' : `Tuition — ${fmtMonth(p.covers_month.slice(0, 7))}`;
   }
@@ -5423,6 +5882,8 @@
     el.innerHTML = `<div class="msg-grid">
       <section class="panel msg-compose"><h2>New text</h2>
         <form id="msg-form" class="grid2" novalidate>
+          ${d.reminder ? `<p class="full panel small msg-reminder">Reminder: <b>${esc(d.reminder.label)}</b>. Who still needs it is checked again when you send,
+            so a family that paid (or sent the slip) since is left out.</p>` : ''}
           <label class="full">Who gets it<select name="who">${whoOptions()}</select></label>
           <p class="full muted small" id="msg-list-sum" hidden></p>
           <div class="full grid2" id="msg-one" ${d.who === 'one' ? '' : 'hidden'}>
@@ -5621,6 +6082,17 @@
       draw();
     }));
     $('#msg-send', el).addEventListener('click', async () => {
+      if (d.reminder) {   // 034: who still owes / still needs a slip, right now
+        const fams = await reminderFamilies(d.reminder.purpose, d.reminder.ref);
+        if (!fams) return;
+        const keep = new Set(fams), before = d.picked.length;
+        d.picked = d.picked.filter((k) => keep.has(k));
+        if (d.picked.length < before) toast(`${before - d.picked.length} famil${before - d.picked.length === 1 ? 'y doesn’t' : 'ies don’t'} need this reminder anymore: left out`);
+        draw();
+        const { data: prev } = await sb.from('messages').select('created_at').eq('purpose', d.reminder.purpose).eq('ref_id', d.reminder.ref)
+          .is('canceled_at', null).gt('created_at', new Date(Date.now() - 12 * 3600e3).toISOString()).order('created_at', { ascending: false }).limit(1);
+        if (prev?.length && !confirm(`This reminder already went out ${fmtDateTime(prev[0].created_at)}. Send it again?`)) return;
+      }
       const r = msgRecipients(d);
       if (!d.body.trim()) return toast('Write the message first', true);
       if (r.send.some((x) => HAS_BLANK.test(x.text))) { selectBlank(0); return toast('Fill in the parts in [brackets] first', true); }
@@ -5636,7 +6108,8 @@
       btn.disabled = true;
       const audience = r.list ? r.list.name : d.who === 'class' ? `${classroomName(d.cls)} families`
         : d.who === 'pick' ? `${r.fams.length} famil${r.fams.length === 1 ? 'y' : 'ies'} picked` : d.who === 'one' ? (d.oneName.trim() || 'One person') : MSG_WHO[d.who];
-      const { data: m, error } = await sb.from('messages').insert({ audience: `${audience} (${r.send.length})`, body: r.body, send_at: at.toISOString(), created_by: state.me.id })
+      const { data: m, error } = await sb.from('messages').insert({ audience: `${d.reminder ? d.reminder.label : audience} (${r.send.length})`, body: r.body, send_at: at.toISOString(), created_by: state.me.id,
+        ...(d.reminder ? { purpose: d.reminder.purpose, ref_id: d.reminder.ref } : {}) })
         .select().single();
       if (error) { btn.disabled = false; return fail(error, 'Could not save the text'); }
       const rows = r.send.map((x) => ({ message_id: m.id, student_id: x.to.sid, name: x.to.name || null, phone: x.to.phone, body: x.text.trim() }));
@@ -5872,7 +6345,8 @@
 
   // ───────────── Changes (012): who changed what ─────────────
   const CHANGE_AREA = { enrollment: 'Enrollment', finance: 'Tuition & payments', payroll: 'Payroll', settings: 'Settings & access' };
-  const FIELD_LABEL = { name: 'name', dob: 'birthday', classroom_id: 'class', status: 'status', start_date: 'start date', withdrawn_on: 'last day',
+  const FIELD_LABEL = { participation: 'going?', permission: 'permission slip', permission_on: 'slip received', removed: 'taken off', by_hand: 'added by hand',
+    needs_permission: 'needs a slip', collection_id: 'fee', name: 'name', dob: 'birthday', classroom_id: 'class', status: 'status', start_date: 'start date', withdrawn_on: 'last day',
     withdraw_reason: 'reason', parent_name: 'parent', parent_phone: 'parent phone', parent_email: 'parent email', notes: 'notes', rbt: 'RBT',
     therapy: 'therapy', reg_fee: 'registration fee', doc_registration: 'registration packet', doc_blue_form: 'blue form', doc_yellow_form: 'yellow form',
     doc_birth_cert: 'birth certificate', family_account: 'family account', funding: 'funding', tuition_amount: 'rate', tuition_frequency: 'billed',
@@ -5894,6 +6368,8 @@
     if (k === 'method') return METHOD[v] || v;
     if (k === 'payer') return PAYER[v] || v;
     if (k === 'role') return CONTACT_ROLE[v] || v;
+    if (k === 'participation') return PARTICIPATION[v] || v;
+    if (k === 'permission') return SLIP[v] || v;
     if (k === 'invoice_id') { const inv = state.invoices.find((i) => i.id === v); return inv ? invoiceLabel(inv) : 'an invoice'; }
     if (k === 'clock_in' || k === 'clock_out') return clockTime(v);
     if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return fmtDate(v);
@@ -5923,6 +6399,10 @@
         if (c.diff?.void && c.diff.void[1] === true) return d.late_fee_for ? `waived the ${money(d.amount)} late fee for ${kid}` : `voided ${kid}’s ${money(d.amount)} bill`;
         return `changed ${kid}’s ${what}: ${dt}`;
       }
+      case 'activity_roster': { const ev = (state.events || []).find((x) => x.id === d.event_id);
+        return `${c.action === 'insert' ? 'put' : c.action === 'delete' ? 'removed' : 'changed'} ${kid} ${c.action === 'update' ? 'on' : c.action === 'insert' ? 'on' : 'from'} the roster for ${ev ? ev.title : 'an activity'}${c.action === 'update' ? `: ${dt}` : ''}`; }
+      case 'activity_collections': return `${act} the fee “${d.name || ''}” (${money(d.amount)})${c.action === 'update' ? `: ${dt}` : ''}`;
+      case 'activity_slots': return `${act} a rotation schedule row (${d.label || d.kind || ''})`;
       case 'school_event_prep': return `${act} prep “${d.task || ''}” (${d.assignee || ''})${c.action === 'update' ? `: ${dt}` : ''}`;
       case 'student_medications': return `${act} medicine ${d.name || ''} for ${kid}${c.action === 'update' ? `: ${dt}` : ''}`;
       case 'student_contacts': return `${act} ${CONTACT_ROLE[d.role]?.toLowerCase() || ''} contact ${[d.first_name, d.last_name].filter(Boolean).join(' ')} for ${kid}${c.action === 'update' ? `: ${dt}` : ''}`;

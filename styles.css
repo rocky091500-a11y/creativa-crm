@@ -927,3 +927,9 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 @media print { .print-landscape .cs-notes span { height: 18px; } .print-landscape .cs-legend { margin: 4px 0 4px; } .print-landscape .rs-top { margin-bottom: 4px; } .print-landscape .cs-covers { margin: -2px 0 6px; } }
 .reg-new { margin-top: 3px; font-size: 12px; }
 .forms-exp { margin-top: 10px; }
+
+/* Staff birthdays (037): month and day side by side on Payroll → Staff, and their own list beside the Calendar. */
+.bday-pick { display: flex; gap: 6px; }
+.bday-pick select { flex: 1; min-width: 0; }
+.bday-note { align-self: end; margin: 0 0 10px; }
+.cal-side-h { margin-top: 14px; }

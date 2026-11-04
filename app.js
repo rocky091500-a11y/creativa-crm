@@ -453,7 +453,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md, pp, ac, ar, asl, nt] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md, pp, ac, ar, asl, nt, sbd] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -482,6 +482,7 @@
       selectAll('activity_roster', 'created_at'),
       sb.from('activity_slots').select('*').order('sort'),
       sb.from('inquiries').select('no_tour').limit(1),                                                 // missing until 035
+      sb.rpc('staff_birthdays'),                                                                       // missing until 037
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -537,6 +538,7 @@
     state.hasHealth = !!state.meds;
     state.hasForms = state.students.length > 0 && 'physical_expires' in state.students[0];   // 036: yellow / blue form expirations
     state.todos = td.error ? [] : td.data;
+    state.staffBdays = sbd.error ? null : sbd.data;   // 037: [{ name, birthday: 'MM-DD' }]
     watchInquiries();
     state.loadedAt = Date.now();
   }
@@ -789,6 +791,10 @@
   const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
   const onDay = (x, day) => x.starts_on <= day && (x.ends_on || x.starts_on) >= day;
   const birthdaysOn = (day) => (state.students || []).filter((s) => s.status === 'enrolled' && s.dob && s.dob.slice(5) === day.slice(5)).sort(sortStudents);
+  // Staff birthdays (037): Payroll → Staff → Birthday (month and day). Feb 29 shows on Feb 28 when it isn't a leap year.
+  const staffBdayOn = (b, day) => b === day.slice(5) || (b === '02-29' && day.slice(5) === '02-28' && addDays(day, 1).slice(5) === '03-01');
+  const staffBirthdaysOn = (day) => (state.staffBdays || []).filter((x) => staffBdayOn(x.birthday, day));
+  const bdayText = (b) => new Date(`2000-${b}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const pendingDate = (e) => (e.date_options || []).length > 0;
   const isDraft = (e) => e.status === 'draft';
   const settled = (e) => !pendingDate(e) && !e.question;
@@ -828,6 +834,7 @@
         aud: audienceLabel(e.classroom_ids), draft: !fam && isDraft(e), tentative: !fam && pendingDate(e) ? e.date_options : null,
         replaced: !fam && gone.has(e.id), prep: fam ? 0 : prepOf(e.id).length, note: fam ? '' : e.internal_note }));
     if (!fam) birthdaysOn(day).forEach((s) => items.push({ cls: 'cal-bday', text: `Birthday: ${s.name}` }));
+    if (!fam) staffBirthdaysOn(day).forEach((x) => items.push({ cls: 'cal-bday cal-staff-bday', text: `Staff birthday: ${x.name}` }));
     return items;
   }
   const weekEvents = (mon, v = {}) => (state.events || []).filter((e) => (e.kind === 'theme' || e.kind === 'menu')
@@ -888,6 +895,7 @@
     };
     const bdays = (state.students || []).filter((s) => s.status === 'enrolled' && s.dob && s.dob.slice(5, 7) === ym.slice(5))
       .sort((a, b) => a.dob.slice(8).localeCompare(b.dob.slice(8)) || sortStudents(a, b));
+    const staffBdays = (state.staffBdays || []).filter((x) => x.birthday.slice(0, 2) === ym.slice(5));
     const drafts = (state.events || []).filter((e) => isDraft(e) && e.starts_on <= last && (e.ends_on || e.starts_on) >= first).length;
     el.innerHTML = `${calTabs()}${calMonthBar(ym, `${state.hasPlanning ? `<button class="btn small" id="cal-print-staff" type="button">Print staff calendar</button>
         <select id="cal-print-family" aria-label="Print a family calendar"><option value="">Family calendar…</option>
@@ -902,10 +910,11 @@
         </div>
         <aside class="panel cal-side"><h3>Birthdays</h3>
           <ul class="cal-list">${bdays.map((s) => `<li><span class="muted">${Number(ym.slice(5))}/${Number(s.dob.slice(8))}</span> ${esc(s.name)}</li>`).join('')
-            || '<li class="muted small">No birthdays this month.</li>'}</ul></aside>
+            || `<li class="muted small">No ${staffBdays.length ? 'children’s ' : ''}birthdays this month.</li>`}</ul>
+          ${staffBdays.length ? `<h3 class="cal-side-h">Staff</h3><ul class="cal-list cal-staff-bdays">${staffBdays.map((x) => `<li><span class="muted">${Number(ym.slice(5))}/${Number(x.birthday.slice(3))}</span> ${esc(x.name)}</li>`).join('')}</ul>` : ''}</aside>
       </div>
       <p class="muted small">${edit ? 'Tap a day to add something to it, or tap an activity, theme or menu to change it. ' : ''}Closed days are on Settings → School calendar;
-        tuition days come from the billing schedule, and birthdays from each child’s date of birth.</p>`;
+        tuition days come from the billing schedule, and birthdays from each child’s date of birth${state.staffBdays ? ' and each person’s birthday on Payroll → Staff' : ''}.</p>`;
     bindCalTabs(el);
     bindCalMonthBar(el, ym);
     $('#cal-print-staff', el)?.addEventListener('click', () => showCalendarSheet(ym, null));
@@ -4674,6 +4683,7 @@
 
   function openEmployee(id) {
     const e = id ? state.pay.employees.find((x) => x.id === id) : { active: true, lunch_minutes: 30 };
+    const hasBday = state.pay.employees.some((x) => 'birthday' in x) || (!state.pay.employees.length && !!state.staffBdays);   // 037
     const ctl = mountDrawer({
       title: id ? esc(empName(e)) : 'Add person',
       sub: id ? esc(e.position || '') : 'Someone on payroll',
@@ -4687,6 +4697,12 @@
           ${state.pay.employees.some((x) => 'start_time' in x) ? `${fInput('start_time', 'Starts at (time clock)', (e.start_time || '').slice(0, 5), 'time')}
             <p class="full muted small">Clocking in earlier is saved as this time, so pay starts then (the real tap shows on their timesheet).
               Leave it empty to count from the tap.</p>` : ''}
+          ${hasBday ? `<label>Birthday<span class="bday-pick">
+              <select name="bday_m" aria-label="Birthday month"><option value="">Month</option>${Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'))
+                .map((m) => `<option value="${m}" ${e.birthday?.slice(0, 2) === m ? 'selected' : ''}>${esc(new Date(`2000-${m}-01T00:00:00`).toLocaleDateString('en-US', { month: 'long' }))}</option>`).join('')}</select>
+              <select name="bday_d" aria-label="Birthday day"><option value="">Day</option>${Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, '0'))
+                .map((d) => `<option value="${d}" ${e.birthday?.slice(3) === d ? 'selected' : ''}>${Number(d)}</option>`).join('')}</select></span></label>
+            <p class="muted small bday-note">Shows on the Calendar for the staff (not on family calendars).</p>` : ''}
           <label class="full">Notes<input name="notes" value="${esc(e.notes)}" maxlength="500"></label>
           <label class="full pill-check"><input type="checkbox" class="check" name="active" ${e.active ? 'checked' : ''}> Active (shows on the time clock)</label>
           ${state.pay.employees.some((x) => 'paid' in x) ? `<label class="full pill-check"><input type="checkbox" class="check" name="paid" ${e.paid !== false ? 'checked' : ''}> Paid (on payroll)</label>
@@ -4711,8 +4727,15 @@
         ...(form.paid ? { paid: form.paid.checked } : {}),
         ...(form.start_time ? { start_time: form.start_time.value || null } : {}) };
       if (!row.first_name) return toast('Enter their first name', true);
+      if (form.bday_m) {
+        const m = form.bday_m.value, d = form.bday_d.value;
+        if (!m !== !d) return toast('Pick the month and the day of their birthday (or neither)', true);
+        if (m && new Date(`2000-${m}-${d}T00:00:00`).getMonth() + 1 !== Number(m)) return toast(`That month doesn’t have a day ${Number(d)}`, true);
+        row.birthday = m ? `${m}-${d}` : null;
+      }
       const { error } = id ? await sb.from('employees').update(row).eq('id', id) : await sb.from('employees').insert(row);
       if (error) return fail(error, 'Could not save');
+      if (form.bday_m) { const r = await sb.rpc('staff_birthdays'); if (!r.error) state.staffBdays = r.data; }   // the Calendar picks it up
       ctl.dirty = false;
       closeDrawer();
       toast(id ? 'Saved' : `${row.first_name} added. Next: give them a time clock PIN.`);
@@ -6484,7 +6507,7 @@
 
   // ───────────── Changes (012): who changed what ─────────────
   const CHANGE_AREA = { enrollment: 'Enrollment', finance: 'Tuition & payments', payroll: 'Payroll', settings: 'Settings & access' };
-  const FIELD_LABEL = { physical_expires: 'yellow form expires', immunization_status: 'blue form', immunization_expires: 'blue form expires', participation: 'going?', permission: 'permission slip', permission_on: 'slip received', removed: 'taken off', by_hand: 'added by hand',
+  const FIELD_LABEL = { birthday: 'birthday', physical_expires: 'yellow form expires', immunization_status: 'blue form', immunization_expires: 'blue form expires', participation: 'going?', permission: 'permission slip', permission_on: 'slip received', removed: 'taken off', by_hand: 'added by hand',
     needs_permission: 'needs a slip', collection_id: 'fee', name: 'name', dob: 'birthday', classroom_id: 'class', status: 'status', start_date: 'start date', withdrawn_on: 'last day',
     withdraw_reason: 'reason', parent_name: 'parent', parent_phone: 'parent phone', parent_email: 'parent email', notes: 'notes', rbt: 'RBT',
     therapy: 'therapy', reg_fee: 'registration fee', doc_registration: 'registration packet', doc_blue_form: 'blue form', doc_yellow_form: 'yellow form',
@@ -6509,6 +6532,7 @@
     if (k === 'role') return CONTACT_ROLE[v] || v;
     if (k === 'participation') return PARTICIPATION[v] || v;
     if (k === 'immunization_status') return IMM_STATUS[v] || v;
+    if (k === 'birthday' && /^\d\d-\d\d$/.test(v)) return bdayText(v);
     if (k === 'permission') return SLIP[v] || v;
     if (k === 'invoice_id') { const inv = state.invoices.find((i) => i.id === v); return inv ? invoiceLabel(inv) : 'an invoice'; }
     if (k === 'clock_in' || k === 'clock_out') return clockTime(v);

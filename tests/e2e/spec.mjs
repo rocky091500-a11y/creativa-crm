@@ -885,8 +885,27 @@ try {
   await pr.locator('.drawer #em-save').click();
   await pr.locator('.drawer').waitFor({ state: 'detached' });
   await beaRow().waitFor();
-  assert.equal(await beaRow().locator('.tag', { hasText: 'not paid for now' }).count(), 0, 'paid again');
+  await beaRow().locator('.tag', { hasText: 'not paid for now' }).waitFor({ state: 'detached' });   // paid again
   ok('Payroll: Paid off keeps someone working without pay off the Hours tab; back on puts them back');
+
+  // Staff birthdays (037): Bea's birthday is today, so it's on today's square and in the month's Staff list.
+  const now = new Date(), mm = String(now.getMonth() + 1).padStart(2, '0'), dd = String(now.getDate()).padStart(2, '0');
+  await beaRow().click();
+  await pr.locator('.drawer select[name=bday_m]').selectOption('02');
+  await pr.locator('.drawer select[name=bday_d]').selectOption('30');
+  await pr.locator('.drawer #em-save').click();
+  await pr.waitForSelector('#toast:has-text("doesn’t have a day 30")');
+  await pr.locator('.drawer select[name=bday_m]').selectOption(mm);
+  await pr.locator('.drawer select[name=bday_d]').selectOption(dd);
+  await shot(pr, '19b-staff-birthday');
+  await pr.locator('.drawer #em-save').click();
+  await pr.locator('.drawer').waitFor({ state: 'detached' });
+  await pr.click('header nav button[data-view=calendar]');
+  await pr.locator('.cal-today .cal-staff-bday', { hasText: 'Staff birthday: Bea Office' }).waitFor();
+  assert.match(await pr.locator('.cal-staff-bdays').textContent(), new RegExp(`${Number(mm)}/${Number(dd)}\\s+Bea Office`));
+  await shot(pr, '19c-staff-birthday-calendar');
+  await pr.click('header nav button[data-view=payroll]');
+  ok('Staff birthdays: month and day on Payroll → Staff (a day the month doesn’t have is refused), shown on the Calendar');
 
   // ── the time clock on a tablet ──
   const kiosk = await newPage({ width: 1024, height: 768 }, true);

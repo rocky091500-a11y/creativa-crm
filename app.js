@@ -1839,9 +1839,10 @@
   // typed on the website form ("January 2027"), as its first day. Waitlisted families are in that order, soonest first.
   const MONTH3 = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
   function inqStart(i) {
-    if (i.start_on) return { on: i.start_on, label: fmtDate(i.start_on) };
+    const withYear = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    if (i.start_on) return { on: i.start_on, label: withYear(i.start_on) };
     const kid = (state.students || []).find((s) => s.inquiry_id === i.id && s.start_date);
-    if (kid) return { on: kid.start_date, label: fmtDate(kid.start_date) };
+    if (kid) return { on: kid.start_date, label: withYear(kid.start_date) };
     const m = String(i.desired_start || '').toLowerCase().match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s*(20\d\d)\b/);
     return m ? { on: `${m[2]}-${String(MONTH3.indexOf(m[1]) + 1).padStart(2, '0')}-01`, label: i.desired_start.trim() } : null;
   }
@@ -1858,7 +1859,9 @@
     if (i.tour_at && i.stage === 'tour_scheduled') tags.push(`<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>`);
     if (i.tour_at && i.stage === 'reschedule') tags.push(`<span class="tag due">was ${esc(fmtDateTime(i.tour_at))}</span>`);
     const start = i.start_on ? inqStart(i) : i.stage === 'waitlisted' ? inqStart(i) : null;
-    if (start && !CLOSED.has(i.stage)) tags.push(`<span class="tag start">starts ${esc(start.label)}${canViewFinance() && Number(i.expected_tuition) > 0
+    // A start date already past on a family still waiting is likely a typo (the year): marked so it's easy to fix.
+    const passed = start && i.stage === 'waitlisted' && (i.start_on || (state.students || []).some((x) => x.inquiry_id === i.id && x.start_date)) && start.on < todayStr();
+    if (start && !CLOSED.has(i.stage)) tags.push(`<span class="tag start${passed ? ' overdue' : ''}">${passed ? 'start date passed: ' : 'starts '}${esc(start.label)}${canViewFinance() && Number(i.expected_tuition) > 0
       ? ` · ${esc(money(i.expected_tuition))}` : ''}</span>`);
     if (state.hasStartOn && !CLOSED.has(i.stage)) {
       if (inqRegPaid(i)) tags.push('<span class="tag paid">registration paid</span>');

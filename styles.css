@@ -924,3 +924,4 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 .rs-new + .cs-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
 .reg-sheet .cs-legend, .coll-sheet .cs-legend { margin-top: 6px; }
 @media print { .print-landscape .rs-top h1 { font-size: 26px; } .print-landscape .rs-new { margin: 8px 0 4px; } .print-landscape .cs-list li { min-height: 15px; padding: 0 4px; } }
+@media print { .print-landscape .cs-notes span { height: 18px; } .print-landscape .cs-legend { margin: 4px 0 4px; } .print-landscape .rs-top { margin-bottom: 4px; } .print-landscape .cs-covers { margin: -2px 0 6px; } }

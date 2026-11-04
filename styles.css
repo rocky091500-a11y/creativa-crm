@@ -904,3 +904,23 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 }
 @media (max-width: 720px) { .cs-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .month-bar select, .print-bar select { width: auto; max-width: 320px; }
+
+/* Paper-style class lists, like the school's registration and collection sheets: six classes across, "Class/Teacher"
+   in green, numbered rows in lines, blank numbered rows to write in. */
+.cs-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; align-items: start; }
+.cs-class { border: 1.5px solid var(--ink); }
+.cs-head { background: #7FA650; color: #1F2A12; padding: 3px 6px; flex-direction: column; align-items: center; text-align: center; }
+.cs-head b { font-size: 11.5px; }
+.cs-list { padding: 0; list-style: none; counter-reset: row; }
+.cs-list li { counter-increment: row; display: flex; align-items: baseline; gap: 4px; padding: 1px 4px; min-height: 18px; border-bottom: 1px solid #9AA08E; font-size: 10.5px; }
+.cs-list li::before { content: counter(row); min-width: 13px; font-size: 8.5px; color: var(--ink-soft); }
+.cs-list li:last-child { border-bottom: 0; }
+.cs-name { display: block; flex: 1; min-width: 0; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cs-tag { display: block; font-size: 8.5px; font-weight: 700; letter-spacing: .02em; color: var(--ink); white-space: nowrap; }
+.rs-top { flex-direction: column; align-items: center; text-align: center; border-bottom: 0; margin-bottom: 8px; gap: 2px; }
+.rs-top h1 { font-family: var(--body); font-size: 30px; font-weight: 800; text-transform: uppercase; letter-spacing: .02em; color: var(--ink); }
+.rs-new { font-family: var(--body); font-size: 18px; font-weight: 800; text-transform: uppercase; color: #8A2F22; text-align: center; margin: 14px 0 6px; }
+@media print { .print-landscape .cs-list li { font-size: 9.5px; min-height: 16px; } }
+.rs-new + .cs-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.reg-sheet .cs-legend, .coll-sheet .cs-legend { margin-top: 6px; }
+@media print { .print-landscape .rs-top h1 { font-size: 26px; } .print-landscape .rs-new { margin: 8px 0 4px; } .print-landscape .cs-list li { min-height: 15px; padding: 0 4px; } }

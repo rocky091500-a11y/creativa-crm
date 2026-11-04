@@ -1550,9 +1550,13 @@
   }
 
   // ───── Printouts: class roster (teachers), collection sheet (office, money), rotation schedule, registration sheet ─────
+  // Class lists side by side, as on the school's paper sheets: "Class/Teacher" in green, numbered rows in lines, and blank
+  // numbered rows to write in.
+  const firstTeacher = (k) => String(k?.teachers || '').split(/\s*(?:&|,|\band\b)\s*/)[0] || '';
   const classBlocks = (groups, line) => groups.map(({ title, sub, kids, blank = 0, flag }) => `<div class="cs-class">
-      <div class="cs-head"><b>${esc(title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}${flag ? `<em>${esc(flag)}</em>` : ''}</div>
-      <ol class="cs-list">${kids.map((k) => `<li>${line(k)}</li>`).join('')}${Array.from({ length: blank }, () => '<li class="cs-blank">&nbsp;</li>').join('')}</ol></div>`).join('');
+      <div class="cs-head"><b>${esc(title)}${sub ? `/${esc(sub)}` : ''}</b>${flag ? `<em>${esc(flag)}</em>` : ''}</div>
+      <ol class="cs-list">${kids.map((k) => `<li>${line(k)}</li>`).join('')}${Array.from({ length: blank }, () => '<li class="cs-blank"></li>').join('')}</ol></div>`).join('');
+  const blankOpts = (id, cur, ns, word) => `<select id="${id}" aria-label="${esc(word)}">${ns.map((n) => `<option value="${n}" ${n === cur ? 'selected' : ''}>${n ? `${n} blank ${n === 1 ? 'line' : 'lines'}${word ? ` ${word}` : ''}` : `No blank lines${word ? ` ${word}` : ''}`}</option>`).join('')}</select>`;
   const teacherOf = (cid) => state.classrooms.find((k) => k.id === cid)?.teachers || '';
   function showClassRoster(e, cid) {
     const rows = rosterOf(e.id).map((r) => ({ r, s: state.students.find((x) => x.id === r.student_id) })).filter((x) => x.s && (!cid || x.s.classroom_id === cid));
@@ -1570,26 +1574,32 @@
   }
   // The collection sheet (office): the fee and every child on its activities, by class, with what's recorded.
   const PAY_TAG = { paid: 'PAID', partial: 'PARTIAL', unpaid: 'UNPAID', none: 'UNPAID' };
-  function showCollectionSheet(c, cid) {
+  function showCollectionSheet(c, cid, blank = 2) {
     const sids = [...new Set((state.roster || []).filter((r) => !r.removed && collectionEvents(c.id).some((e) => e.id === r.event_id)).map((r) => r.student_id))];
     const kids = sids.map((id) => state.students.find((s) => s.id === id)).filter((s) => s && (!cid || s.classroom_id === cid));
     const cls = [...new Set(kids.map((s) => s.classroom_id))].map((id) => state.classrooms.find((k) => k.id === id)).filter(Boolean).sort((a, b) => a.sort - b.sort);
-    const label = (s) => { const f = feeState(c, s.id);
-      const base = f.notGoing && !f.paid ? 'NOT GOING' : f.k === 'paid' ? `${f.how.toUpperCase()}${f.review ? ' · REVIEW' : ''}` : f.k === 'partial' ? `PARTIAL ${money(f.paid)}` : f.k === 'none' && !f.going ? 'UNPAID · not decided' : 'UNPAID';
-      return !f.notGoing && f.offFor.length ? `${base} · not going: ${f.offFor.join(', ')}` : base; };
+    // Short labels for the paper (from the recorded payments); the Excel file has the long ones.
+    const tag = (f) => (f.notGoing && !f.paid ? 'NOT GOING' : f.k === 'paid' ? (f.review ? 'PAID · REVIEW' : f.how.toUpperCase()) : f.k === 'partial' ? `PART ${money(f.paid)}` : 'UNPAID');
+    const label = (s) => { const f = feeState(c, s.id), base = tag(f);
+      return !f.notGoing && f.offFor.length ? `${base} · not going: ${f.offFor.join(', ')}` : f.k === 'none' && !f.going && !f.notGoing ? `${base} · not decided` : base; };
     const events = collectionEvents(c.id);
-    const html = `${sheetBand(c.name, `${money(c.amount)}${c.due_on ? ` · due ${dayLabel(c.due_on)}` : ''}${cid ? ` · ${classroomName(cid)}` : ''}`)}
+    const html = `<div class="rs-top"><h1>${esc(c.name)} = ${esc(money(c.amount).replace(/\.00$/, ''))}</h1><span>${esc([cid && classroomName(cid), c.due_on && `Due ${dayLabel(c.due_on)}`].filter(Boolean).join(' · '))}</span></div>
       <p class="cs-covers">Covers: ${events.map((e) => `${esc(e.title)} (${esc(dayLabel(e.starts_on))})`).join(' · ')}</p>
-      <div class="cs-grid">${classBlocks(cls.map((k) => ({ title: k.name, sub: k.teachers, kids: kids.filter((s) => s.classroom_id === k.id).sort(sortStudents) })),
-        (s) => `<span class="cs-name">${esc(s.name)}</span><span class="cs-tag">${esc(label(s))}</span>`)}</div>
-      <p class="cs-legend"><b>Key:</b> CASH / ZELLE / CHECK / CARD = paid in full that way · PARTIAL $ = part paid · UNPAID = nothing recorded · NOT GOING · REVIEW = paid but not going (office to review). From the payments recorded in the CRM.</p>
-      <div class="cs-notes"><b>Notes</b>${Array.from({ length: 4 }, () => '<span></span>').join('')}</div>`;
+      <div class="cs-grid">${classBlocks(cls.map((k) => ({ title: k.name, sub: firstTeacher(k), blank, kids: kids.filter((s) => s.classroom_id === k.id).sort(sortStudents) })),
+        (s) => `<span class="cs-name">${esc(s.name)}</span><span class="cs-tag">${esc(tag(feeState(c, s.id)))}</span>`)}</div>
+      <p class="cs-legend"><b>Key:</b> CASH / ZELLE / CHECK / CARD = paid in full that way · PART $ = part paid · UNPAID = nothing recorded yet · NOT GOING · PAID · REVIEW = paid but not going (office to review). From the payments recorded in the CRM.</p>
+      <div class="cs-notes"><b>Notes</b>${Array.from({ length: 3 }, () => '<span></span>').join('')}</div>`;
     showPrintSheet({ label: `Collection sheet · ${c.name}`, cls: 'coll-sheet', landscape: true, html,
-      note: `<select id="cs-class" aria-label="Class"><option value="">Whole school</option>${state.classrooms.map((k) => `<option value="${k.id}" ${k.id === cid ? 'selected' : ''}>${esc(k.name)}</option>`).join('')}</select>`,
+      note: `<select id="cs-class" aria-label="Class"><option value="">Whole school</option>${state.classrooms.map((k) => `<option value="${k.id}" ${k.id === cid ? 'selected' : ''}>${esc(k.name)}</option>`).join('')}</select>
+        ${blankOpts('cs-blank', blank, [0, 2, 4, 6], '')}`,
       excel: () => xlsxDownload(`collection-${c.name.replace(/[^\w]+/g, '-').toLowerCase()}.xlsx`, [{ name: 'Collection', rows: [['Class', 'Child', 'Status', 'Paid', 'Owed', 'How', 'Receipt #'],
         ...kids.sort((a, b) => classroomName(a.classroom_id).localeCompare(classroomName(b.classroom_id)) || sortStudents(a, b)).map((s) => { const f = feeState(c, s.id);
           return [classroomName(s.classroom_id), s.name, label(s), f.paid, f.notGoing ? 0 : f.owed, f.how, f.pays.map((p) => p.receipt_no).join(', ')]; })] }]),
-      bind: (sheet) => $('#cs-class', sheet).addEventListener('change', (ev) => { closePrintSheet(sheet); showCollectionSheet(c, ev.target.value || null); }) });
+      bind: (sheet) => {
+        const again = () => { const v = $('#cs-class', sheet).value || null, n = Number($('#cs-blank', sheet).value); closePrintSheet(sheet); showCollectionSheet(c, v, n); };
+        $('#cs-class', sheet).addEventListener('change', again);
+        $('#cs-blank', sheet).addEventListener('change', again);
+      } });
   }
 
   // Rotation schedule (the Little Farm one): classes in order, with their teachers and times; transitions in between.
@@ -1661,40 +1671,48 @@
   // Registration sheet: each class's children (by last name, numbered), with the three separate answers; new students by
   // the class they start in; grouped by this year's class or by next year's confirmed class.
   function showRegistrationSheet(opts = {}) {
-    const o = { by: 'current', blank: 0, title: `Registration ${regYearLabel()}${regFeeText()}`, ...opts };
+    const y = Number(regYear().slice(0, 4));
+    const o = { by: 'current', blank: 2, newBlank: 4, title: `Registration Fall ${y}-${y + 1}${regFeeText()}`, ...opts };
     const all = regRows(), cls = state.classrooms.slice().sort((a, b) => a.sort - b.sort);
     const isNew = (x) => x.s.status === 'waitlist' || (x.s.start_date && x.s.start_date >= `${regYear().slice(0, 4)}-08-01`);
-    const facts = (x) => `${isNew(x) ? (x.status === 'returning' ? 'Coming' : !x.next ? 'No class yet' : REG_BACK[x.status])
-      : REG_BACK[x.status] === 'Yes' ? 'Back' : REG_BACK[x.status] === 'No' ? 'Not back' : REG_BACK[x.status]} · ${x.pay === 'paid' || x.pay === 'on_file' ? 'Paid' : x.pay === 'partial' ? 'Part paid' : 'Not paid'}${x.reserved ? ' · Seat' : ''}`;
-    const line = (x) => `<span class="cs-name">${esc(x.s.name)}</span><span class="cs-tag">${esc(facts(x))}</span>`;
+    // The three separate answers, short enough for one line (the key explains them).
+    const code = (x) => [x.status === 'returning' ? 'R' : x.status === 'not_returning' ? (isNew(x) && !x.next ? '?' : '✗') : '?',
+      x.pay === 'paid' || x.pay === 'on_file' ? '$' : x.pay === 'partial' ? '½' : '', x.reserved ? 'S' : ''].filter(Boolean).join(' ');
+    const line = (x) => `<span class="cs-name">${esc(x.s.name)}</span><span class="cs-tag">${esc(code(x))}</span>`;
     const current = all.filter((x) => !isNew(x) && x.s.status === 'enrolled'), fresh = all.filter(isNew);
     const confirmed = (x) => x.status === 'returning' && x.r && x.next;
     const groups = o.by === 'current'
-      ? cls.map((k) => ({ title: k.name, sub: k.teachers, kids: current.filter((x) => x.s.classroom_id === k.id), blank: o.blank })).filter((g) => g.kids.length || o.blank)
-      : [...cls.map((k) => ({ title: k.name, sub: k.teachers, kids: current.filter((x) => confirmed(x) && x.next === k.id), blank: o.blank })),
-        { title: 'Placement not confirmed', sub: 'No answer, not sure, or no class yet', kids: current.filter((x) => !confirmed(x) && x.status !== 'not_returning'), flag: 'Check these' }]
-        .filter((g) => g.kids.length || (o.blank && g.title !== 'Placement not confirmed'));
+      // This year's classes; a class whose children all move on (Kindergarten to 1st grade) isn't listed.
+      ? cls.map((k) => ({ title: k.name, sub: firstTeacher(k), kids: current.filter((x) => x.s.classroom_id === k.id), blank: o.blank }))
+        .filter((g) => g.kids.length && !g.kids.every((x) => x.status === 'not_returning' && !x.next))
+      : [...cls.map((k) => ({ title: k.name, sub: firstTeacher(k), kids: current.filter((x) => confirmed(x) && x.next === k.id), blank: o.blank })).filter((g) => g.kids.length || o.blank),
+        { title: 'Placement not confirmed', kids: current.filter((x) => !confirmed(x) && x.status !== 'not_returning'), flag: 'Check these' }].filter((g) => g.kids.length || g.blank);
     groups.forEach((g) => g.kids.sort((a, b) => sortStudents(a.s, b.s)));
-    const freshGroups = cls.map((k) => ({ title: k.name, sub: 'Starting', kids: fresh.filter((x) => x.next === k.id).sort((a, b) => sortStudents(a.s, b.s)) }))
-      .concat([{ title: 'Class not known', kids: fresh.filter((x) => !x.next), flag: 'Check these' }]).filter((g) => g.kids.length);
-    const html = `<div class="rs-top"><h1>${esc(o.title)}</h1><span>${o.by === 'current' ? `By this year’s class` : `By ${regYearLabel()} class (confirmed)`}</span></div>
+    // New students: a box for every class (with blank lines to write in), and any whose class isn't known.
+    const freshGroups = cls.map((k) => ({ title: k.name, sub: firstTeacher(k), blank: o.newBlank, kids: fresh.filter((x) => x.next === k.id).sort((a, b) => sortStudents(a.s, b.s)) }))
+      .concat([{ title: 'Class not known', kids: fresh.filter((x) => !x.next), flag: 'Check these' }]).filter((g) => g.kids.length || g.blank);
+    const html = `<div class="rs-top"><h1>${esc(o.title)}</h1><span>${o.by === 'current' ? 'By this year’s class' : `By ${regYearLabel()} class (confirmed)`}</span></div>
       <div class="cs-grid">${classBlocks(groups, line)}</div>
-      ${freshGroups.length ? `<h2 class="r-h">New Students Starting</h2><div class="cs-grid">${classBlocks(freshGroups, line)}</div>` : ''}
-      <p class="cs-legend"><b>Key:</b> Back / Not back / No answer yet / Not sure = coming back? · Paid / Part paid / Not paid = registration · Seat = seat reserved. From the CRM’s records.</p>`;
+      ${freshGroups.length ? `<h2 class="rs-new">New Students Starting</h2><div class="cs-grid">${classBlocks(freshGroups, line)}</div>` : ''}
+      <p class="cs-legend"><b>Key:</b> R = coming back (or coming) · ✗ = not coming back · ? = no answer yet or not sure · $ = registration paid (½ = part paid) · S = seat reserved. From the CRM’s records.</p>`;
     const sheet = showPrintSheet({ label: 'Registration sheet', cls: 'reg-sheet', landscape: true, html,
       note: `<input id="rs-title" value="${esc(o.title)}" aria-label="Heading" maxlength="80">
         <select id="rs-by" aria-label="Group by"><option value="current" ${o.by === 'current' ? 'selected' : ''}>This year’s class</option><option value="next" ${o.by === 'next' ? 'selected' : ''}>Next year’s class (confirmed)</option></select>
-        <select id="rs-blank" aria-label="Blank lines">${[0, 3, 5, 8].map((n) => `<option value="${n}" ${n === o.blank ? 'selected' : ''}>${n ? `${n} blank lines` : 'No blank lines'}</option>`).join('')}</select>`,
+        ${blankOpts('rs-blank', o.blank, [0, 1, 2, 4], 'per class')}${blankOpts('rs-newblank', o.newBlank, [0, 3, 4, 5], 'for new students')}`,
       excel: () => xlsxDownload(`registration-${regYear()}.xlsx`, [{ name: 'Registration', rows: [['Group', 'Child', 'Class now', `Class ${regYearLabel()}`, 'Coming back', 'Registration', 'Seat reserved', 'New student'],
         ...[...groups.map((g) => [g, false]), ...freshGroups.map((g) => [g, true])].flatMap(([g, n]) => g.kids.map((x) => [g.title, x.s.name, classroomName(x.s.classroom_id), x.cls?.name || '',
           REG_BACK[x.status], REG_ST[x.pay], x.reserved ? 'Yes' : '', n ? 'Yes' : '']))] }]) });
-    const again = () => { closePrintSheet(sheet); showRegistrationSheet({ title: $('#rs-title', sheet).value, by: $('#rs-by', sheet).value, blank: Number($('#rs-blank', sheet).value) }); };
-    $('#rs-by', sheet).addEventListener('change', again);
-    $('#rs-blank', sheet).addEventListener('change', again);
-    $('#rs-title', sheet).addEventListener('change', again);
+    const again = () => { closePrintSheet(sheet); showRegistrationSheet({ title: $('#rs-title', sheet).value, by: $('#rs-by', sheet).value,
+      blank: Number($('#rs-blank', sheet).value), newBlank: Number($('#rs-newblank', sheet).value) }); };
+    ['#rs-by', '#rs-blank', '#rs-newblank', '#rs-title'].forEach((id) => $(id, sheet).addEventListener('change', again));
   }
-  const regFeeText = () => { const fees = [...new Set(state.classrooms.map((k) => Number(k.registration_fee)).filter((x) => x > 0))];
-    return fees.length === 1 ? ` · ${money(fees[0])}` : ''; };
+  // The registration fee most classes have, for the sheet's heading (it can be changed there).
+  const regFeeText = () => {
+    const n = new Map();
+    state.classrooms.forEach((k) => { const f = Number(k.registration_fee); if (f > 0) n.set(f, (n.get(f) || 0) + 1); });
+    const top = [...n].sort((a, b) => b[1] - a[1])[0];
+    return top ? ` ${money(top[0]).replace(/\.00$/, '')}` : '';
+  };
 
   // Tours: the school's closed days can't be booked; an activity day shows which classes are busy.
   function tourDayHtml(day) {

@@ -402,7 +402,7 @@ try {
   assert.match(await zoo().textContent(), /Unpaid/);
   assert.match(await page.locator('.ro-head').textContent(), /Zoo trip[\s\S]*\$12\.00[\s\S]*\$12\.00[\s\S]*Still owed/);
   await page.click('#ro-sheet');
-  assert.match(await page.locator('.coll-sheet').textContent(), /Zoo trip[\s\S]*\$12\.00[\s\S]*Walk-in Kid[\s\S]*UNPAID/);
+  assert.match(await page.locator('.coll-sheet').textContent(), /Zoo trip = \$12[\s\S]*Walk-in Kid[\s\S]*UNPAID/);
   await page.click('#ps-close');
   await page.selectOption('#ro-print', 'all');
   assert.match(await page.locator('.roster-sheet').textContent(), /Walk-in Kid[\s\S]*Going[\s\S]*Pending/);

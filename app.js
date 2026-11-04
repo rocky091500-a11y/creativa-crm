@@ -535,6 +535,7 @@
       : !(await sb.from('registrations').select('reserved_on').limit(1)).error);
     state.meds = md.error ? null : md.data;   // 030: also students.allergies and Authorized pick-up contacts
     state.hasHealth = !!state.meds;
+    state.hasForms = state.students.length > 0 && 'physical_expires' in state.students[0];   // 036: yellow / blue form expirations
     state.todos = td.error ? [] : td.data;
     watchInquiries();
     state.loadedAt = Date.now();
@@ -2210,6 +2211,20 @@
   const pickupPeople = (sid) => state.contacts.filter((c) => c.student_id === sid && (isParent(c) || c.role === 'pickup'))
     .sort((a, b) => Object.keys(CONTACT_ROLE).indexOf(a.role) - Object.keys(CONTACT_ROLE).indexOf(b.role));
   const contactPhone = (c) => c.cell_phone || c.sms_phone || c.home_phone || c.work_phone || '';
+  // The yellow form (physical) and the blue form (immunization, DH 680) and when they expire (036).
+  const IMM_STATUS = { part_b: 'Part B (expires)', part_a: 'Completed (Part A)', religious: 'Religious exemption', medical: 'Medical exemption',
+    pending: 'Pending (not in yet)' };
+  const formSoon = (d) => (!d ? null : d < todayStr() ? 'expired' : d <= addDays(todayStr(), 30) ? 'soon' : 'ok');
+  const blueDated = (s) => (s.immunization_status || 'part_b') === 'part_b';
+  function formsOf(s) {
+    const out = [];
+    if (s.physical_expires) out.push({ k: 'yellow', what: 'Yellow form', d: s.physical_expires, st: formSoon(s.physical_expires) });
+    if (blueDated(s) && s.immunization_expires) out.push({ k: 'blue', what: 'Blue form', d: s.immunization_expires, st: formSoon(s.immunization_expires) });
+    return out;
+  }
+  const formTags = (s) => (state.hasForms ? formsOf(s).filter((f) => f.st !== 'ok').map((f) => `<span class="tag ${f.st === 'expired' ? 'overdue' : 'due'}">${esc(f.what)}
+    ${f.st === 'expired' ? 'expired' : 'expires'} ${esc(fmtDate(f.d))}</span>`).join(' ') : '');
+  const formCell = (d) => (!d ? '<span class="muted">—</span>' : `<span class="tag ${formSoon(d) === 'expired' ? 'overdue' : formSoon(d) === 'soon' ? 'due' : ''}">${formSoon(d) === 'expired' ? 'Expired' : 'Expires'} ${esc(fmtDate(d))}</span>`);
   const allergyTag = (s) => (s.allergies ? `<span class="tag allergy" title="${esc('Allergies: ' + s.allergies)}">Allergy</span>` : '');
   // Medicine at school expires: 'expired', 'soon' (within 30 days), 'ok', or 'none' (no date).
   const medsOf = (sid) => (state.meds || []).filter((m) => m.student_id === sid);
@@ -2348,6 +2363,56 @@
     $$('tr[data-kid]', el).forEach((r) => r.addEventListener('click', () => openStudent(r.dataset.kid)));
     $$('tr[data-med]', el).forEach((r) => r.addEventListener('click', () => openMedicine({ medId: r.dataset.med })));
   }
+  // Enrollment → Forms: every child's yellow form (physical) and blue form (immunization), soonest to expire first.
+  function renderForms(el) {
+    const f = state.formsFilter || (state.formsFilter = { show: 'soon', classroom: '' });
+    const soonest = (s) => formsOf(s).map((x) => x.d).sort()[0] || '9999';
+    const all = state.students.filter((s) => s.status === 'enrolled' && (!f.classroom || s.classroom_id === f.classroom));
+    const need = (s) => formsOf(s).some((x) => x.st !== 'ok') || !s.physical_expires || (blueDated(s) && !s.immunization_expires) || s.immunization_status === 'pending';
+    const rows = all.filter((s) => f.show === 'all' || need(s)).sort((a, b) => soonest(a).localeCompare(soonest(b)) || sortStudents(a, b));
+    const count = (st) => all.flatMap(formsOf).filter((x) => x.st === st).length;
+    const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+    const to = state.settings?.forms_reminder_to;
+    el.innerHTML = `${rosterTabs()}
+      <div class="stats">
+        <div class="stat"><b>${count('expired')}</b><span>Forms expired</span></div>
+        <div class="stat"><b>${count('soon')}</b><span>Expire in the next 30 days</span></div>
+        <div class="stat"><b>${all.filter((s) => !s.physical_expires).length} · ${all.filter((s) => (blueDated(s) && !s.immunization_expires) || s.immunization_status === 'pending').length}</b><span>No yellow form date · blue form missing or pending</span></div>
+      </div>
+      <div class="toolbar">
+        <select id="fm-show" aria-label="Show">${opt('soon', 'Expired, expiring or missing', f.show)}${opt('all', 'Every child', f.show)}</select>
+        <select id="fm-class" aria-label="Class">${classOpts(f.classroom)}</select>
+        <span class="spacer"></span>
+        ${isAdmin() ? `<label class="small">Reminders go to <select id="fm-to"><option value="">Everyone in the office</option>${state.staff.filter((p) => p.active).map((p) => opt(p.id, p.full_name || p.email, to || '')).join('')}</select></label>` : ''}
+        <button class="btn small" id="fm-print" type="button">Print</button></div>
+      <div class="table-wrap"><table class="roster"><thead><tr><th>Child</th><th>Class</th><th>Yellow form (physical)</th><th>Blue form (immunization)</th></tr></thead><tbody>
+        ${rows.map((s) => `<tr data-kid="${s.id}"><td><b>${esc(s.name)}</b></td><td>${esc(classroomName(s.classroom_id))}</td>
+          <td>${formCell(s.physical_expires)}</td>
+          <td>${blueDated(s) ? formCell(s.immunization_expires) : `<span class="tag">${esc(IMM_STATUS[s.immunization_status])}</span>`}</td></tr>`).join('')
+          || '<tr><td colspan="4" class="muted">Every form is in and up to date.</td></tr>'}</tbody></table></div>
+      <p class="muted small">Change a date on the child’s page (Documents). A month before a form expires, the office gets a to-do (on Today and To do).</p>`;
+    bindRosterTabs(el);
+    $('#fm-show', el).addEventListener('change', (e) => { f.show = e.target.value; renderForms(el); });
+    $('#fm-class', el).addEventListener('change', (e) => { f.classroom = e.target.value; renderForms(el); });
+    $$('tr[data-kid]', el).forEach((r) => r.addEventListener('click', () => openStudent(r.dataset.kid)));
+    $('#fm-to', el)?.addEventListener('change', async (e) => {
+      const { data, error } = await sb.from('settings').update({ forms_reminder_to: e.target.value || null }).eq('id', 1).select().single();
+      if (error) return fail(error, 'Could not save');
+      state.settings = data;
+      toast('Saved: new reminders go there');
+    });
+    $('#fm-print', el).addEventListener('click', () => {
+      const list = all.slice().sort(sortStudents);
+      const txt = (d) => (!d ? '—' : `${formSoon(d) === 'expired' ? 'EXPIRED ' : ''}${fmtDate(d)}`);
+      showPrintSheet({ label: 'Physical & immunization forms', cls: 'forms-sheet', html: `${sheetBand('Physical & immunization forms', `As of ${asOfToday()}${f.classroom ? ` · ${classroomName(f.classroom)}` : ''}`)}
+        <table class="r-table"><thead><tr><th class="num">#</th><th>Child</th><th>Class</th><th>Date of birth</th><th>Physical (yellow) expires</th><th>Immunization (blue)</th></tr></thead><tbody>
+        ${list.map((s, i) => `<tr><td class="num">${i + 1}</td><td><b>${esc(s.name)}</b></td><td>${esc(classroomName(s.classroom_id))}</td><td>${esc(mdy(s.dob))}</td>
+          <td>${esc(txt(s.physical_expires))}</td><td>${esc(blueDated(s) ? txt(s.immunization_expires) : IMM_STATUS[s.immunization_status])}</td></tr>`).join('')}</tbody></table>
+        <p class="r-note">${list.length} children. Printed ${esc(fmtDateTime(new Date().toISOString()))}.</p>`,
+        excel: () => xlsxDownload(`forms-${todayStr()}.xlsx`, [{ name: 'Forms', rows: [['Child', 'Class', 'Date of birth', 'Physical (yellow) expires', 'Immunization (blue)', 'Blue form expires'],
+          ...list.map((s) => [s.name, classroomName(s.classroom_id), s.dob || '', s.physical_expires || '', IMM_STATUS[s.immunization_status] || '', s.immunization_expires || ''])] }]) });
+    });
+  }
   // To post in the classrooms and the kitchen: by class, then last name, with any medicine kept at school.
   function showAllergyList(kids) {
     const order = new Map(state.classrooms.map((c, i) => [c.id, i]));
@@ -2423,6 +2488,7 @@
     if (tab === 'reg') return renderRegistration(el);
     if (tab === 'pickup') return renderPickup(el);
     if (tab === 'health') return renderHealth(el);
+    if (tab === 'forms') return renderForms(el);
     const f = state.rosterFilters;
     const fin = canViewFinance();
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
@@ -2505,7 +2571,7 @@
       const rows = rosterRows();
       $('#r-count').textContent = `${rows.length} student${rows.length === 1 ? '' : 's'}`;
       $('#roster-rows').innerHTML = rows.map((s) => `<tr data-id="${s.id}" class="${s.status !== 'enrolled' ? 'st-' + s.status : ''}">
-          <td><b>${esc(s.name)}</b>${s.status !== 'enrolled' ? ` <span class="stage-pill st-${s.status}">${STUDENT_STATUS[s.status]}</span>` : pauseTag(s)} ${allergyTag(s)}
+          <td><b>${esc(s.name)}</b>${s.status !== 'enrolled' ? ` <span class="stage-pill st-${s.status}">${STUDENT_STATUS[s.status]}</span>` : pauseTag(s)} ${allergyTag(s)} ${formTags(s)}
             <div class="muted small">${esc([s.parent_name, pausedNow(s) && s.pause_note].filter(Boolean).join(' · '))}</div></td>
           <td>${esc(classroomName(s.classroom_id))}</td>
           <td class="nowrap">${esc(ageOf(s.dob))}</td>
@@ -2578,7 +2644,13 @@
         <div class="section"><h3>Documents</h3><div class="docs-grid">
           ${DOCS.map(([k, long]) => `<label class="doc-line"><input type="checkbox" class="check" data-doc="${k}" ${s[k] ? 'checked' : ''}>
             <span>${esc(long)}</span><input type="date" name="${k}" value="${esc(s[k])}" aria-label="${esc(long)} received on"></label>`).join('')}
-        </div></div>
+        </div>
+        ${state.hasForms ? `<div class="grid2 forms-exp">
+          ${fInput('physical_expires', 'Yellow form (physical) expires', s.physical_expires, 'date')}
+          <span></span>
+          ${fSelect('immunization_status', 'Blue form (immunization)', [['', '—'], ...Object.entries(IMM_STATUS)], s.immunization_status || '')}
+          ${fInput('immunization_expires', 'Blue form expires (Part B)', s.immunization_expires, 'date')}
+          <p class="full muted small">The office gets a to-do a month before either one expires.</p></div>` : ''}</div>
         <div class="section"><h3>Family</h3><div class="grid2">
           ${fInput('parent_name', 'Parent name', s.parent_name)}
           ${fInput('parent_phone', 'Phone', s.parent_phone, 'tel')}
@@ -2785,6 +2857,12 @@
       STUDENT_FIELDS.forEach((k) => { patch[k] = formVal(form, k); });
       if (state.hasV6) patch.family_account = formVal(form, 'family_account');
       if (state.hasHealth) patch.allergies = formVal(form, 'allergies');
+      if (state.hasForms) {
+        patch.physical_expires = formVal(form, 'physical_expires');
+        patch.immunization_expires = formVal(form, 'immunization_expires');
+        patch.immunization_status = form.immunization_status.value || (patch.immunization_expires ? 'part_b' : null);
+        if (patch.immunization_status !== 'part_b') patch.immunization_expires = null;   // only a Part B form expires
+      }
       if (form.paused_until) {
         patch.paused_until = patch.status === 'enrolled' ? formVal(form, 'paused_until') : null;
         patch.paused_from = patch.paused_until ? formVal(form, 'paused_from') || todayStr() : null;
@@ -2819,7 +2897,11 @@
       const q = id ? sb.from('students').update(patch).eq('id', id) : sb.from('students').insert(patch);
       const { data, error } = await q.select().single();
       if (error) { btn.disabled = false; return fail(error, 'Could not save'); }
+      // The yellow / blue form reminders are made in the database (036): pick up the new or moved to-do now.
+      const formsMoved = state.hasForms && state.hasTodos
+        && ['physical_expires', 'immunization_expires', 'immunization_status', 'status', 'name'].some((k) => (s[k] ?? null) !== (data[k] ?? null));
       upsertStudent(data);
+      if (formsMoved) { await reloadTodos(); drawTodoBadge(); }
       if (finPatch) {
         const r = await sb.from('student_finance').upsert({ student_id: data.id, ...finPatch }).select().single();
         if (r.error) { btn.disabled = false; fail(r.error, 'Saved the student, but not the funding/tuition'); return openStudent(data.id); }
@@ -2847,7 +2929,7 @@
 
   // ───── Registration for next school year (023): who's returning, the class they move up to, and their registration paid ─────
   const rosterTabList = () => [['children', 'Children'], ...(state.hasV6 ? [['pickup', 'Pick-up']] : []),
-    ...(state.hasHealth ? [['health', 'Allergies & medicine']] : []),
+    ...(state.hasHealth ? [['health', 'Allergies & medicine']] : []), ...(state.hasForms ? [['forms', 'Forms']] : []),
     ...(state.registrations && canViewFinance() ? [['reg', `Registration ${regYearLabel()}`]] : [])];
   const rosterTabNow = () => (rosterTabList().some(([k]) => k === state.rosterTab) ? state.rosterTab : 'children');
   const rosterTabs = () => {
@@ -4921,19 +5003,25 @@
     const f = state.todoFilter === 'mine' ? 'mine' : 'all';
     const keep = (t) => f === 'all' || todoMine(t);
     const open = state.todos.filter((t) => !t.done_at && keep(t)).sort((a, b) => a.due_on.localeCompare(b.due_on) || a.title.localeCompare(b.title));
-    const soon = open.filter((t) => addDays(t.due_on, -t.remind_days) <= nyToday()), later = open.filter((t) => !soon.includes(t));
+    const soon = open.filter((t) => addDays(t.due_on, -t.remind_days) <= nyToday()), laterAll = open.filter((t) => !soon.includes(t));
+    // Form reminders (036) further off are one line here; each comes to Now a month before its form expires.
+    const isForm = (t) => String(t.ref || '').startsWith('form-'), later = laterAll.filter((t) => !isForm(t)), laterForms = laterAll.filter(isForm);
     const done = state.todos.filter((t) => t.done_at && keep(t)).sort((a, b) => b.done_at.localeCompare(a.done_at)).slice(0, 15);
     el.innerHTML = `<div class="toolbar"><div class="seg" role="tablist" aria-label="Whose to-dos">
         ${[['all', 'Everyone’s'], ['mine', 'Mine']].map(([k, v]) => `<button type="button" data-tf="${k}" aria-selected="${f === k}">${v}</button>`).join('')}</div>
         <span class="spacer"></span><button class="btn primary" id="todo-add" type="button">+ New to-do</button></div>
       <section class="panel"><h2>Now <span class="muted small">${soon.length}</span></h2>
         <ul class="todo-list">${soon.map(todoItem).join('') || '<li class="muted small">Nothing right now.</li>'}</ul></section>
-      <section class="panel"><h2>Coming up</h2><ul class="todo-list">${later.map(todoItem).join('') || '<li class="muted small">Nothing else.</li>'}</ul></section>
+      <section class="panel"><h2>Coming up</h2><ul class="todo-list">${later.map(todoItem).join('')}
+        ${laterForms.length ? `<li class="muted small">${laterForms.length} yellow and blue form reminder${laterForms.length === 1 ? '' : 's'} later, each a month before its form expires
+          <button class="btn ghost small" type="button" id="todo-forms">See the forms</button></li>` : ''}
+        ${later.length || laterForms.length ? '' : '<li class="muted small">Nothing else.</li>'}</ul></section>
       ${done.length ? `<section class="panel"><h2>Done</h2><ul class="todo-list">${done.map(todoItem).join('')}</ul></section>` : ''}
       <p class="muted small">A to-do moves to <b>Now</b>, and onto that person’s Today page, from the day you choose to be reminded until it’s checked off.
         A repeating one comes back for its next date when it’s checked off; untick it to undo.</p>`;
     $$('[data-tf]', el).forEach((b) => b.addEventListener('click', () => { state.todoFilter = b.dataset.tf; store.set('todoFilter', state.todoFilter); renderTodo(el); }));
     $('#todo-add', el).addEventListener('click', () => openTodo(null, () => renderTodo(el)));
+    $('#todo-forms', el)?.addEventListener('click', () => { state.view = 'roster'; state.rosterTab = 'forms'; store.set('view', 'roster'); store.set('rosterTab', 'forms'); renderShell(); });
     bindTodos(el, () => renderTodo(el));
   }
 
@@ -6396,7 +6484,7 @@
 
   // ───────────── Changes (012): who changed what ─────────────
   const CHANGE_AREA = { enrollment: 'Enrollment', finance: 'Tuition & payments', payroll: 'Payroll', settings: 'Settings & access' };
-  const FIELD_LABEL = { participation: 'going?', permission: 'permission slip', permission_on: 'slip received', removed: 'taken off', by_hand: 'added by hand',
+  const FIELD_LABEL = { physical_expires: 'yellow form expires', immunization_status: 'blue form', immunization_expires: 'blue form expires', participation: 'going?', permission: 'permission slip', permission_on: 'slip received', removed: 'taken off', by_hand: 'added by hand',
     needs_permission: 'needs a slip', collection_id: 'fee', name: 'name', dob: 'birthday', classroom_id: 'class', status: 'status', start_date: 'start date', withdrawn_on: 'last day',
     withdraw_reason: 'reason', parent_name: 'parent', parent_phone: 'parent phone', parent_email: 'parent email', notes: 'notes', rbt: 'RBT',
     therapy: 'therapy', reg_fee: 'registration fee', doc_registration: 'registration packet', doc_blue_form: 'blue form', doc_yellow_form: 'yellow form',
@@ -6420,6 +6508,7 @@
     if (k === 'payer') return PAYER[v] || v;
     if (k === 'role') return CONTACT_ROLE[v] || v;
     if (k === 'participation') return PARTICIPATION[v] || v;
+    if (k === 'immunization_status') return IMM_STATUS[v] || v;
     if (k === 'permission') return SLIP[v] || v;
     if (k === 'invoice_id') { const inv = state.invoices.find((i) => i.id === v); return inv ? invoiceLabel(inv) : 'an invoice'; }
     if (k === 'clock_in' || k === 'clock_out') return clockTime(v);

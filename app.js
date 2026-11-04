@@ -1588,7 +1588,7 @@
       <div class="cs-grid">${classBlocks(cls.map((k) => ({ title: k.name, sub: firstTeacher(k), blank, kids: kids.filter((s) => s.classroom_id === k.id).sort(sortStudents) })),
         (s) => `<span class="cs-name">${esc(s.name)}</span><span class="cs-tag">${esc(tag(feeState(c, s.id)))}</span>`)}</div>
       <p class="cs-legend"><b>Key:</b> CASH / ZELLE / CHECK / CARD = paid in full that way · PART $ = part paid · UNPAID = nothing recorded yet · NOT GOING · PAID · REVIEW = paid but not going (office to review). From the payments recorded in the CRM.</p>
-      <div class="cs-notes"><b>Notes</b>${Array.from({ length: 3 }, () => '<span></span>').join('')}</div>`;
+      <div class="cs-notes"><b>Notes</b>${Array.from({ length: 2 }, () => '<span></span>').join('')}</div>`;
     showPrintSheet({ label: `Collection sheet · ${c.name}`, cls: 'coll-sheet', landscape: true, html,
       note: `<select id="cs-class" aria-label="Class"><option value="">Whole school</option>${state.classrooms.map((k) => `<option value="${k.id}" ${k.id === cid ? 'selected' : ''}>${esc(k.name)}</option>`).join('')}</select>
         ${blankOpts('cs-blank', blank, [0, 2, 4, 6], '')}`,

@@ -375,6 +375,44 @@ try {
   await drawer.locator('#tour-day', { hasText: 'School closed: Veterans Day' }).waitFor();
   await drawer.locator('[data-close]').first().click();
   ok('Tours: the inquiry shows the school is closed on Veterans Day');
+
+  // Activity rosters (034): an activity's roster from its classes, going / slip per child, a fee, the collection sheet,
+  // the teacher's class roster; building again keeps the office's changes.
+  await page.click('header nav button[data-view=calendar]');
+  await page.click('[data-ctab=month]');
+  await page.click('#cal-add');
+  await drawer.locator('input[name=title]').fill('Zoo trip');
+  await drawer.locator('input[name=needs_permission]').check();
+  await drawer.locator('#ev-save').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await page.locator('.cal-grid .cal-item', { hasText: 'Zoo trip' }).first().click();
+  await drawer.locator('#ev-roster').click();
+  await page.waitForSelector('.ro-table');
+  const zoo = () => page.locator('.ro-table tr', { hasText: 'Walk-in Kid' });
+  assert.match(await zoo().locator('select[data-slip] option:checked').textContent(), /Pending/, 'needs a slip: pending');
+  await zoo().locator('select[data-go]').selectOption('going');
+  await zoo().locator('select[data-go] option[value=going]:checked').waitFor({ state: 'attached' });
+  await page.click('#ro-build');
+  await page.waitForSelector('#toast:has-text("up to date")');
+  assert.match(await zoo().locator('select[data-go] option:checked').textContent(), /Going/, 'building again keeps it');
+  await page.click('#ro-fee');
+  await drawer.locator('input[name=amount]').fill('12');
+  await drawer.locator('#co-save').click();
+  await page.waitForSelector('#toast:has-text("Fee saved")');
+  assert.match(await zoo().textContent(), /Unpaid/);
+  assert.match(await page.locator('.ro-head').textContent(), /Zoo trip[\s\S]*\$12\.00[\s\S]*\$12\.00[\s\S]*Still owed/);
+  await page.click('#ro-sheet');
+  assert.match(await page.locator('.coll-sheet').textContent(), /Zoo trip[\s\S]*\$12\.00[\s\S]*Walk-in Kid[\s\S]*UNPAID/);
+  await page.click('#ps-close');
+  await page.selectOption('#ro-print', 'all');
+  assert.match(await page.locator('.roster-sheet').textContent(), /Walk-in Kid[\s\S]*Going[\s\S]*Pending/);
+  assert.ok(!(await page.locator('.roster-sheet').textContent()).includes('$'), 'no money on the teacher roster');
+  await page.click('#ps-close');
+  await page.click('[data-ctab=month]');
+  await page.locator('.cal-grid .cal-item', { hasText: 'Zoo trip' }).first().click();
+  await drawer.locator('#ev-del').click();
+  await page.waitForSelector('#toast:has-text("Deleted")');
+  ok('Activity rosters: built from its classes, going and slips kept when built again, a fee, the collection sheet, the teacher roster');
   await page.click('header nav button[data-view=roster]');
   await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).waitFor();
 

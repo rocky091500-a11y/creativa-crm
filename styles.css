@@ -856,3 +856,51 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 }
 .cp-notes { margin: 0 0 12px; padding-left: 22px; font-size: 11px; color: var(--ink); }
 .cp-notes li { margin-bottom: 3px; }
+
+/* Activity rosters, fees, rotation schedules and their printouts (034) */
+#ro-event { max-width: 360px; }
+.ro-head h2 { margin-bottom: 4px; }
+.ro-stats { margin: 10px 0 6px; }
+.ro-remind { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ro-table select { min-width: 110px; }
+.ro-table input[type="date"] { width: auto; padding: 2px 6px; }
+.msg-reminder { margin: 0; background: #FBF0D5; }
+.sl-table input { min-width: 0; width: 100%; }
+.sl-table input[type="time"] { width: 112px; }
+.sl-gap td { background: var(--cream); }
+.sl-warn { color: var(--danger); font-weight: 600; margin: 8px 0; }
+
+@page landscape { size: letter landscape; margin: 0.4in; }
+.print-landscape .receipt { max-width: 1056px; min-height: 0; }
+.cs-covers { margin: -6px 0 10px; color: var(--ink-soft); font-size: 13px; }
+.cs-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.cs-class { border: 1px solid #CFD5C0; break-inside: avoid; }
+.cs-head { background: var(--sage); color: var(--white); padding: 4px 8px; display: flex; flex-direction: column; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.cs-head b { font-size: 13px; }
+.cs-head span { font-size: 10px; opacity: .9; }
+.cs-head em { font-size: 10px; font-style: normal; font-weight: 700; background: var(--white); color: var(--danger); border-radius: 4px; padding: 0 4px; align-self: flex-start; margin-top: 2px; }
+.cs-list { margin: 0; padding: 4px 6px 6px 26px; font-size: 11px; color: var(--ink); }
+.cs-list li { padding: 2px 0; border-bottom: 1px solid #EEEAE0; }
+.cs-name { display: block; font-weight: 600; }
+.cs-tag { display: block; font-size: 9.5px; letter-spacing: .04em; color: var(--ink-soft); }
+.cs-blank { height: 18px; }
+.cs-legend { font-size: 11px; color: var(--ink-soft); margin: 4px 0 10px; }
+.cs-notes { font-size: 12px; }
+.cs-notes span { display: block; border-bottom: 1px solid var(--ink-soft); height: 22px; }
+.rs-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; border-bottom: 2px solid var(--sage); }
+.rs-top h1 { font-size: 26px; font-weight: 500; color: var(--ink); }
+.rs-top span { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--sage-deep); font-weight: 600; }
+.sc-top { text-align: center; margin: 10px 0 24px; }
+.sc-top h1 { font-size: 44px; font-weight: 500; color: var(--sage-deep); line-height: 1.1; }
+.sc-top p { font-size: 20px; color: var(--ink); margin-top: 6px; }
+.receipt.sched-sheet .sc-table td { font-size: 16px; padding: 10px 14px; color: var(--ink); }
+.receipt.sched-sheet .sc-table th { font-size: 13px; }
+.sc-gap td { color: var(--ink-soft) !important; font-style: italic; font-size: 13px !important; padding: 4px 14px !important; }
+#rs-title { width: 260px; }
+@media print {
+  .print-landscape .receipt { page: landscape; }
+  .print-landscape .cs-list { font-size: 10px; }
+  thead { display: table-header-group; }
+}
+@media (max-width: 720px) { .cs-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.month-bar select, .print-bar select { width: auto; max-width: 320px; }

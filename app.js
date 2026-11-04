@@ -1835,6 +1835,17 @@
   }
 
   // ───────────── Pipeline board ─────────────
+  // When a family starts: the start date on the request, else the child's start date on Enrollment, else the month they
+  // typed on the website form ("January 2027"), as its first day. Waitlisted families are in that order, soonest first.
+  const MONTH3 = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  function inqStart(i) {
+    if (i.start_on) return { on: i.start_on, label: fmtDate(i.start_on) };
+    const kid = (state.students || []).find((s) => s.inquiry_id === i.id && s.start_date);
+    if (kid) return { on: kid.start_date, label: fmtDate(kid.start_date) };
+    const m = String(i.desired_start || '').toLowerCase().match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s*(20\d\d)\b/);
+    return m ? { on: `${m[2]}-${String(MONTH3.indexOf(m[1]) + 1).padStart(2, '0')}-01`, label: i.desired_start.trim() } : null;
+  }
+  const byStart = (a, b) => (inqStart(a)?.on || '9999').localeCompare(inqStart(b)?.on || '9999') || a.created_at.localeCompare(b.created_at);
   function cardHtml(i) {
     const today = todayStr();
     const tags = [];
@@ -1846,7 +1857,8 @@
     if (i.no_tour && !CLOSED.has(i.stage)) tags.push(`<span class="tag">${esc(NO_TOUR[i.no_tour])}</span>`);
     if (i.tour_at && i.stage === 'tour_scheduled') tags.push(`<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>`);
     if (i.tour_at && i.stage === 'reschedule') tags.push(`<span class="tag due">was ${esc(fmtDateTime(i.tour_at))}</span>`);
-    if (i.start_on && !CLOSED.has(i.stage)) tags.push(`<span class="tag start">starts ${esc(fmtDate(i.start_on))}${canViewFinance() && Number(i.expected_tuition) > 0
+    const start = i.start_on ? inqStart(i) : i.stage === 'waitlisted' ? inqStart(i) : null;
+    if (start && !CLOSED.has(i.stage)) tags.push(`<span class="tag start">starts ${esc(start.label)}${canViewFinance() && Number(i.expected_tuition) > 0
       ? ` · ${esc(money(i.expected_tuition))}` : ''}</span>`);
     if (state.hasStartOn && !CLOSED.has(i.stage)) {
       if (inqRegPaid(i)) tags.push('<span class="tag paid">registration paid</span>');
@@ -1893,6 +1905,7 @@
       $('#f-count').textContent = `${rows.length} inquiries`;
       $('#board').innerHTML = stages().map((s) => {
         const items = rows.filter((i) => i.stage === s);
+        if (s === 'waitlisted') items.sort(byStart);   // who starts first, at the top
         const shown = CLOSED.has(s) ? items.slice(0, CLOSED_COLUMN_LIMIT) : items;
         return `<section class="col" data-stage="${s}"><h3><span>${STAGE_LABEL[s]}</span><span>${items.length}</span></h3>
           ${s === 'waitlisted' && state.hasStartOn && items.length ? `<p class="col-note">${items.filter(inqRegPaid).length} of ${items.length} paid registration</p>` : ''}
@@ -2151,7 +2164,7 @@
         if (!hay.includes(q) && !(qd.length >= 3 && digits(s.parent_phone).includes(qd))) return false;
       }
       return true;
-    }).sort(sortStudents);
+    }).sort(f.status === 'waitlist' ? (a, b) => (a.start_date || '9999').localeCompare(b.start_date || '9999') || sortStudents(a, b) : sortStudents);
   }
 
   // For the inspector: a numbered checklist of every child enrolled (and started), by last name, with their date of birth.

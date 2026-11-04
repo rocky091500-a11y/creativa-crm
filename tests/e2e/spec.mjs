@@ -1209,6 +1209,9 @@ try {
   const waitCol = page.locator('.col[data-stage=waitlisted]');
   await page.locator('.card', { hasText: 'Delta Parent' }).dragTo(waitCol);
   await waitCol.locator('.card', { hasText: 'Delta Parent' }).locator('.tag.due', { hasText: 'registration not paid' }).waitFor();
+  // Waitlisted: who starts first at the top; no start date last.
+  const hasStart = await waitCol.locator('.card').evaluateAll((cs) => cs.map((c) => !!c.querySelector('.tag.start')));
+  assert.deepEqual(hasStart, [...hasStart].sort((a, b) => Number(b) - Number(a)), 'families with a start date first');
   const regNote = async () => (await waitCol.locator('.col-note').textContent()).match(/(\d+) of (\d+) paid registration/).slice(1).map(Number);
   const [paid0, wait0] = await regNote();
   await waitCol.locator('.card', { hasText: 'Delta Parent' }).click();

@@ -466,6 +466,23 @@ try {
   await drawer.locator('#md-del').click();   // confirm() accepted
   await page.waitForSelector('#toast:has-text("Medicine removed")');
   ok('Pick-up, allergies and medicine: allergy tag, Authorized pick-up on the list (searchable), medicine expiring on Today');
+
+  // Yellow / blue forms (036): a physical expiring in 10 days is tagged on the roster, listed on Forms, and is a to-do on Today.
+  await page.click('[data-rtab=children]');
+  await openKid();
+  await drawer.locator('input[name=physical_expires]').fill(new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10));
+  await drawer.locator('select[name=immunization_status]').selectOption('part_a');
+  await drawer.locator('#st-save').click();
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await drawer.locator('[data-close]').first().click();
+  await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).locator('.tag', { hasText: /Yellow form\s+expires/ }).waitFor();
+  await page.click('[data-rtab=forms]');
+  assert.match(await page.locator('tr[data-kid]', { hasText: 'Walk-in Kid' }).textContent(), /Expires[\s\S]*Completed \(Part A\)/);
+  await shot(page, '34b-forms');
+  await page.click('header nav button[data-view=today]');
+  await page.locator('.today-todo .todo-title', { hasText: 'Physical (yellow form) expires: Walk-in Kid' }).waitFor();
+  ok('Forms: yellow form expiring soon tagged on the roster, on the Forms list, and a to-do on Today');
+  await page.click('header nav button[data-view=roster]');
   await page.click('[data-rtab=children]');
   await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).waitFor();
   await page.click('#r-add');

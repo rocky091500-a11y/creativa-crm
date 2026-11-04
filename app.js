@@ -9,6 +9,7 @@
     waitlisted: 'Waitlisted', enrolled: 'Enrolled', lost: 'Lost',
   };
   const CLOSED = new Set(['enrolled', 'lost']);
+  const NO_TOUR = { returning: 'No tour needed: returning family', former: 'No tour needed: former family' };   // 035
   const SOURCE_LABEL = {
     'schedule-tour': 'Tour request', waitlist: 'Waitlist', contact: 'Contact form',
     'bloom-interest': 'Bloom', 'family-support': 'Family support', manual: 'Added by staff',
@@ -452,7 +453,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md, pp, ac, ar, asl] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md, pp, ac, ar, asl, nt] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -480,6 +481,7 @@
       sb.from('activity_collections').select('*').order('created_at'),                                  // missing until 034
       selectAll('activity_roster', 'created_at'),
       sb.from('activity_slots').select('*').order('sort'),
+      sb.from('inquiries').select('no_tour').limit(1),                                                 // missing until 035
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -519,6 +521,7 @@
     state.money = undefined;   // Money page data: loaded when it opens
     state.hasTodos = !td.error;
     state.hasStartOn = !so.error;
+    state.hasNoTour = !nt.error;
     state.closures = cl.error ? null : cl.data;
     state.events = ev.error ? null : ev.data;
     state.prep = pp.error ? null : pp.data;   // 032: school planning
@@ -1674,7 +1677,7 @@
     const y = Number(regYear().slice(0, 4));
     const o = { by: 'current', blank: 2, newBlank: 4, title: `Registration Fall ${y}-${y + 1}${regFeeText()}`, ...opts };
     const all = regRows(), cls = state.classrooms.slice().sort((a, b) => a.sort - b.sort);
-    const isNew = (x) => x.s.status === 'waitlist' || (x.s.start_date && x.s.start_date >= `${regYear().slice(0, 4)}-08-01`);
+    const isNew = (x) => x.isNew;
     // The three separate answers, short enough for one line (the key explains them).
     const code = (x) => [x.status === 'returning' ? 'R' : x.status === 'not_returning' ? (isNew(x) && !x.next ? '?' : '✗') : '?',
       x.pay === 'paid' || x.pay === 'on_file' ? '$' : x.pay === 'partial' ? '½' : '', x.reserved ? 'S' : ''].filter(Boolean).join(' ');
@@ -1840,6 +1843,7 @@
         : i.next_follow_up === today ? '<span class="tag due">follow up today</span>'
           : `<span class="tag">follow up ${esc(fmtDate(i.next_follow_up))}</span>`);
     }
+    if (i.no_tour && !CLOSED.has(i.stage)) tags.push(`<span class="tag">${esc(NO_TOUR[i.no_tour])}</span>`);
     if (i.tour_at && i.stage === 'tour_scheduled') tags.push(`<span class="tag tour">${esc(fmtDateTime(i.tour_at))}</span>`);
     if (i.tour_at && i.stage === 'reschedule') tags.push(`<span class="tag due">was ${esc(fmtDateTime(i.tour_at))}</span>`);
     if (i.start_on && !CLOSED.has(i.stage)) tags.push(`<span class="tag start">starts ${esc(fmtDate(i.start_on))}${canViewFinance() && Number(i.expected_tuition) > 0
@@ -1949,7 +1953,7 @@
 
   function downloadCsv() {
     const cols = ['created_at', 'stage', 'source', 'parent_name', 'email', 'phone', 'child_name', 'child_dob', 'program',
-      'desired_start', 'heard_from', 'tour_at', 'next_follow_up', 'assigned_to', 'lost_reason', 'message'];
+      'desired_start', 'heard_from', 'tour_at', ...(state.hasNoTour ? ['no_tour'] : []), 'next_follow_up', 'assigned_to', 'lost_reason', 'message'];
     // Leading = + - @ would run as a formula in Excel/Sheets.
     const cell = (v) => {
       let s = String(v ?? '');
@@ -2863,14 +2867,16 @@
       const pay = onFile ? 'on_file' : inv && paid >= fee && fee > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid';
       // Seat reserved in next year's class (031): saved, or registration already on file.
       const reserved = state.hasSeats && status === 'returning' && (!!r?.reserved_on || onFile);
-      return { s, r, next, cls, status, inv, fee, paid, pays, pay, st: status !== 'returning' ? status : pay, reserved };
+      // New student that year (035): as marked, or worked out (on the waiting list, or starting in the new school year).
+      const isNew = r?.new_student ?? (s.status === 'waitlist' || !!(s.start_date && s.start_date >= start));
+      return { s, r, next, cls, status, inv, fee, paid, pays, pay, st: status !== 'returning' ? status : pay, reserved, isNew };
     }).sort((a, b) => (classes.findIndex((c) => c.id === a.next) - classes.findIndex((c) => c.id === b.next)) || byLastName(a.s.name, b.s.name));
   }
   const REG_ST = { paid: 'Paid', on_file: 'Paid (on file)', partial: 'Partly paid', unpaid: 'Not paid yet', not_returning: 'Not returning', undecided: 'Not sure yet',
     no_answer: 'No answer yet' };
   const REG_BACK = { no_answer: 'No answer yet', returning: 'Yes', undecided: 'Not sure', not_returning: 'No' };
   const OWES_ANSWER = new Set(['no_answer', 'undecided']);
-  const REG_FILTER = { owe: ['Owe an answer', (x) => OWES_ANSWER.has(x.status)], noseat: ['Said yes, no seat yet', (x) => x.status === 'returning' && !x.reserved],
+  const REG_FILTER = { newkid: ['New students', (x) => x.isNew && x.status !== 'not_returning'], owe: ['Owe an answer', (x) => OWES_ANSWER.has(x.status)], noseat: ['Said yes, no seat yet', (x) => x.status === 'returning' && !x.reserved],
     reserved: ['Seat reserved', (x) => x.reserved] };
   const payPill = (k) => `<span class="pay-pill ps-${['paid', 'on_file'].includes(k) ? 'paid' : k === 'partial' ? 'partial' : k === 'unpaid' ? 'open' : 'none'}">${esc(REG_ST[k])}</span>`;
   // Next year's open spots by class: its capacity, less the seats reserved and the families who said yes (no seat yet).
@@ -2960,6 +2966,7 @@
       <div class="stats">
         ${state.hasSeats ? `<div class="stat"><b>${back.length}</b><span>Said yes for ${esc(year)}</span></div>
         <div class="stat"><b>${all.filter((x) => x.reserved).length}</b><span>Seat reserved</span></div>
+        ${state.hasNoTour ? `<div class="stat"><b>${all.filter((x) => x.isNew && x.status !== 'not_returning').length}</b><span>New students starting</span></div>` : ''}
         <div class="stat"><b>${owe.length}</b><span>Owe an answer ${owe.length ? '<button class="btn ghost small" type="button" id="rg-owe">See them</button>' : ''}</span></div>`
         : `<div class="stat"><b>${all.filter((x) => ['paid', 'on_file'].includes(x.st)).length} of ${back.length}</b><span>Returning children registered for ${esc(year)}</span></div>`}
         <div class="stat"><b>${money(collected)}</b><span>Registration collected</span></div>
@@ -2990,7 +2997,9 @@
       shown = rows;
       $('#rg-rows', el).innerHTML = rows.map((x) => `<tr data-sid="${x.s.id}" class="${x.status !== 'returning' ? 'reg-off' : ''}">
           <td><a href="#" data-open-sid="${x.s.id}"><b>${esc(x.s.name)}</b></a><div class="muted small">${esc([classroomName(x.s.classroom_id) || 'No class',
-            x.s.status === 'waitlist' ? 'waiting list' : LEFT.has(x.s.status) ? STUDENT_STATUS[x.s.status].toLowerCase() : ''].filter(Boolean).join(' · '))}</div></td>
+            x.s.status === 'waitlist' ? 'waiting list' : LEFT.has(x.s.status) ? STUDENT_STATUS[x.s.status].toLowerCase() : ''].filter(Boolean).join(' · '))}</div>
+            ${state.hasNoTour && state.hasSeats ? (edit ? `<label class="pill-check reg-new"><input type="checkbox" class="check" data-new ${x.isNew ? 'checked' : ''}> New student</label>`
+              : x.isNew ? '<span class="tag">New student</span>' : '') : ''}</td>
           <td>${edit ? `<select data-next aria-label="Class in ${esc(year)}">${opt('', noClass(x.s), x.next || '')}
             ${state.classrooms.map((c) => opt(c.id, c.name, x.next || '')).join('')}</select>` : esc(nextName(x))}</td>
           <td>${edit ? `<select data-status aria-label="Coming back in ${esc(year)}">${Object.entries(REG_BACK).filter(([k]) => k !== 'no_answer' || state.hasSeats)
@@ -3017,6 +3026,14 @@
         sel.disabled = true;
         const ok = await saveReg(rowOf(sel), { status: sel.value });
         if (ok) toast('Saved');
+        renderRegistration(el);
+      }));
+      $$('#rg-rows [data-new]', el).forEach((box) => box.addEventListener('change', async () => {
+        box.disabled = true;
+        const x = rowOf(box);
+        const { data, error } = await sb.rpc('registration_mark_new', { p_student: x.s.id, p_year: regYear(), p_next: x.next, p_new: box.checked });
+        if (error) fail(error, 'Could not save');
+        else { await syncReg(data, x.r?.invoice_id); toast(box.checked ? `${x.s.name}: new student` : `${x.s.name}: not a new student`); }
         renderRegistration(el);
       }));
       $$('#rg-rows [data-seat]', el).forEach((box) => box.addEventListener('change', async () => {
@@ -3046,9 +3063,9 @@
     });
     $('#rg-print', el)?.addEventListener('click', () => showRegistrationSheet());
     $('#rg-csv', el).addEventListener('click', () => csvDownload(`creativa-registration-${regYear()}.csv`,
-      ['Student', 'Class now', `Class ${year}`, 'Coming back', 'Registration fee', 'Paid', 'Status', ...(state.hasSeats ? ['Seat reserved'] : []), 'Parent', 'Phone'],
+      ['Student', 'Class now', `Class ${year}`, 'Coming back', 'Registration fee', 'Paid', 'Status', ...(state.hasSeats ? ['Seat reserved'] : []), 'New student', 'Parent', 'Phone'],
       all.map((x) => [x.s.name, classroomName(x.s.classroom_id), x.cls?.name || '', REG_BACK[x.status], x.status !== 'not_returning' ? x.fee : '', x.paid,
-        REG_ST[x.status === 'not_returning' ? x.st : x.pay], ...(state.hasSeats ? [x.reserved ? x.r?.reserved_on || 'yes' : ''] : []), x.s.parent_name, x.s.parent_phone])));
+        REG_ST[x.status === 'not_returning' ? x.st : x.pay], ...(state.hasSeats ? [x.reserved ? x.r?.reserved_on || 'yes' : ''] : []), x.isNew ? 'yes' : '', x.s.parent_name, x.s.parent_phone])));
     draw();
   }
 
@@ -6965,6 +6982,7 @@
         <div class="section"><h3>Pipeline</h3><div class="grid2">
           <label>Stage${sel('stage', (stages().includes(v.stage) ? stages() : STAGES).map((s) => [s, STAGE_LABEL[s]]), v.stage)}</label>
           <label>Assigned to${sel('assigned_to', [['', 'Unassigned'], ...state.staff.filter((s) => s.active || s.id === v.assigned_to).map((s) => [s.id, s.full_name || s.email])], v.assigned_to)}</label>
+          ${state.hasNoTour ? `<label>Tour${sel('no_tour', [['', 'Needs a tour'], ...Object.entries(NO_TOUR)], v.no_tour || '')}</label><span></span>` : ''}
           ${inp('tour_at', 'Tour date & time', 'datetime-local')}
           ${inp('next_follow_up', 'Next follow-up', 'date')}
           ${state.events || state.closures ? '<p class="full small tour-day" id="tour-day" aria-live="polite"></p>' : ''}
@@ -7085,12 +7103,19 @@
 
     async function save() {
       const patch = {};
-      [...FIELDS, ...(state.hasStartOn ? ['start_on', 'expected_tuition', 'expected_freq'] : []), ...(form.reg_paid_on ? ['reg_paid_on', 'reg_amount'] : [])].forEach((k) => {
+      [...FIELDS, ...(state.hasStartOn ? ['start_on', 'expected_tuition', 'expected_freq'] : []), ...(form.reg_paid_on ? ['reg_paid_on', 'reg_amount'] : []),
+        ...(form.no_tour ? ['no_tour'] : [])].forEach((k) => {
         let val = form[k].value.trim();
         if (k === 'tour_at') val = val ? new Date(val).toISOString() : '';
         if (k === 'email') val = val.toLowerCase();
         patch[k] = val === '' ? null : val;
       });
+      // No tour needed (035): a tour still booked comes off, so no reminder goes out.
+      if (patch.no_tour && patch.tour_at && ['tour_scheduled', 'reschedule'].includes(patch.stage)) {
+        if (!confirm(`${NO_TOUR[patch.no_tour]}: take off the tour on ${fmtDateTime(patch.tour_at)}? No reminder will go out.`)) return;
+        patch.tour_at = null;
+        patch.stage = 'contacted';
+      }
       if (!patch.parent_name && !patch.child_name) return toast('Add the parent’s or child’s name', true);
       if (!patch.phone && !patch.email) return toast('Add a phone number or email', true);
       if (patch.stage === 'lost' && !patch.lost_reason) { form.lost_reason.focus(); return toast('Add the reason this family was lost', true); }
@@ -7105,7 +7130,7 @@
         }
       }
       if (patch.tour_at && new Date(patch.tour_at).getTime() !== new Date(inq.tour_at || 0).getTime()) {
-        const c = closureOn(localDate(new Date(patch.tour_at)));
+        const day = localDate(new Date(patch.tour_at)), c = day >= todayStr() && closureOn(day);
         if (c) { form.tour_at.focus(); return toast(`The school is closed that day (${closureName(c)}). Pick another day for the tour.`, true); }
       }
       if (patch.stage === 'tour_scheduled' && !patch.tour_at && inq.stage !== 'tour_scheduled') {

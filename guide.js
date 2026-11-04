@@ -17,6 +17,7 @@ window.CRM_GUIDE = {
         'Starts on and Tuition: when a family will start and what they’ll pay, so Money → Projection counts them.',
         'Registration paid on: paying registration is what holds a spot on the waiting list. Waitlisted cards say “registration paid” or “not paid”.',
         'Waitlisted or Enrolled: a button adds the child to the waiting list or the enrollment list in one tap, keeping their start date, rate and registration.',
+        'Tour: for a returning or former family, choose No tour needed (returning family / former family). The card says so, and a tour still booked comes off so no reminder goes out.',
         'Spam (admins): deletes the inquiry and blocks that email, phone and device.']],
       ['Enrollment', 'Every child: class, status, documents, family contacts, tuition and funding.', [
         'Class cards at the top show how many are enrolled, the capacity, and how many are waiting (and paid registration). Tap a card to filter.',
@@ -90,6 +91,7 @@ window.CRM_GUIDE = {
         'Empieza el y Matrícula: cuándo empezará y cuánto pagará, para que Dinero → Proyección la cuente.',
         'Matrícula pagada el: pagar la matrícula es lo que asegura el lugar en la lista de espera. Las tarjetas dicen “matrícula pagada” o “sin pagar”.',
         'En lista de espera o Inscrito: un botón agrega al niño a la lista de espera o de inscritos en un toque, con su fecha de inicio, tarifa y matrícula.',
+        'Visita: para una familia que regresa o que estuvo antes, elija No necesita visita (familia que regresa / familia anterior). La tarjeta lo dice, y si tenía una visita agendada se quita para que no salga el recordatorio.',
         'Spam (administradores): elimina la consulta y bloquea ese correo, teléfono y aparato.']],
       ['Inscripción', 'Cada niño: clase, estado, documentos, contactos de la familia, matrícula y fondos.', [
         'Las tarjetas de clase arriba muestran cuántos hay inscritos, la capacidad, y cuántos esperan (y pagaron la matrícula). Toque una para filtrar.',

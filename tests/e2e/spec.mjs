@@ -123,6 +123,14 @@ try {
   ok('board filters by program');
   assert.equal(await page.locator('.board .card .move').first().isVisible(), false);
   ok('Move-to picker is hidden on a computer (drag instead)');
+  // No tour needed (035): a returning family's card says so.
+  await page.locator('.card', { hasText: 'Maria Lopez' }).first().click();
+  await page.locator('.drawer select[name=no_tour]').selectOption('returning');
+  await page.click('.drawer #save');
+  await page.waitForSelector('#toast:has-text("Saved")');
+  await page.locator('.card', { hasText: 'Maria Lopez' }).locator('.tag', { hasText: 'No tour needed: returning family' }).waitFor();
+  if (await drawer.isVisible()) await drawer.locator('[data-close]').first().click();
+  ok('Pipeline: No tour needed (returning family) shows on the card');
   await shot(page, '04-pipeline');
 
   // ── manual inquiry ──
@@ -1286,6 +1294,13 @@ try {
   assert.equal(await rgRow('Sofia Lopez').locator('select[data-status] option:checked').textContent(), 'Yes', 'a reserved seat means they’re coming back');
   assert.equal(await page.locator('.stat', { hasText: 'Seat reserved' }).locator('b').textContent(), '3');
   assert.match(await page.locator('.reg-spots').textContent(), /Spots for 2027–28[\s\S]*Late 3s[\s\S]*Whole school/);
+  // New students (035): ticked by hand, counted.
+  const newCount = async () => Number(await page.locator('.stat', { hasText: 'New students starting' }).locator('b').textContent());
+  const before = await newCount();
+  await rgRow('Test Kid Alpha').locator('input[data-new]').check();
+  await page.waitForSelector('#toast:has-text("new student")');
+  await rgRow('Test Kid Alpha').locator('input[data-new]:checked').waitFor();
+  assert.equal(await newCount(), before + 1, 'counted as a new student');
   await page.click('#rg-owe');
   const owe = await page.locator('#rg-rows tr[data-sid] td:first-child b').allTextContents();
   assert.ok(owe.length > 0 && !owe.includes('Sofia Lopez') && !owe.includes('Test Kid Alpha') && !owe.includes('Test Kid Beta'), 'owe an answer: only those who haven’t said');

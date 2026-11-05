@@ -1883,8 +1883,9 @@
     const start = i.start_on ? inqStart(i) : i.stage === 'waitlisted' ? inqStart(i) : null;
     // A start date already past on a family still waiting is likely a typo (the year): marked so it's easy to fix.
     const passed = start && i.stage === 'waitlisted' && (i.start_on || (state.students || []).some((x) => x.inquiry_id === i.id && x.start_date)) && start.on < todayStr();
-    if (start && !CLOSED.has(i.stage)) tags.push(`<span class="tag start${passed ? ' overdue' : ''}">${passed ? 'start date passed: ' : 'starts '}${esc(start.label)}${canViewFinance() && Number(i.expected_tuition) > 0
-      ? ` · ${esc(money(i.expected_tuition))}` : ''}</span>`);
+    if (start && !CLOSED.has(i.stage)) tags.push(`<span class="tag start${passed ? ' overdue' : ''}">${passed ? 'start date passed: ' : 'starts '}${esc(start.label)}</span>`);
+    const fee = canViewFinance() && !CLOSED.has(i.stage) ? predictedTuition(i) : null;
+    if (fee) tags.push(`<span class="tag tuition">${fee.cls ? 'Tuition about' : 'Tuition'} ${esc(money0(fee.amount))} ${esc(FREQ_TEXT[fee.freq] || '')}${fee.cls ? ' (class rate)' : ''}</span>`);
     if (state.hasStartOn && !CLOSED.has(i.stage)) {
       if (inqRegPaid(i)) tags.push('<span class="tag paid">registration paid</span>');
       else if (i.stage === 'waitlisted') tags.push('<span class="tag due">registration not paid</span>');
@@ -5192,6 +5193,14 @@
     if (Number(amount) > 0) return { amount: Number(amount), freq, cls: false };
     const r = classRates(classId)[0];
     return r ? { ...rateAs(r, 'biweekly'), cls: true } : null;
+  }
+  // What a family in the Pipeline will likely pay, like the projection: their child's tuition on Enrollment, else the amount
+  // on their card, else their class's rate until 3:00 every 2 weeks (cls: true).
+  function predictedTuition(i) {
+    const st = (state.students || []).find((x) => x.inquiry_id === i.id), fr = st && state.finance?.[st.id];
+    return (fr && Number(fr.tuition_amount) > 0 && fr.bill_family !== false && startRate(fr.tuition_amount, fr.tuition_frequency))
+      || (Number(i.expected_tuition) > 0 && startRate(i.expected_tuition, i.expected_freq || 'biweekly'))
+      || startRate(null, null, st?.classroom_id || classIdOf(i.program));
   }
   // The class a Pipeline program starts in: its name, and 15–17 months starts with the toddlers in 18–23 months (same rate).
   const classIdOf = (program) => {

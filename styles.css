@@ -623,7 +623,9 @@ table.proj tr.proj-possible th, table.proj tr.proj-possible td { color: var(--sa
 #proj-coming tr.proj-leave td { color: var(--ink-soft); }
 #proj-coming tr.proj-maybe td:nth-child(2) { color: var(--sage-deep); }
 .tag.start, .tag.paid { background: #E3E8D6; color: var(--sage-deep); }
-.card .tag.start { white-space: normal; }
+.tag.tuition { background: #E8E4F1; color: #4A3F6B; }   /* what the family will likely pay */
+/* On a card, a long tag wraps inside it instead of running past its edge. */
+.card .tag { white-space: normal; max-width: 100%; overflow-wrap: anywhere; border-radius: 10px; }
 .col-note { font-size: 12px; color: var(--ink-soft); margin: -6px 4px 8px; }
 .inline-pair { display: flex; gap: 6px; }
 .inline-pair input { flex: 1 1 90px; min-width: 0; }

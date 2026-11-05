@@ -1170,7 +1170,20 @@ try {
   await drawer.locator('#save').click();
   await page.waitForSelector('#toast:has-text("Inquiry added")');
   await drawer.locator('[data-close]').first().click();
-  await page.locator('.card', { hasText: 'Delta Parent' }).locator('.tag.start', { hasText: '$500.00' }).waitFor();
+  await page.locator('.card', { hasText: 'Delta Parent' }).locator('.tag.tuition', { hasText: 'Tuition $500 every 2 weeks' }).waitFor();
+  // No amount typed in: the class's rate, as a prediction.
+  await page.click('#add');
+  await drawer.locator('input[name=parent_name]').fill('Echo Parent');
+  await drawer.locator('input[name=phone]').fill('305 555 0178');
+  await drawer.locator('select[name=program]').selectOption('Early 2s');
+  await drawer.locator('#save').click();
+  await page.waitForSelector('#toast:has-text("Inquiry added")');
+  await drawer.locator('[data-close]').first().click();
+  await page.locator('.card', { hasText: 'Echo Parent' }).locator('.tag.tuition', { hasText: 'Tuition about $560 every 2 weeks (class rate)' }).waitFor();
+  await page.locator('.card', { hasText: 'Echo Parent' }).click();
+  await drawer.locator('#del').click();   // confirm() accepted
+  await page.locator('.card', { hasText: 'Echo Parent' }).waitFor({ state: 'detached' });
+  ok('Pipeline cards: the tuition typed in, or the class rate as a prediction');
   await page.click('header nav button[data-view=money]');
   await page.click('[data-mtab=projection]');
   assert.equal(await page.locator('.proj-chart .pc-month').count(), 6, 'a column pair a month');

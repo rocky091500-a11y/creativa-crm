@@ -13,6 +13,7 @@ window.CRM_GUIDE = {
       ['Families and tours (Pipeline, All inquiries)', 'Every family that asks about the school, from the website or added by hand, until they enroll or are lost.', [
         'Pipeline: one column per stage (New, Contacted, Tour scheduled, Reschedule, Toured, Waitlisted, Enrolled, Lost). Drag a card, or on a phone use “Move to…”.',
         '+ Add inquiry for a call or walk-in. Open a family to call, text or email them, log a call or a note, and set the next follow-up date.',
+        'Program: pick the age group from the list; its teachers show next to it (from Settings → Classes). Website requests are matched to the same names, so each class is counted once in the filter and the reports.',
         'Tour scheduled needs a date and time. The family gets a reminder email/text the day before and a “how was your visit?” a week after (switch it off per family).',
         'Starts on and Tuition: when a family will start and what they’ll pay, so Money → Projection counts them.',
         'Registration paid on: paying registration is what holds a spot on the waiting list. Waitlisted cards say “registration paid” or “not paid”.',
@@ -88,6 +89,7 @@ window.CRM_GUIDE = {
       ['Familias y visitas (Embudo, Todas las consultas)', 'Cada familia que pregunta por la escuela, por el sitio web o agregada a mano, hasta que se inscribe o se pierde.', [
         'Embudo: una columna por etapa (Nueva, Contactada, Visita programada, Reprogramar, Visitó, En lista de espera, Inscrito, Perdida). Arrastre la tarjeta, o en el teléfono use “Mover a…”.',
         '+ Agregar consulta para una llamada o alguien que llega. Abra una familia para llamar, enviar texto o correo, anotar una llamada o nota, y poner la fecha del próximo seguimiento.',
+        'Programa (Program): elija el grupo de edad de la lista; sus maestras salen al lado (de Ajustes → Clases). Las solicitudes del sitio web se ponen con los mismos nombres, así cada clase se cuenta una sola vez en el filtro y en los informes.',
         'Visita programada necesita fecha y hora. La familia recibe un recordatorio el día antes y un “¿cómo le fue en la visita?” una semana después (se puede apagar por familia).',
         'Empieza el y Matrícula: cuándo empezará y cuánto pagará, para que Dinero → Proyección la cuente.',
         'Matrícula pagada el: pagar la matrícula es lo que asegura el lugar en la lista de espera. Las tarjetas dicen “matrícula pagada” o “sin pagar”.',

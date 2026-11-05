@@ -50,3 +50,4 @@ insert into public.billing_history (as_of, period_start, period_end, customer, f
   ('2026-08-12', '2026-08-10', '2026-08-21', 'ALPHA, TEST', 'ALPHA, TEST', 560, null, 560, false),
   ('2026-08-25', '2026-08-24', '2026-09-04', 'ALPHA, TEST', 'ALPHA, TEST', -40, 'Handwritten on the sheet: paid early', 520, true),
   ('2026-08-12', '2026-08-10', '2026-08-21', 'GONE, KID', 'GONE, KID', 100, null, 100, false);
+update public.classrooms set teachers = 'Ms. Rivera' where name = 'Late 3s';   -- the program list shows the teachers

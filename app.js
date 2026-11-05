@@ -16,6 +16,18 @@
   };
   const PROGRAMS = ['15–17 months', '18–23 months', 'Early 2s', 'Late 2s', 'Early 3s', 'Late 3s',
     'VPK', 'Kindergarten', 'Bloom', 'Not sure'];
+  // One name per program (038 cleans what's saved): the age group, then its teachers from Settings → Classes.
+  const normProg = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const progClass = (x) => (state.classrooms || []).find((c) => c.id === classIdOf(x));
+  const programLabel = (x) => { const c = x && progClass(x); return !x ? '' : c?.teachers ? `${x} · ${c.teachers}` : x; };
+  // The programs to pick from, youngest first, spelled like the classes; plus any old one still saved (extra).
+  function programChoices(extra = []) {
+    const byNorm = new Map((state.classrooms || []).map((c) => [normProg(c.name), c.name]));
+    const list = PROGRAMS.map((x) => byNorm.get(normProg(x)) || x);
+    (state.classrooms || []).forEach((c) => { if (!list.includes(c.name)) list.splice(list.indexOf('Bloom'), 0, c.name); });
+    extra.filter(Boolean).forEach((x) => { if (!list.includes(x)) list.push(x); });
+    return list;
+  }
   const KIND_LABEL = { note: 'Note', call: 'Call', email: 'Email', text: 'Text', stage: 'Stage', system: 'System' };
   const CLOSED_COLUMN_LIMIT = 20;
   const FIELDS = ['parent_name', 'email', 'phone', 'contact_pref', 'child_name', 'child_dob', 'program',
@@ -669,11 +681,11 @@
   function toolbarHtml({ withStage }) {
     const f = state.filters;
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
-    const programs = [...new Set([...PROGRAMS, ...state.inquiries.map((i) => i.program).filter(Boolean)])];
+    const programs = programChoices(state.inquiries.map((i) => i.program));
     return `<div class="toolbar">
       <input type="search" id="f-q" placeholder="Search name, email, phone…" value="${esc(f.q)}">
       ${withStage ? `<select id="f-stage">${opt('', 'All stages', f.stage)}${stages().map((s) => opt(s, STAGE_LABEL[s], f.stage)).join('')}</select>` : ''}
-      <select id="f-program">${opt('', 'All programs', f.program)}${programs.map((p) => opt(p, p, f.program)).join('')}</select>
+      <select id="f-program">${opt('', 'All programs', f.program)}${programs.map((p) => opt(p, programLabel(p), f.program)).join('')}</select>
       <select id="f-source">${opt('', 'All sources', f.source)}${Object.entries(SOURCE_LABEL).map(([k, v]) => opt(k, v, f.source)).join('')}</select>
       <select id="f-assigned">${opt('', 'Anyone', f.assigned)}${opt('none', 'Unassigned', f.assigned)}${state.staff.filter((s) => s.active).map((s) => opt(s.id, s.full_name || s.email, f.assigned)).join('')}</select>
       <span class="spacer"></span>
@@ -721,7 +733,7 @@
 
     const row = (i, when, cls = '') => `<div class="row" data-id="${i.id}">
         <div class="who"><b>${esc(i.parent_name || '(no name)')}</b>
-          <div>${esc([i.child_name, ageOf(i.child_dob), i.program].filter(Boolean).join(' · ') || SOURCE_LABEL[i.source] || '')}</div></div>
+          <div>${esc([i.child_name, ageOf(i.child_dob), programLabel(i.program)].filter(Boolean).join(' · ') || SOURCE_LABEL[i.source] || '')}</div></div>
         <span class="when ${cls}">${when}</span></div>`;
 
     const unseenBy = [...new Set(state.unseen.map((c) => staffName(c.actor) || 'Someone'))];
@@ -1885,7 +1897,7 @@
         ${stages().filter((s) => s !== i.stage).map((s) => `<option value="${s}">${STAGE_LABEL[s]}</option>`).join('')}
       </select>
       <div class="name">${esc(i.parent_name || '(no name)')}</div>
-      <div class="meta">${esc([i.child_name, ageOf(i.child_dob)].filter(Boolean).join(', '))}${i.program ? ' · ' + esc(i.program) : ''}</div>
+      <div class="meta">${esc([i.child_name, ageOf(i.child_dob)].filter(Boolean).join(', '))}${i.program ? ' · ' + esc(programLabel(i.program)) : ''}</div>
       <div class="meta">${esc(relDays(i.created_at))}</div>
       <div class="tags">${tags.join('')}</div></div>`;
   }
@@ -1966,7 +1978,7 @@
       $('#rows').innerHTML = rows.map((i) => `<tr data-id="${i.id}">
           <td><b>${esc(i.parent_name || '(no name)')}</b><div class="muted small">${esc(i.phone || i.email || '')}</div></td>
           <td>${esc(i.child_name || '')}<div class="muted small">${esc(ageOf(i.child_dob))}</div></td>
-          <td>${esc(i.program || '')}</td>
+          <td>${esc(programLabel(i.program))}</td>
           <td><span class="stage-pill s-${i.stage}">${STAGE_LABEL[i.stage]}</span></td>
           <td>${esc(SOURCE_LABEL[i.source] || i.source)}</td>
           <td>${esc(fmtDate(i.created_at))}</td>
@@ -3178,7 +3190,7 @@
 
   // An inquiry marked Enrolled (or Waitlisted) can be added to the enrollment list (or the waiting list) in one tap.
   function studentFromInquiry(inq) {
-    const cls = state.classrooms.find((c) => c.name === inq.program);
+    const cls = progClass(inq.program);
     openStudent(null, {
       name: inq.child_name || '', dob: inq.child_dob, classroom_id: cls?.id || null, status: inq.stage === 'waitlisted' ? 'waitlist' : 'enrolled',
       ...(inq.reg_paid_on ? { reg_fee: 'paid' } : {}),
@@ -5143,7 +5155,7 @@
   const money0 = (n) => `${n < 0 ? '-' : ''}$${Math.abs(Math.round(n)).toLocaleString('en-US')}`;   // projections: whole dollars
   const FREQ_TEXT = { weekly: 'a week', biweekly: 'every 2 weeks', monthly: 'a month', school_year: 'a school year' };
   function usualRate(program) {   // the class's 2-week rates (020), or the most common 2-week rate in that class, as a hint
-    const cls = state.classrooms.find((c) => c.name === program);
+    const cls = progClass(program);
     const rs = cls ? classRates(cls.id) : [];
     if (rs.length) return rs.map((r) => rateAs(r, 'biweekly').amount).join(' or ');
     const rates = state.students.filter((s) => s.status === 'enrolled' && (!cls || s.classroom_id === cls.id))
@@ -5183,9 +5195,9 @@
   }
   // The class a Pipeline program starts in: its name, and 15–17 months starts with the toddlers in 18–23 months (same rate).
   const classIdOf = (program) => {
-    const p = String(program || '').trim().toLowerCase();
-    const byName = (n) => state.classrooms.find((c) => c.name.toLowerCase() === n)?.id;
-    return byName(p) || (p === '15–17 months' ? byName('18–23 months') : undefined);
+    const p = normProg(program);
+    const byName = (n) => (state.classrooms || []).find((c) => normProg(c.name) === n)?.id;
+    return byName(p) || (p === '1517months' ? byName('1823months') : undefined);
   };
   // The same child in Enrollment and the Pipeline: one was made from the other, or the same name, or the same phone and first name.
   function sameChild(st, i) {
@@ -7141,7 +7153,7 @@
         <div class="section"><h3>Child</h3><div class="grid2">
           ${inp('child_name', 'Name')}
           <label>Date of birth<input name="child_dob" type="date" value="${esc(v.child_dob)}">${v.child_dob ? `<span class="muted small">${esc(ageOf(v.child_dob))}</span>` : ''}</label>
-          ${inp('program', 'Program', 'text', 'list="programs"')}
+          <label>Program${sel('program', [['', '—'], ...programChoices([v.program]).map((x) => [x, programLabel(x)])], v.program || '')}</label>
           ${inp('desired_start', 'Wants to start')}
           ${state.hasStartOn ? `${inp('start_on', 'Starts on', 'date')}
             <label>Tuition<span class="inline-pair"><input name="expected_tuition" type="number" min="0" step="0.01" inputmode="decimal"
@@ -7151,7 +7163,7 @@
             <p class="full muted small">With a start day and tuition, this family shows on Money → Projection from that day, and moves over when they become a student.</p>` : ''}
           <label class="full">Message / notes from family<textarea name="message" rows="3">${esc(v.message)}</textarea></label>
         </div></div>
-        <datalist id="programs">${PROGRAMS.map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
+
         ${id ? `<div class="section"><h3>Activity</h3>
           <div class="note-form">
             <select id="note-kind">${['note', 'call', 'email', 'text'].map((k) => `<option value="${k}">${KIND_LABEL[k]}</option>`).join('')}</select>
@@ -7186,7 +7198,7 @@
     // The class's rates (020), one tap to use one: the program typed in is a class's name.
     const inqRates = $('#inq-rates', drawer);
     const drawInqRates = () => {
-      const cls = state.classrooms.find((c) => c.name.toLowerCase() === form.program.value.trim().toLowerCase());
+      const cls = progClass(form.program.value);
       const rs = cls ? classRates(cls.id) : [];
       const cur = rs.find((r) => { const a = rateAs(r, form.expected_freq.value); return a.freq === form.expected_freq.value && a.amount === Number(form.expected_tuition.value); });
       inqRates.innerHTML = rs.length ? rateSelect('inq-rate-pick', rs, form.expected_freq.value, cur?.k || (form.expected_tuition.value ? 'other' : '')) : '';
@@ -7201,7 +7213,7 @@
       });
       form.expected_tuition.placeholder = usualRate(cls?.name || form.program.value.trim());
     };
-    if (inqRates) { drawInqRates(); form.program.addEventListener('input', drawInqRates); }
+    if (inqRates) { drawInqRates(); form.program.addEventListener('change', drawInqRates); }
     const tryClose = () => { if (!dirty || confirm('Discard your changes?')) closeDrawer(); };
     $$('[data-close]', drawer).forEach((b) => b.addEventListener('click', tryClose));
     scrim.addEventListener('click', tryClose);

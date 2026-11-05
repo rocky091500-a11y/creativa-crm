@@ -65,7 +65,7 @@ try {
   const drawer = page.locator('.drawer');
   await drawer.waitFor();
   assert.equal(await drawer.locator('input[name=child_name]').inputValue(), 'Sofia Lopez');
-  assert.equal(await drawer.locator('input[name=program]').inputValue(), 'Early 2s');
+  assert.equal(await drawer.locator('select[name=program]').inputValue(), 'Early 2s');
   assert.equal(await drawer.locator('a[href="tel:7865550101"]').count(), 1);
   await drawer.locator('summary', { hasText: 'Original website submission' }).click();
   assert.ok(await drawer.locator('dd', { hasText: 'Mon, Wed' }).count() === 1);
@@ -141,11 +141,14 @@ try {
   await page.waitForSelector('#toast.err:has-text("phone number or email")');
   await drawer.locator('input[name=phone]').fill('305 555 0000');
   await drawer.locator('input[name=child_name]').fill('Mateo');
-  await drawer.locator('input[name=program]').fill('Late 3s');
+  assert.equal(await drawer.locator('select[name=program] option[value="Late 3s"]').textContent(), 'Late 3s · Ms. Rivera', 'the age group, then its teachers');
+  await drawer.locator('select[name=program]').selectOption('Late 3s');
   await drawer.locator('#save').click();
   await drawer.locator('.timeline li', { hasText: 'Added by staff' }).waitFor();
   await drawer.locator('[data-close]').first().click();
   await col('new').locator('.card', { hasText: 'Walk-in Dad' }).waitFor();
+  assert.match(await col('new').locator('.card', { hasText: 'Walk-in Dad' }).textContent(), /Mateo · Late 3s · Ms\. Rivera/);
+  assert.equal(await page.locator('#f-program option[value="Late 3s"]').textContent(), 'Late 3s · Ms. Rivera', 'the filter too');
   ok('staff can add a walk-in/phone inquiry; phone or email required');
 
   // ── tours to reschedule ──
@@ -1158,7 +1161,7 @@ try {
   await drawer.locator('input[name=parent_name]').fill('Delta Parent');
   await drawer.locator('input[name=phone]').fill('305 555 0177');
   await drawer.locator('input[name=child_name]').fill('Test Kid Delta');
-  await drawer.locator('input[name=program]').fill('Early 2s');
+  await drawer.locator('select[name=program]').selectOption('Early 2s');
   assert.equal(await drawer.locator('input[name=expected_tuition]').getAttribute('placeholder'), '560 or 600', 'the class’s 2-week rates as a hint');
   await drawer.locator('#inq-rate-pick').selectOption('after_care');   // the class rate from the list: $300 a week = $600 every 2 weeks
   assert.equal(await drawer.locator('input[name=expected_tuition]').inputValue(), '600');

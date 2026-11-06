@@ -935,3 +935,6 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 .bday-pick select { flex: 1; min-width: 0; }
 .bday-note { align-self: end; margin: 0 0 10px; }
 .cal-side-h { margin-top: 14px; }
+
+/* Pipeline → Print who's starting: a second table for families without a start day yet. */
+.starting-sheet .r-sub { margin: 14px 0 6px; font-size: 14px; }

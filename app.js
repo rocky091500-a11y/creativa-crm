@@ -689,11 +689,14 @@
       <select id="f-source">${opt('', 'All sources', f.source)}${Object.entries(SOURCE_LABEL).map(([k, v]) => opt(k, v, f.source)).join('')}</select>
       <select id="f-assigned">${opt('', 'Anyone', f.assigned)}${opt('none', 'Unassigned', f.assigned)}${state.staff.filter((s) => s.active).map((s) => opt(s.id, s.full_name || s.email, f.assigned)).join('')}</select>
       <span class="spacer"></span>
+      ${state.hasEnrollment ? `<select id="f-starting" aria-label="Print who’s starting in a month"><option value="">Print who’s starting…</option>
+        ${Array.from({ length: 13 }, (_, k) => shiftMonth(thisMonth(), k)).map((m) => `<option value="${m}">${esc(fmtMonth(m))}</option>`).join('')}</select>` : ''}
       <span class="muted small" id="f-count"></span>
     </div>`;
   }
 
   function bindToolbar(rerender) {
+    $('#f-starting')?.addEventListener('change', (e) => { const m = e.target.value; e.target.value = ''; if (m) printStarting(m); });
     const map = { 'f-q': 'q', 'f-stage': 'stage', 'f-program': 'program', 'f-source': 'source', 'f-assigned': 'assigned' };
     Object.entries(map).forEach(([id, key]) => {
       const el = document.getElementById(id);
@@ -5238,6 +5241,41 @@
     open.filter((i) => !used.has(i.id) && (i.start_on || i.stage === 'waitlisted')
       && !state.students.some((st) => st.status !== 'waitlist' && sameChild(st, i))).forEach((i) => out.push(fam(null, i)));
     return out.sort((a, b) => (a.start || '9999').localeCompare(b.start || '9999') || a.name.localeCompare(b.name));
+  }
+  // Who starts in a month (ym), for the office to print: the waiting list and the Pipeline with a start date (as in the
+  // projection), any child already enrolled whose first day is in that month, and Pipeline families whose "Wants to start"
+  // says that month but who have no start day yet (guess).
+  function startingIn(ym) {
+    const fams = newFamilies(), used = new Set(fams.map((f) => f.i?.id).filter(Boolean));
+    const rows = fams.filter((f) => (f.start ? f.start.slice(0, 7) === ym : f.i && inqStart(f.i)?.on?.slice(0, 7) === ym))
+      .map((f) => ({ ...f, guess: f.start ? null : inqStart(f.i) }));
+    state.students.filter((st) => st.status === 'enrolled' && st.start_date?.slice(0, 7) === ym)
+      .forEach((st) => rows.push({ st, i: null, name: st.name, start: st.start_date, classId: st.classroom_id, paid: regPaid(st), enrolled: true }));
+    state.inquiries.filter((i) => !CLOSED.has(i.stage) && !used.has(i.id) && !i.start_on && inqStart(i)?.on?.slice(0, 7) === ym
+      && !state.students.some((st) => sameChild(st, i)))
+      .forEach((i) => rows.push({ st: null, i, name: i.child_name || i.parent_name || 'A family', start: null, guess: inqStart(i),
+        classId: classIdOf(i.program), paid: !!i.reg_paid_on }));
+    return rows.sort((a, b) => (a.start || '9999').localeCompare(b.start || '9999') || a.name.localeCompare(b.name));
+  }
+  function printStarting(ym) {
+    const rows = startingIn(ym), dated = rows.filter((r) => r.start), noDay = rows.filter((r) => !r.start), fin = canViewFinance();
+    const day = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    const cls = (r) => { const c = state.classrooms.find((x) => x.id === r.classId); return c ? `${c.name}${c.teachers ? ` · ${c.teachers}` : ''}` : programLabel(r.i?.program) || '—'; };
+    const parent = (r) => r.st?.parent_name || r.i?.parent_name || '';
+    const phone = (r) => r.st?.parent_phone || r.i?.phone || '';
+    const where = (r) => (r.enrolled ? 'Enrolled' : r.st ? 'Waiting list' : `Pipeline: ${STAGE_LABEL[r.i.stage] || r.i.stage}`);
+    const head = `<tr><th class="num">#</th><th>Child</th><th>Starts</th><th>Class</th><th>Parent</th><th>Phone</th>${fin ? '<th>Registration</th>' : ''}<th>On the CRM</th></tr>`;
+    const line = (r, n, when) => `<tr><td class="num">${n}</td><td><b>${esc(r.name)}</b></td><td class="nowrap">${esc(when)}</td><td>${esc(cls(r))}</td>
+      <td>${esc(parent(r))}</td><td class="nowrap">${esc(phone(r))}</td>${fin ? `<td>${r.paid ? 'Paid' : 'Not paid'}</td>` : ''}<td>${esc(where(r))}</td></tr>`;
+    showPrintSheet({ label: `Starting in ${fmtMonth(ym)}`, cls: 'starting-sheet', landscape: true,
+      html: `${sheetBand(`Starting in ${fmtMonth(ym)}`, `As of ${asOfToday()} · ${dated.length} with a start day${noDay.length ? ` · ${noDay.length} without one yet` : ''}`)}
+        <table class="r-table"><thead>${head}</thead><tbody>
+          ${dated.map((r, k) => line(r, k + 1, day(r.start))).join('') || `<tr><td colspan="${fin ? 8 : 7}" class="muted">Nobody has a start day in ${esc(fmtMonth(ym))} yet.</td></tr>`}</tbody></table>
+        ${noDay.length ? `<h3 class="r-sub">No start day yet: wants to start in ${esc(fmtMonth(ym))}</h3>
+          <table class="r-table"><thead>${head}</thead><tbody>${noDay.map((r, k) => line(r, dated.length + k + 1, r.guess?.label || '—')).join('')}</tbody></table>` : ''}
+        <p class="r-note">From Enrollment (the waiting list, and children enrolled whose first day is in ${esc(fmtMonth(ym))}) and the Pipeline (a Starts on date, or the month they want). Printed ${esc(fmtDateTime(new Date().toISOString()))}.</p>`,
+      excel: () => xlsxDownload(`starting-${ym}.xlsx`, [{ name: fmtMonth(ym).slice(0, 31), rows: [['Child', 'Starts', 'Class', 'Parent', 'Phone', ...(fin ? ['Registration'] : []), 'On the CRM'],
+        ...rows.map((r) => [r.name, r.start || `no day yet (${r.guess?.label || ''})`, cls(r), parent(r), phone(r), ...(fin ? [r.paid ? 'Paid' : 'Not paid'] : []), where(r)])] }]) });
   }
   // Who pays a child's tuition, for the projection's lines.
   const PROJ_PAYS = { private: 'Tuition from private-pay families', fes: 'FES / Step Up scholarships', sr: 'School Readiness (family’s share)',

@@ -1184,6 +1184,15 @@ try {
   await drawer.locator('#del').click();   // confirm() accepted
   await page.locator('.card', { hasText: 'Echo Parent' }).waitFor({ state: 'detached' });
   ok('Pipeline cards: the tuition typed in, or the class rate as a prediction');
+  // Pipeline → Print who's starting: Delta starts next month, with the day, the parent and the phone.
+  await page.selectOption('#f-starting', nextMonth1.slice(0, 7));
+  const startSheet = page.locator('.print-sheet .starting-sheet');
+  await startSheet.waitFor();
+  const deltaDay = new Date(`${nextMonth1}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  assert.match(await startSheet.locator('tr', { hasText: 'Test Kid Delta' }).textContent(), new RegExp(`${deltaDay}[\\s\\S]*Delta Parent[\\s\\S]*305.?555.?0177`));
+  await shot(page, '36b-starting-list');
+  await page.click('#ps-close');
+  ok('Pipeline: Print who’s starting lists the children starting in a month, with the day');
   await page.click('header nav button[data-view=money]');
   await page.click('[data-mtab=projection]');
   assert.equal(await page.locator('.proj-chart .pc-month').count(), 6, 'a column pair a month');

@@ -485,6 +485,25 @@ try {
   await page.click('header nav button[data-view=today]');
   await page.locator('.today-todo .todo-title', { hasText: 'Physical (yellow form) expires: Walk-in Kid' }).waitFor();
   ok('Forms: yellow form expiring soon tagged on the roster, on the Forms list, and a to-do on Today');
+
+  // Online registration (039): a family's form from the website waits on Today and Enrollment → Online registrations;
+  // Add puts the child, the parents (with address and work), emergency contact, pick-up, allergies and medicine on Enrollment.
+  await page.locator('.today-reg', { hasText: 'Web Reg Kid' }).waitFor();
+  await page.click('#see-regs');
+  await page.locator('tr[data-rf]', { hasText: 'Web Reg Kid' }).click();
+  assert.match(await drawer.textContent(), /Rosa Web[\s\S]*1 Palm St[\s\S]*EpiPen Jr[\s\S]*School Readiness/);
+  assert.equal(await drawer.locator('select[name=rf_class] option:checked').textContent(), 'Early 3s', 'the class asked for');
+  await shot(page, '34c-online-registration');
+  await drawer.locator('#rf-add').click();
+  await page.waitForSelector('#toast:has-text("added to Enrollment")');
+  await drawer.locator('#st-save').waitFor();
+  assert.equal(await drawer.locator('input[name=name]').inputValue(), 'Web Reg Kid');
+  assert.match(await drawer.locator('.contact-list').first().textContent(), /Rosa Web[\s\S]*1 Palm St, Miami · Works at Hospital[\s\S]*Abuela Web/);
+  assert.match(await drawer.locator('.allergy-alert').textContent(), /Peanuts/);
+  assert.equal(await drawer.locator('select[name=photo_ok]').inputValue(), 'yes');
+  await drawer.locator('#st-del').click();   // confirm() accepted: the test child goes away again
+  await page.waitForSelector('#toast:has-text("Deleted")');
+  ok('Online registration: waits on Today and Enrollment; Add puts the child with parents, contacts, allergies and medicine on Enrollment');
   await page.click('header nav button[data-view=roster]');
   await page.click('[data-rtab=children]');
   await page.locator('#roster-rows tr', { hasText: 'Walk-in Kid' }).waitFor();

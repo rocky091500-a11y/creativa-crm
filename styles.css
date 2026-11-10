@@ -938,3 +938,16 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 
 /* Pipeline → Print who's starting: a second table for families without a start day yet. */
 .starting-sheet .r-sub { margin: 14px 0 6px; font-size: 14px; }
+
+/* Online registration (039): the review drawer and its print. */
+.rf-add .pill-check { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; }
+.rf-add select[name=rf_other] { margin: 4px 0 8px; width: 100%; }
+.rf-kv th { text-align: left; font-weight: 600; width: 34%; vertical-align: top; color: var(--ink-soft); }
+.rf-kv td { vertical-align: top; }
+.rf-people li { padding: 6px 0; border-bottom: 1px solid var(--line, #e6e1d6); }
+.rf-people li:last-child { border-bottom: 0; }
+.rf-sheet .rf-sec { margin-top: 12px; break-inside: avoid; }
+.rf-sheet .rf-sec h3 { font-size: 13px; margin: 0 0 4px; text-transform: uppercase; letter-spacing: .04em; }
+.reg-link a { font-weight: 600; }
+.rf-people li { display: block; }
+.rf-people li .small { margin-top: 2px; }

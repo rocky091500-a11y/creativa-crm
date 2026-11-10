@@ -29,8 +29,12 @@ select pg_temp.as_user(null);
 select pg_temp.from_ip(null);
 
 -- ── 1. Reschedule ──
+-- A tour n days from now, moved to the next day the school is open (tours can't be on a closed day, e.g. Veterans Day).
+create or replace function pg_temp.open_at(n int) returns timestamptz language plpgsql as 'declare t timestamptz := now() + make_interval(days => n);
+  begin while exists (select 1 from public.school_closures c where (t at time zone ''America/New_York'')::date between c.starts_on and coalesce(c.ends_on, c.starts_on))
+    loop t := t + interval ''1 day''; end loop; return t; end';
 insert into public.inquiries (parent_name, email, stage, tour_at) values
-  ('Resched Mom', 'resched@example.com', 'tour_scheduled', now() + interval '1 day');
+  ('Resched Mom', 'resched@example.com', 'tour_scheduled', pg_temp.open_at(1));
 set role authenticated;
 select pg_temp.as_user('00000000-0000-0000-0000-00000000000b');
 update public.inquiries set stage = 'reschedule' where email = 'resched@example.com';
@@ -43,7 +47,7 @@ select pg_temp.ok(position('Resched Mom' in public.tours_calendar((select token 
 select pg_temp.ok(not exists (select 1 from public.tour_emails_due(now() + interval '1 hour') d
                               join public.inquiries i on i.id = d.inquiry_id where i.email = 'resched@example.com'),
                   'no reminder email while it waits to be rescheduled');
-update public.inquiries set stage = 'tour_scheduled', tour_at = now() + interval '2 days' where email = 'resched@example.com';
+update public.inquiries set stage = 'tour_scheduled', tour_at = pg_temp.open_at(2) where email = 'resched@example.com';
 select pg_temp.ok(position('Resched Mom' in public.tours_calendar((select token from public.calendar_feed))) > 0,
                   'back on the calendar once rescheduled');
 do 'begin update public.inquiries set stage = ''someday'' where email = ''resched@example.com''; raise exception ''FAIL: bad stage'';

@@ -465,7 +465,7 @@
   async function loadAll() {
     const fin = canViewFinance();
     const none = Promise.resolve({ data: [] });
-    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md, pp, ac, ar, asl, nt, sbd] = await Promise.all([
+    const [p, i, c, st, set, f, pay, inv, con, oo, sig, hist, chg, msg, gt, mon, td, so, cl, ev, rg, md, pp, ac, ar, asl, nt, sbd, rf] = await Promise.all([
       sb.from('profiles').select('*').order('full_name'),
       selectAll('inquiries', 'created_at', false),
       sb.from('classrooms').select('*').order('sort').order('name'),
@@ -495,6 +495,8 @@
       sb.from('activity_slots').select('*').order('sort'),
       sb.from('inquiries').select('no_tour').limit(1),                                                 // missing until 035
       sb.rpc('staff_birthdays'),                                                                       // missing until 037
+      canOffice() ? sb.from('registration_forms').select('*').order('created_at', { ascending: false }).limit(300)   // missing until 039
+        : Promise.resolve({ error: true }),
     ]);
     if (p.error) return fail(p.error, 'Could not load staff');
     if (i.error) return fail(i.error, 'Could not load inquiries');
@@ -551,6 +553,9 @@
     state.hasForms = state.students.length > 0 && 'physical_expires' in state.students[0];   // 036: yellow / blue form expirations
     state.todos = td.error ? [] : td.data;
     state.staffBdays = sbd.error ? null : sbd.data;   // 037: [{ name, birthday: 'MM-DD' }]
+    state.regForms = rf.error ? null : rf.data;   // 039: online registrations, for the office
+    state.hasRegForms = !!state.regForms;
+    state.has039 = state.hasEnrollment && (state.students.length ? 'pediatrician' in state.students[0] : state.hasRegForms);
     watchInquiries();
     state.loadedAt = Date.now();
   }
@@ -744,6 +749,9 @@
     el.innerHTML = `${toDo.length ? `<section class="panel today-todo"><h2>To do <span class="muted small">${toDo.length}</span>
         <button class="btn ghost small" type="button" id="see-todo">All to-dos</button></h2>
         <ul class="todo-list">${toDo.map(todoItem).join('')}</ul></section>` : ''}
+      ${state.hasRegForms && regNew().length ? `<section class="panel today-reg"><h2>Online registrations to review <span class="muted small">${regNew().length}</span>
+          <button class="btn ghost small" type="button" id="see-regs">Review</button></h2>
+          <ul class="plain">${regNew().slice(0, 5).map((r) => `<li><b>${esc(r.child_name)}</b> <span class="muted small">${esc([r.start_on && `starts ${fmtDate(r.start_on)}`, relDays(r.created_at)].filter(Boolean).join(' · '))}</span></li>`).join('')}</ul></section>` : ''}
       ${canPayroll() && !store.get('payGuideSeen') ? `<div class="panel changes-note pay-note"><b>Payroll</b>
         Step-by-step instructions for payroll and pay stubs are on the Payroll page.
         <button class="btn small" type="button" id="see-pay-guide">Show me</button>
@@ -792,6 +800,7 @@
     const todoBox = $('.today-todo', el);
     if (todoBox) bindTodos(todoBox, renderView);
     $('#see-todo', el)?.addEventListener('click', () => { state.view = 'todo'; store.set('view', 'todo'); renderShell(); });
+    $('#see-regs', el)?.addEventListener('click', () => { state.view = 'roster'; state.rosterTab = 'online'; store.set('view', 'roster'); store.set('rosterTab', 'online'); renderShell(); });
     $('#see-cal', el)?.addEventListener('click', () => { state.view = 'calendar'; store.set('view', 'calendar'); renderShell(); });
     $('#see-prep', el)?.addEventListener('click', () => { state.view = 'calendar'; state.calTab = 'prep'; store.set('view', 'calendar'); store.set('calTab', 'prep'); renderShell(); });
   }
@@ -2388,6 +2397,145 @@
     $$('tr[data-kid]', el).forEach((r) => r.addEventListener('click', () => openStudent(r.dataset.kid)));
     $$('tr[data-med]', el).forEach((r) => r.addEventListener('click', () => openMedicine({ medId: r.dataset.med })));
   }
+  // ───────── Online registration (039) ─────────
+  // Families fill out the registration on the website; the office reviews each one here and adds it to Enrollment.
+  const REG_LINK = 'https://creativaacademy.com/registration/';
+  const regNew = () => (state.regForms || []).filter((r) => r.status === 'new');
+  const THERAPY = { speech: 'Speech', ot: 'OT', pt: 'PT' };
+  const SCHEDULE = { until_3: 'Until 3:00', until_545: 'Until 5:45 (after care)' };
+  // Children already in the CRM who could be this one: the same name, or the same birthday and first name.
+  function regMatches(r) {
+    const nm = normName(r.child_name), first = nm.split(' ')[0];
+    return (state.students || []).filter((x) => normName(x.name) === nm || (r.child_dob && x.dob === r.child_dob && normName(x.name).split(' ')[0] === first));
+  }
+  const regPerson = (x) => [x.relationship, [x.first, x.last].filter(Boolean).join(' ')].filter(Boolean).join(': ');
+  // Everything on one form, to read (the drawer and the print).
+  function regDetails(r, print = false) {
+    const d = r.data || {}, ch = d.child || {};
+    const row = (label, val) => (val ? `<tr><th>${esc(label)}</th><td>${val}</td></tr>` : '');
+    const txt = (v) => esc(v || '');
+    const person = (x) => `<b>${esc(regPerson(x))}</b>${[x.cell && `Cell ${esc(x.cell)}`, x.work_phone && `Work ${esc(x.work_phone)}`, x.email && esc(x.email)]
+      .filter(Boolean).map((v) => `<div class="small">${v}</div>`).join('')}${x.address ? `<div class="small">${esc(x.address)}</div>` : ''}${x.employer ? `<div class="small">Works at ${esc(x.employer)}</div>` : ''}`;
+    const people = (list) => (list || []).map((x) => `<li>${person(x)}</li>`).join('');
+    const section = (title, inner) => (inner ? `<div class="${print ? 'rf-sec' : 'section'}"><h3>${esc(title)}</h3>${inner}</div>` : '');
+    return `${section('Child', `<table class="${print ? 'r-table rf-kv' : 'mini rf-kv'}"><tbody>
+        ${row('Name', `<b>${esc(r.child_name)}</b>`)}${row('Date of birth', ch.dob ? `${esc(fmtDate(ch.dob))} · ${esc(ageOf(ch.dob))}` : '')}
+        ${row('Class', txt(programLabel(ch.program)))}${row('Starts', ch.start_on ? esc(fmtDate(ch.start_on)) : '')}${row('Schedule', txt(SCHEDULE[ch.schedule]))}</tbody></table>`)}
+      ${section('Parents', (d.parents || []).length ? `<ul class="plain rf-people">${people(d.parents)}</ul>` : '')}
+      ${section('Emergency contacts', (d.emergency || []).length ? `<ul class="plain rf-people">${people(d.emergency)}</ul>` : '')}
+      ${section('Authorized pick-up', (d.pickups || []).length ? `<ul class="plain rf-people">${people(d.pickups)}</ul>` : '')}
+      ${section('Health', `<table class="${print ? 'r-table rf-kv' : 'mini rf-kv'}"><tbody>${row('Allergies', txt(d.allergies) || 'None')}
+        ${row('Medicine at school', (d.medications || []).map((m) => `${esc(m.name)}${m.details ? ` · ${esc(m.details)}` : ''}${m.expires_on ? ` · expires ${esc(fmtDate(m.expires_on))}` : ''}`).join('<br>'))}
+        ${row('Pediatrician', esc([d.pediatrician?.name, d.pediatrician?.phone].filter(Boolean).join(' · ')))}</tbody></table>`)}
+      ${section('Support and programs', `<table class="${print ? 'r-table rf-kv' : 'mini rf-kv'}"><tbody>
+        ${row('RBT', d.rbt ? esc({ yes: 'Yes', in_process: 'In process', no: 'No' }[d.rbt]) + (d.rbt_note ? ` · ${esc(d.rbt_note)}` : '') : '')}
+        ${row('Therapies', esc([(d.therapy || []).map((t) => THERAPY[t]).join(', '), d.therapy_note].filter(Boolean).join(' · ')))}
+        ${row('Programs', esc((d.funding || []).map((k) => PROGRAMS_FUNDING[k] || k).join(', ') || 'Private pay'))}${row('Award ID', txt(d.award_id))}
+        ${row('Photos', d.photo_ok == null ? '' : d.photo_ok ? 'May post photos' : 'No photos, please')}</tbody></table>`)}
+      ${d.notes ? section('From the family', `<p>${esc(d.notes)}</p>`) : ''}
+      <p class="muted small">Sent ${esc(fmtDateTime(r.created_at))}${d.signed_name ? ` · signed by ${esc(d.signed_name)}` : ''}</p>`;
+  }
+  function renderOnline(el) {
+    const all = state.regForms || [], fresh = regNew(), done = all.filter((r) => r.status !== 'new').slice(0, 50);
+    const line = (r) => {
+      const m = r.status === 'new' ? regMatches(r) : [], kid = r.student_id && state.students.find((x) => x.id === r.student_id);
+      return `<tr data-rf="${r.id}"><td><b>${esc(r.child_name)}</b><div class="muted small">${esc(r.child_dob ? ageOf(r.child_dob) : '')}</div></td>
+        <td>${esc(r.start_on ? fmtDate(r.start_on) : '—')}</td><td>${esc(programLabel(r.data?.child?.program) || '—')}</td>
+        <td>${esc(r.parent_name || '')}<div class="muted small">${esc(r.parent_phone || '')}</div></td><td>${esc(relDays(r.created_at))}</td>
+        <td>${r.status === 'new' ? (m.length ? `<span class="tag due">In the CRM: ${esc(m.map((x) => x.name).join(', '))}</span>` : '<span class="tag">New child</span>')
+          : r.status === 'added' ? `<span class="tag paid">Added${kid ? `: ${esc(kid.name)}` : ''}</span>` : '<span class="tag">Dismissed</span>'}</td></tr>`;
+    };
+    const head = '<thead><tr><th>Child</th><th>Starts</th><th>Class</th><th>Parent</th><th>Sent</th><th></th></tr></thead>';
+    el.innerHTML = `${rosterTabs()}
+      <section class="panel reg-link"><h2>The registration link</h2>
+        <p>Send families this link to fill out their registration online: <a href="${REG_LINK}" target="_blank" rel="noopener">${esc(REG_LINK.replace('https://', ''))}</a>
+          <button class="btn small" type="button" id="rf-copy">Copy link</button></p>
+        <p class="muted small">What they send waits here: open it, check it, then <b>Add to the CRM</b> puts the child, the parents, emergency contacts,
+          pick-ups, allergies, medicine, programs and therapies on Enrollment. Nothing is added until you do.</p></section>
+      <section class="panel"><h2>To review <span class="muted small">${fresh.length}</span></h2>
+        <div class="table-wrap flat"><table class="roster">${head}<tbody>${fresh.map(line).join('') || '<tr><td colspan="6" class="muted">Nothing new.</td></tr>'}</tbody></table></div></section>
+      ${done.length ? `<details class="panel"><summary><b>Added and dismissed</b> <span class="muted small">${done.length}</span></summary>
+        <div class="table-wrap flat"><table class="roster">${head}<tbody>${done.map(line).join('')}</tbody></table></div></details>` : ''}`;
+    bindRosterTabs(el);
+    $$('tr[data-rf]', el).forEach((tr) => tr.addEventListener('click', () => openRegForm(tr.dataset.rf, () => renderOnline(el))));
+    $('#rf-copy', el).addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(REG_LINK); toast('Link copied: paste it in a text or email'); }
+      catch { prompt('Copy the link:', REG_LINK); }
+    });
+  }
+  function openRegForm(id, after) {
+    const r = (state.regForms || []).find((x) => x.id === id);
+    if (!r) return;
+    const d = r.data || {}, isNew = r.status === 'new', matches = isNew ? regMatches(r) : [], kid = r.student_id && state.students.find((x) => x.id === r.student_id);
+    const cls = progClass(d.child?.program);
+    const others = state.students.filter((x) => !matches.includes(x) && x.status !== 'graduated').sort(sortStudents);
+    const ctl = mountDrawer({
+      title: esc(r.child_name),
+      sub: `Online registration · ${esc(fmtDate(r.created_at.slice(0, 10)))}`,
+      body: `${isNew ? `<div class="section rf-add"><h3>Add to the CRM</h3>
+          <label class="pill-check"><input type="radio" name="rf_to" value="" ${matches.length ? '' : 'checked'}> A new child</label>
+          ${matches.map((x, k) => `<label class="pill-check"><input type="radio" name="rf_to" value="${x.id}" ${k === 0 ? 'checked' : ''}>
+            ${esc(x.name)} <span class="muted small">(already in the CRM: ${esc([STUDENT_STATUS[x.status], classroomName(x.classroom_id), x.dob && fmtDate(x.dob)].filter(Boolean).join(' · '))})</span></label>`).join('')}
+          <label class="pill-check"><input type="radio" name="rf_to" value="other"> Another child in the CRM</label>
+          <select name="rf_other" aria-label="The child in the CRM" hidden><option value="">Pick the child…</option>
+            ${others.map((x) => `<option value="${x.id}">${esc(x.name)}${x.status !== 'enrolled' ? ` (${esc(STUDENT_STATUS[x.status])})` : ''}</option>`).join('')}</select>
+          <div class="grid2">
+            ${fSelect('rf_status', 'Status', [['waitlist', 'Waiting list'], ['enrolled', 'Enrolled'], ['', 'Keep as it is']], matches.length ? '' : 'waitlist')}
+            ${fSelect('rf_class', 'Class', [['', '—'], ...state.classrooms.map((c) => [c.id, c.name])], cls?.id || '')}
+            ${fInput('rf_start', 'Start date', d.child?.start_on || '', 'date')}
+          </div>
+          <p class="muted small" id="rf-hint"></p></div>`
+        : `<p class="panel small">${r.status === 'added' ? `Added to <b>${esc(kid?.name || 'a child')}</b>` : 'Dismissed'}${r.reviewed_at ? ` on ${esc(fmtDate(r.reviewed_at.slice(0, 10)))}` : ''}${r.reviewed_by ? ` by ${esc(staffName(r.reviewed_by))}` : ''}.
+            ${kid ? '<button class="btn small" type="button" id="rf-open">Open the child</button>' : ''}</p>`}
+        ${regDetails(r)}`,
+      foot: `${isNew ? '<button class="btn danger" id="rf-dismiss" type="button">Dismiss</button>' : ''}<span class="spacer"></span>
+        <button class="btn" id="rf-print" type="button">Print</button><button class="btn" data-close type="button">Close</button>
+        ${isNew ? '<button class="btn primary" id="rf-add" type="button">Add to the CRM</button>' : ''}`,
+    });
+    const { drawer, form } = ctl;
+    ctl.dirty = false;
+    const hint = () => {
+      if (!isNew) return;
+      const to = $$('input[name=rf_to]', drawer).find((x) => x.checked)?.value || '';
+      form.rf_other.hidden = to !== 'other';
+      $('#rf-hint', drawer).textContent = to ? 'For a child already in the CRM: only what’s missing is filled in, contacts already on their page stay (with anything missing added), and new ones are added. The status changes only if you pick one.'
+        : 'A new child on Enrollment, with the parents, emergency contacts, pick-ups, medicine and programs from the form.';
+      if (to && form.rf_status.value === 'waitlist' && !ctl.touchedStatus) form.rf_status.value = '';
+      if (!to && !form.rf_status.value) form.rf_status.value = 'waitlist';
+    };
+    if (isNew) {
+      $$('input[name=rf_to]', drawer).forEach((x) => x.addEventListener('change', hint));
+      form.rf_status.addEventListener('change', () => { ctl.touchedStatus = true; });
+      hint();
+    }
+    $('#rf-open', drawer)?.addEventListener('click', () => openStudent(kid.id));
+    $('#rf-print', drawer).addEventListener('click', () => showPrintSheet({ label: `Registration: ${r.child_name}`, cls: 'rf-sheet',
+      html: `${sheetBand('Registration', `${r.child_name} · sent ${fmtDate(r.created_at.slice(0, 10))}`)}${regDetails(r, true)}` }));
+    const reload = async () => { await loadAll(); renderView(); };
+    $('#rf-dismiss', drawer)?.addEventListener('click', async () => {
+      if (!confirm(`Dismiss the registration for ${r.child_name}? Nothing is added to the CRM.`)) return;
+      const { error } = await sb.from('registration_forms').update({ status: 'dismissed', reviewed_at: new Date().toISOString(), reviewed_by: state.me.id }).eq('id', r.id);
+      if (error) return fail(error, 'Could not dismiss');
+      toast('Dismissed');
+      closeDrawer();
+      await reload();
+    });
+    $('#rf-add', drawer)?.addEventListener('click', async (e) => {
+      const to = $$('input[name=rf_to]', drawer).find((x) => x.checked)?.value || '';
+      const sid = to === 'other' ? form.rf_other.value : to;
+      if (to === 'other' && !sid) { form.rf_other.focus(); return toast('Pick the child in the CRM', true); }
+      e.target.disabled = true;
+      const { data, error } = await sb.rpc('registration_add', { p_form: r.id, p_student: sid || null, p_status: form.rf_status.value || null,
+        p_classroom: form.rf_class.value || null, p_start: form.rf_start.value || null });
+      e.target.disabled = false;
+      if (error) return fail(error, 'Could not add it');
+      toast(`${r.child_name}: added to Enrollment`);
+      closeDrawer();
+      await loadAll();
+      renderView();
+      openStudent(data);
+    });
+  }
   // Enrollment → Forms: every child's yellow form (physical) and blue form (immunization), soonest to expire first.
   function renderForms(el) {
     const f = state.formsFilter || (state.formsFilter = { show: 'soon', classroom: '' });
@@ -2514,6 +2662,7 @@
     if (tab === 'pickup') return renderPickup(el);
     if (tab === 'health') return renderHealth(el);
     if (tab === 'forms') return renderForms(el);
+    if (tab === 'online') return renderOnline(el);
     const f = state.rosterFilters;
     const fin = canViewFinance();
     const opt = (v, label, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
@@ -2691,6 +2840,7 @@
               <button class="btn ghost small" type="button" data-contact="${c.id}">Edit</button></div>
             ${phones.length ? `<div class="c-phones">${phones.map(([l, v]) => `<span>${l} <a href="tel:${digits(v)}">${esc(v)}</a>${l !== 'Work' && l !== 'Home' ? ` <a class="sms-link" href="sms:${digits(v)}">text</a>` : ''}</span>`).join('')}</div>` : ''}
             ${c.email ? `<div class="c-phones"><a href="mailto:${esc(c.email)}">${esc(c.email)}</a></div>` : ''}
+            ${c.address || c.employer ? `<div class="muted small">${esc([c.address, c.employer && `Works at ${c.employer}`].filter(Boolean).join(' · '))}</div>` : ''}
             ${c.notes ? `<div class="muted small">${esc(c.notes)}</div>` : ''}</li>`;
         }).join('') || '<li class="muted small">No contacts yet.</li>'}</ul>
           <button class="btn small" type="button" id="contact-add">+ Add contact</button>
@@ -2705,6 +2855,8 @@
         <div class="section"><h3>Support & registration</h3><div class="grid2">
           ${fSelect('rbt', 'RBT', [['', 'No'], ['yes', 'Yes'], ['in_process', 'In process']], s.rbt)}
           ${fInput('therapy', 'Therapies', s.therapy, 'text', 'placeholder="Speech, OT…"')}
+          ${state.has039 ? `${fInput('pediatrician', 'Pediatrician', s.pediatrician, 'text', 'maxlength="200" placeholder="Name · phone"')}
+            ${fSelect('photo_ok', 'Photos (website, social media)', [['', '—'], ['yes', 'May post photos'], ['no', 'No photos']], s.photo_ok == null ? '' : s.photo_ok ? 'yes' : 'no')}` : ''}
           ${fSelect('reg_fee', 'Registration fee', [['', '—'], ...Object.entries(REG_FEE)], s.reg_fee)}
           <label class="full">Notes<textarea name="notes" rows="3">${esc(s.notes)}</textarea></label>
         </div></div>
@@ -2882,6 +3034,7 @@
       STUDENT_FIELDS.forEach((k) => { patch[k] = formVal(form, k); });
       if (state.hasV6) patch.family_account = formVal(form, 'family_account');
       if (state.hasHealth) patch.allergies = formVal(form, 'allergies');
+      if (state.has039) { patch.pediatrician = formVal(form, 'pediatrician'); patch.photo_ok = form.photo_ok.value === '' ? null : form.photo_ok.value === 'yes'; }
       if (state.hasForms) {
         patch.physical_expires = formVal(form, 'physical_expires');
         patch.immunization_expires = formVal(form, 'immunization_expires');
@@ -2955,7 +3108,8 @@
   // ───── Registration for next school year (023): who's returning, the class they move up to, and their registration paid ─────
   const rosterTabList = () => [['children', 'Children'], ...(state.hasV6 ? [['pickup', 'Pick-up']] : []),
     ...(state.hasHealth ? [['health', 'Allergies & medicine']] : []), ...(state.hasForms ? [['forms', 'Forms']] : []),
-    ...(state.registrations && canViewFinance() ? [['reg', `Registration ${regYearLabel()}`]] : [])];
+    ...(state.registrations && canViewFinance() ? [['reg', `Registration ${regYearLabel()}`]] : []),
+    ...(state.hasRegForms ? [['online', `Online registrations${regNew().length ? ` (${regNew().length})` : ''}`]] : [])];
   const rosterTabNow = () => (rosterTabList().some(([k]) => k === state.rosterTab) ? state.rosterTab : 'children');
   const rosterTabs = () => {
     const tabs = rosterTabList(), cur = rosterTabNow();
@@ -3362,6 +3516,8 @@
           ${fInput('work_phone', 'Work phone', c.work_phone, 'tel')}
           ${fInput('home_phone', 'Home phone', c.home_phone, 'tel')}
           ${fInput('email', 'Email', c.email, 'email')}
+          ${state.has039 ? `${fInput('employer', 'Works at', c.employer, 'text', 'maxlength="100"')}
+            <label class="full">Address<input name="address" value="${esc(c.address)}" maxlength="200" placeholder="Street, city, ZIP"></label>` : ''}
           <label class="full">Notes<input name="notes" value="${esc(c.notes)}" placeholder="e.g. Call mom first"></label>
           ${state.hasGroupTexts ? `<label class="full pill-check"><input type="checkbox" class="check" name="group_texts" ${getsGroupTexts(c) ? 'checked' : ''}>
             Gets group texts (lists, classes, all families, reminders)</label>` : ''}
@@ -3378,8 +3534,8 @@
     const done = () => { ctl.dirty = false; renderView(); if (back) back(); else closeDrawer(); };
     $('#ct-save', drawer).addEventListener('click', async () => {
       const row = { student_id: sid };
-      ['role', 'relationship', 'first_name', 'last_name', 'cell_phone', 'sms_phone', 'work_phone', 'home_phone', 'email', 'notes']
-        .forEach((k) => { row[k] = formVal(form, k); });
+      ['role', 'relationship', 'first_name', 'last_name', 'cell_phone', 'sms_phone', 'work_phone', 'home_phone', 'email', 'notes',
+        ...(state.has039 ? ['address', 'employer'] : [])].forEach((k) => { row[k] = formVal(form, k); });
       if (!row.first_name && !row.last_name) { form.first_name.focus(); return toast('Add the contact’s name', true); }
       if (form.group_texts) row.group_texts = form.group_texts.checked === (row.role === 'primary') ? null : form.group_texts.checked;
       const q = contactId ? sb.from('student_contacts').update(row).eq('id', contactId) : sb.from('student_contacts').insert(row);
@@ -6566,7 +6722,7 @@
 
   // ───────────── Changes (012): who changed what ─────────────
   const CHANGE_AREA = { enrollment: 'Enrollment', finance: 'Tuition & payments', payroll: 'Payroll', settings: 'Settings & access' };
-  const FIELD_LABEL = { birthday: 'birthday', physical_expires: 'yellow form expires', immunization_status: 'blue form', immunization_expires: 'blue form expires', participation: 'going?', permission: 'permission slip', permission_on: 'slip received', removed: 'taken off', by_hand: 'added by hand',
+  const FIELD_LABEL = { pediatrician: 'pediatrician', photo_ok: 'photos', address: 'address', employer: 'works at', birthday: 'birthday', physical_expires: 'yellow form expires', immunization_status: 'blue form', immunization_expires: 'blue form expires', participation: 'going?', permission: 'permission slip', permission_on: 'slip received', removed: 'taken off', by_hand: 'added by hand',
     needs_permission: 'needs a slip', collection_id: 'fee', name: 'name', dob: 'birthday', classroom_id: 'class', status: 'status', start_date: 'start date', withdrawn_on: 'last day',
     withdraw_reason: 'reason', parent_name: 'parent', parent_phone: 'parent phone', parent_email: 'parent email', notes: 'notes', rbt: 'RBT',
     therapy: 'therapy', reg_fee: 'registration fee', doc_registration: 'registration packet', doc_blue_form: 'blue form', doc_yellow_form: 'yellow form',
@@ -6799,6 +6955,7 @@
   }
 
   const WEB_FORMS = Object.keys(SOURCE_LABEL).filter((k) => k !== 'manual');
+  const tgForms = () => [...WEB_FORMS, ...(state.hasRegForms ? ['registration'] : [])];   // 039: online registrations alert too
 
   function telegramPanelHtml() {
     const set = state.settings || {};
@@ -6825,7 +6982,7 @@
         <div class="tg-find"><button class="btn small" type="button" id="tg-find" ${set.telegram_token_set ? '' : 'disabled'}>Find chat</button>
           <select id="tg-chats" hidden aria-label="Chats that messaged the bot"></select></div>
         <fieldset class="full tg-forms"><legend>Send alerts for</legend>
-          ${WEB_FORMS.map((k) => `<label class="pill-check"><input type="checkbox" class="check" name="tgf_${k}" ${(set.telegram_forms || []).includes(k) ? 'checked' : ''}> ${esc(SOURCE_LABEL[k])}</label>`).join('')}
+          ${tgForms().map((k) => `<label class="pill-check"><input type="checkbox" class="check" name="tgf_${k}" ${(set.telegram_forms || []).includes(k) ? 'checked' : ''}> ${esc(SOURCE_LABEL[k] || 'Online registration')}</label>`).join('')}
         </fieldset>
         <div class="full"><button class="btn small primary" type="submit">Save</button>
           <button class="btn small" type="button" id="tg-test" ${connected ? '' : 'disabled'}>Send test</button></div>
@@ -6873,11 +7030,11 @@
       const { data } = await sb.from('settings').select('*').eq('id', 1).maybeSingle();
       if (data) state.settings = data;
       const f = $('#tg-chat', panel);
-      const keep = { chat: f.telegram_chat_id.value, forms: WEB_FORMS.map((k) => f['tgf_' + k].checked) };
+      const keep = { chat: f.telegram_chat_id.value, forms: tgForms().map((k) => f['tgf_' + k].checked) };
       panel.outerHTML = telegramPanelHtml();
       const g = $('#tg-chat', el);
       g.telegram_chat_id.value = keep.chat;
-      WEB_FORMS.forEach((k, i) => { g['tgf_' + k].checked = keep.forms[i]; });
+      tgForms().forEach((k, i) => { g['tgf_' + k].checked = keep.forms[i]; });
       bindTelegramPanel(el);
     };
     showTelegramStatus(panel);
@@ -6915,7 +7072,7 @@
       const f = e.target;
       const chat = f.telegram_chat_id.value.trim();
       if (chat && !/^(-?\d{1,20}|@[A-Za-z0-9_]{4,64})$/.test(chat)) return toast('A chat ID is a number like 555111222 (groups start with -100)', true);
-      const patch = { telegram_chat_id: chat || null, telegram_forms: WEB_FORMS.filter((k) => f['tgf_' + k].checked) };
+      const patch = { telegram_chat_id: chat || null, telegram_forms: tgForms().filter((k) => f['tgf_' + k].checked) };
       const { data, error } = await sb.from('settings').update(patch).eq('id', 1).select().single();
       if (error) return fail(error, 'Could not save');
       state.settings = data;

@@ -51,3 +51,11 @@ insert into public.billing_history (as_of, period_start, period_end, customer, f
   ('2026-08-25', '2026-08-24', '2026-09-04', 'ALPHA, TEST', 'ALPHA, TEST', -40, 'Handwritten on the sheet: paid early', 520, true),
   ('2026-08-12', '2026-08-10', '2026-08-21', 'GONE, KID', 'GONE, KID', 100, null, 100, false);
 update public.classrooms set teachers = 'Ms. Rivera' where name = 'Late 3s';   -- the program list shows the teachers
+-- A family's online registration from the website (039), waiting for the office.
+select public.submit_registration('{"child": {"first": "Web Reg", "last": "Kid", "dob": "2023-04-05", "program": "Early 3s", "start_on": "2027-01-04", "schedule": "until_545"},
+  "parents": [{"relationship": "Mother", "first": "Rosa", "last": "Web", "cell": "305 555 0141", "email": "rosa.web@example.com", "address": "1 Palm St, Miami", "employer": "Hospital"},
+              {"relationship": "Father", "first": "Luis", "last": "Web", "cell": "305 555 0143"}],
+  "emergency": [{"relationship": "Aunt", "first": "Ana", "last": "Web", "cell": "305 555 0144"}],
+  "pickups": [{"relationship": "Grandmother", "first": "Abuela", "last": "Web", "cell": "305 555 0145"}],
+  "allergies": "Peanuts", "medications": [{"name": "EpiPen Jr", "details": "Peanuts"}], "pediatrician": {"name": "Dr. Smith"},
+  "rbt": "no", "therapy": ["speech"], "funding": ["sr"], "photo_ok": "yes", "signed_name": "Rosa Web"}'::jsonb);

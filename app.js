@@ -1705,6 +1705,40 @@
       excel: () => xlsxDownload(`schedule-${e.starts_on}.xlsx`, [{ name: 'Schedule', rows: [['Class', 'Teacher(s)', 'Start', 'End', 'Minutes'],
         ...rows.map((x) => [x.kind === 'transition' ? 'Transition' : x.label || '', x.teachers || '', clock(x.starts_at), clock(x.ends_at), toMin(x.ends_at) - toMin(x.starts_at)])] }]) });
   }
+  // Class lists ("Students 2026-27", as on the school's paper): every class side by side with its teacher, the children by
+  // last name and numbered, blank numbered lines up to the class's capacity (or a set number), and the total.
+  const schoolYearLabel = () => { const [y, m] = todayStr().split('-').map(Number), a = m >= 8 ? y : y - 1; return `${a}-${String(a + 1).slice(2)}`; };
+  // Six columns as on the paper: one class each, and any more under the shortest column (Kindergarten under Late 3s).
+  const stackColumns = (groups, n) => {
+    const cols = Array.from({ length: Math.min(n, groups.length) }, () => []), rows = cols.map(() => 0);
+    groups.forEach((g, i) => { const k = i < cols.length ? i : rows.indexOf(Math.min(...rows)); cols[k].push(g); rows[k] += g.kids.length + (g.blank || 0) + 2; });
+    return cols;
+  };
+  function showClassLists(opts = {}) {
+    const hasCap = state.classrooms.some((k) => Number(k.capacity) > 0);
+    const o = { title: `Students ${schoolYearLabel()}`, blank: hasCap ? 'cap' : '2', who: 'now', ...opts };
+    const today = todayStr(), later = (s) => s.start_date && s.start_date > today;
+    const kids = state.students.filter((s) => s.status === 'enrolled' && (o.who === 'all' || !later(s)));
+    const cls = state.classrooms.slice().sort((a, b) => a.sort - b.sort);
+    const blankFor = (k, n) => (o.blank === 'cap' ? (Number(k.capacity) > 0 ? Math.max(Number(k.capacity) - n, 0) : 2) : Number(o.blank));
+    const groups = cls.map((k) => { const xs = kids.filter((s) => s.classroom_id === k.id).sort(sortStudents); return { title: k.name, sub: firstTeacher(k), kids: xs, blank: blankFor(k, xs.length) }; })
+      .filter((g) => g.kids.length || g.blank);
+    const noClass = kids.filter((s) => !s.classroom_id).sort(sortStudents);
+    if (noClass.length) groups.push({ title: 'No class yet', kids: noClass, flag: 'Check these' });
+    const line = (s) => `<span class="cs-name">${esc(s.name)}</span>${later(s) ? `<span class="cs-tag">from ${esc(fmtDate(s.start_date))}</span>` : ''}`;
+    const html = `<div class="rs-top"><h1>${esc(o.title)}</h1></div>
+      <div class="cs-cols">${stackColumns(groups, 6).map((col) => `<div class="cs-col">${classBlocks(col, line)}</div>`).join('')}</div>
+      <p class="cl-total">Total: <b>${kids.length}</b> ${kids.length === 1 ? 'student' : 'students'}${o.who === 'all' && kids.some(later) ? ` (${kids.filter(later).length} starting later)` : ''} · ${esc(asOfToday())}</p>`;
+    const sheet = showPrintSheet({ label: 'Class lists', cls: 'reg-sheet cl-sheet', landscape: true, html,
+      note: `<input id="cl-title" value="${esc(o.title)}" aria-label="Heading" maxlength="80">
+        <select id="cl-who" aria-label="Who"><option value="now" ${o.who === 'now' ? 'selected' : ''}>Children here now</option><option value="all" ${o.who === 'all' ? 'selected' : ''}>Also those starting later</option></select>
+        <select id="cl-blank" aria-label="Blank lines">${[...(hasCap ? [['cap', 'Blank lines up to each class’s capacity']] : []), ['0', 'No blank lines'], ['1', '1 blank line'], ['2', '2 blank lines'], ['4', '4 blank lines']]
+          .map(([v, l]) => `<option value="${v}" ${v === o.blank ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`,
+      excel: () => xlsxDownload(`class-lists-${today}.xlsx`, [{ name: 'Class lists', rows: [['Class', 'Teachers', '#', 'Child', 'Date of birth', 'Starts'],
+        ...groups.flatMap((g) => g.kids.map((s, i) => [g.title, teacherOf(s.classroom_id), i + 1, s.name, s.dob || '', later(s) ? s.start_date : '']))] }]) });
+    const again = () => { closePrintSheet(sheet); showClassLists({ title: $('#cl-title', sheet).value, who: $('#cl-who', sheet).value, blank: $('#cl-blank', sheet).value }); };
+    ['#cl-title', '#cl-who', '#cl-blank'].forEach((id) => $(id, sheet).addEventListener('change', again));
+  }
   // Registration sheet: each class's children (by last name, numbered), with the three separate answers; new students by
   // the class they start in; grouped by this year's class or by next year's confirmed class.
   function showRegistrationSheet(opts = {}) {
@@ -2680,7 +2714,8 @@
       }).join('')}
         <div class="class-card total"><span class="c-name">Whole school</span><span class="c-count">${enrolled.length}</span>
           <span class="c-teachers">${waitAll.length} on waiting lists${waitAll.length ? ` (${waitAll.filter(regPaid).length} paid registration)` : ''}</span>
-          <button class="btn small c-print" id="r-inspect" type="button">Print for inspection</button></div>
+          <button class="btn small c-print" id="r-inspect" type="button">Print for inspection</button>
+          <button class="btn small c-print" id="r-classlists" type="button">Print class lists</button></div>
       </div>
       <div class="toolbar">
         <input type="search" id="r-q" placeholder="Search student, parent, phone…" value="${esc(f.q)}">
@@ -2718,6 +2753,7 @@
     bindRosterTabs(el);
     $('#r-add').addEventListener('click', () => openStudent(null, f.classroom && f.classroom !== 'none' ? { classroom_id: f.classroom } : {}));
     $('#r-inspect').addEventListener('click', showInspectionList);
+    $('#r-classlists').addEventListener('click', () => showClassLists());
     $('#r-csv').addEventListener('click', () => {
       const rows = rosterRows();
       csvDownload(`creativa-students-${todayStr()}.csv`,

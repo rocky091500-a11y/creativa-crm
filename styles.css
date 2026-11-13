@@ -972,3 +972,10 @@ h2.h-row { display: flex; align-items: baseline; justify-content: space-between;
 .books-h { font-size: 18px; margin: 18px 0 8px; }
 .bs-wrap { max-width: 640px; }
 .books-print-h { margin: 14px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; break-before: page; }
+
+/* Class lists (Enrollment → Print class lists): the total under the boxes, like the number written on the paper. */
+.cl-total { text-align: right; font-size: 13px; color: var(--ink); margin: 4px 2px 0; }
+#cl-title { width: 220px; }
+.cs-cols { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; align-items: start; margin-bottom: 8px; }
+.cs-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+@media (max-width: 720px) { .cs-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

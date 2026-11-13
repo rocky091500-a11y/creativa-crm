@@ -5677,9 +5677,123 @@
     $('.proj-check-note a', body)?.addEventListener('click', (e) => { e.preventDefault(); $('#proj-rates', body).scrollIntoView({ behavior: 'smooth' }); });
   }
 
+  // ───────── Money → Accountant (040): the accountant's Profit & Loss reports, month by month ─────────
+  const BOOK_SECTION = { income: 'Income', cogs: 'Cost of goods sold', expense: 'Expenses', other_expense: 'Other expenses' };
+  // The report as rows to show: each line under its heading, "Total for" each heading, and the totals (one amount per period).
+  function booksTable(rows) {
+    const key = (r) => `${r.period_start}|${r.period_end}`;
+    const periods = [...new Set(rows.map(key))].sort().map((k) => { const [a, b] = k.split('|'); return { k, a, b, year: new Date(`${b}T12:00:00`) - new Date(`${a}T12:00:00`) > 40 * 864e5 }; });
+    const sumOf = (xs) => periods.map((p) => xs.filter((r) => key(r) === p.k).reduce((t, r) => round2(t + Number(r.amount)), 0));
+    const out = [], totals = {};
+    for (const sec of Object.keys(BOOK_SECTION)) {
+      const xs = rows.filter((r) => r.section === sec);
+      if (!xs.length) continue;
+      out.push({ kind: 'sec', label: BOOK_SECTION[sec] });
+      const items = [];   // standalone lines and headings, in the report's order
+      const firstSort = (ys) => Math.min(...ys.map((r) => r.sort));
+      [...new Set(xs.filter((r) => !r.grp).map((r) => r.line))].forEach((line) => items.push({ line, sort: firstSort(xs.filter((r) => !r.grp && r.line === line)) }));
+      [...new Set(xs.filter((r) => r.grp).map((r) => r.grp))].forEach((grp) => items.push({ grp, sort: firstSort(xs.filter((r) => r.grp === grp)) }));
+      items.sort((a, b) => a.sort - b.sort);
+      for (const it of items) {
+        if (it.line != null) { out.push({ kind: 'line', label: it.line, v: sumOf(xs.filter((r) => !r.grp && r.line === it.line)) }); continue; }
+        const g = xs.filter((r) => r.grp === it.grp);
+        out.push({ kind: 'grp', label: it.grp });
+        const lines = [...new Set(g.map((r) => r.line))].map((line) => ({ line, sort: firstSort(g.filter((r) => r.line === line)) })).sort((a, b) => a.sort - b.sort);
+        lines.forEach(({ line }) => out.push({ kind: 'sub', label: line, v: sumOf(g.filter((r) => r.line === line)), pay: g.some((r) => r.line === line && r.pay) }));
+        out.push({ kind: 'gtot', label: `Total for ${it.grp}`, v: sumOf(g) });
+      }
+      totals[sec] = sumOf(xs);
+      out.push({ kind: 'tot', label: `Total ${BOOK_SECTION[sec].toLowerCase()}`, v: totals[sec] });
+      if (sec === 'cogs') out.push({ kind: 'tot', label: 'Gross profit', v: periods.map((_, k) => round2((totals.income?.[k] || 0) - totals.cogs[k])) });
+    }
+    const net = periods.map((_, k) => round2((totals.income?.[k] || 0) - ['cogs', 'expense', 'other_expense'].reduce((t, sec) => t + (totals[sec]?.[k] || 0), 0)));
+    out.push({ kind: 'net', label: 'Net income', v: net });
+    return { periods, rows: out, totals, net };
+  }
+  // A balance sheet (or several dates side by side): assets, liabilities, equity, each heading with its total.
+  const BS_SECTION = { asset: 'Assets', liability: 'Liabilities', equity: 'Equity' };
+  function booksBsTable(rows) {
+    const dates = [...new Set(rows.map((r) => r.as_of))].sort();
+    const sumOf = (xs) => dates.map((d) => xs.filter((r) => r.as_of === d).reduce((t, r) => round2(t + Number(r.amount)), 0));
+    const out = [], tot = {};
+    for (const sec of Object.keys(BS_SECTION)) {
+      const xs = rows.filter((r) => r.section === sec);
+      if (!xs.length) continue;
+      out.push({ kind: 'sec', label: BS_SECTION[sec] });
+      const order = [];
+      xs.slice().sort((a, b) => a.sort - b.sort).forEach((r) => { const k = r.grp ? `g:${r.grp}` : `l:${r.line}`; if (!order.includes(k)) order.push(k); });
+      order.forEach((k) => {
+        if (k.startsWith('l:')) { out.push({ kind: 'line', label: k.slice(2), v: sumOf(xs.filter((r) => !r.grp && r.line === k.slice(2))) }); return; }
+        const g = xs.filter((r) => r.grp === k.slice(2));
+        out.push({ kind: 'grp', label: k.slice(2) });
+        [...new Set(g.map((r) => r.line))].forEach((line) => out.push({ kind: 'sub', label: line, v: sumOf(g.filter((r) => r.line === line)) }));
+        out.push({ kind: 'gtot', label: `Total for ${k.slice(2)}`, v: sumOf(g) });
+      });
+      tot[sec] = sumOf(xs);
+      out.push({ kind: 'tot', label: `Total ${BS_SECTION[sec].toLowerCase()}`, v: tot[sec] });
+    }
+    out.push({ kind: 'net', label: 'Total liabilities and equity', v: dates.map((_, k) => round2((tot.liability?.[k] || 0) + (tot.equity?.[k] || 0))) });
+    return { dates, rows: out };
+  }
+  function drawBooks(body) {
+    body.innerHTML = '<p class="muted">Loading…</p>';
+    (async () => {
+      const ys = await sb.rpc('books_pl_years');
+      if (ys.error) { body.innerHTML = '<p class="muted">To use this page, run <code>040_accountant_books.sql</code> in Supabase.</p>'; return; }
+      const years = ys.data || [];
+      if (!years.length) { body.innerHTML = '<p class="muted">No reports from the accountant yet.</p>'; return; }
+      const year = years.some((y) => y.year === state.booksYear) ? state.booksYear : years[0].year;
+      const [r, bs] = await Promise.all([sb.rpc('books_pl_rows', { p_year: year }), sb.rpc('books_bs_rows', { p_year: year })]);
+      if (r.error || bs.error) return fail(r.error || bs.error, 'Could not load the accountant’s reports');
+      if (state.view !== 'money' || state.moneyTab !== 'books') return;
+      state.booksYear = year;
+      const T = booksTable(r.data || []), P = T.periods, multi = P.length > 1;
+      const colLabel = (p) => (p.year ? p.a.slice(0, 4) : new Date(`${p.a}T12:00:00`).toLocaleDateString('en-US', { month: 'short' }));
+      const sum = (v) => round2(v.reduce((t, x) => t + x, 0));
+      const cell = (x, k) => `<td class="num${x < 0 && k === 'net' ? ' neg' : ''}">${x ? esc(money(x)) : ''}</td>`;
+      const tr = (row) => (row.kind === 'sec' ? `<tr class="b-sec"><th colspan="${P.length + (multi ? 2 : 1)}">${esc(row.label)}</th></tr>`
+        : row.kind === 'grp' ? `<tr class="b-grp"><td>${esc(row.label)}</td>${P.map(() => '<td></td>').join('')}${multi ? '<td></td>' : ''}</tr>`
+          : `<tr class="b-${row.kind}"><td>${esc(row.label)}</td>${row.v.map((x) => cell(x, row.kind)).join('')}${multi ? cell(sum(row.v), row.kind) : ''}</tr>`);
+      const table = P.length ? `<table class="books-table"><thead><tr><th></th>${P.map((p) => `<th class="num">${esc(colLabel(p))}</th>`).join('')}${multi ? '<th class="num">Total</th>' : ''}</tr></thead>
+        <tbody>${T.rows.map(tr).join('')}</tbody></table>` : '<p class="muted">No profit &amp; loss report for this year.</p>';
+      const BS = booksBsTable(bs.data || []);
+      const bsTr = (row) => (row.kind === 'sec' ? `<tr class="b-sec"><th colspan="${BS.dates.length + 1}">${esc(row.label)}</th></tr>`
+        : row.kind === 'grp' ? `<tr class="b-grp"><td>${esc(row.label)}</td>${BS.dates.map(() => '<td></td>').join('')}</tr>`
+          : `<tr class="b-${row.kind}"><td>${esc(row.label)}</td>${row.v.map((x) => `<td class="num">${x ? esc(money(x)) : ''}</td>`).join('')}</tr>`);
+      const bsTable = BS.dates.length ? `<table class="books-table bs-table"><thead><tr><th></th>${BS.dates.map((d) => `<th class="num">${esc(new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }))}</th>`).join('')}</tr></thead>
+        <tbody>${BS.rows.map(bsTr).join('')}</tbody></table>` : '';
+      const income = sum(T.totals.income || []), net = sum(T.net), last = P[P.length - 1] || { a: `${year}-12-01`, b: `${year}-12-31` };
+      const sources = [...new Set([...(r.data || []), ...(bs.data || [])].map((x) => x.source).filter(Boolean))];
+      const title = `Profit & loss ${year}${multi ? ` · ${colLabel(P[0])}–${colLabel(last)}` : ''}`;
+      body.innerHTML = `<div class="month-bar"><div class="seg" role="tablist" aria-label="Year">${years.map((y) => `<button type="button" role="tab" data-byear="${y.year}" aria-selected="${y.year === year}">${y.year}</button>`).join('')}</div>
+          <span class="spacer"></span><button class="btn small" id="bk-print" type="button">Print</button></div>
+        <div class="stats">
+          <div class="stat"><b>${money(income)}</b><span>Income${multi ? `, ${esc(colLabel(P[0]))}–${esc(colLabel(last))}` : ''}</span></div>
+          <div class="stat"><b>${money(round2(income - net))}</b><span>Costs and expenses</span></div>
+          <div class="stat"><b class="${net < 0 ? 'neg' : ''}">${money(net)}</b><span>Net income</span></div>
+          ${multi ? `<div class="stat"><b class="${T.net[T.net.length - 1] < 0 ? 'neg' : ''}">${money(T.net[T.net.length - 1])}</b><span>Net income, ${esc(fmtMonth(last.a.slice(0, 7)))}</span></div>` : ''}
+        </div>
+        <h2 class="books-h">Profit &amp; loss</h2>
+        <div class="table-wrap books-wrap">${table}</div>
+        ${bsTable ? `<h2 class="books-h">Balance sheet</h2><p class="muted small">What the school has (in the bank) and owes, on the day of each balance sheet.</p>
+          <div class="table-wrap books-wrap bs-wrap">${bsTable}</div>` : ''}
+        <p class="muted small">From the accountant’s reports (accrual basis: what was earned and owed each month, not the day the money moved), so
+          they won’t match <b>In &amp; out</b> exactly. ${canPayroll() ? '' : 'Each person’s pay shows only for staff with Payroll access. '}${sources.length ? `Reports: ${esc(sources.join('; '))}.` : ''}</p>`;
+      $$('[data-byear]', body).forEach((b) => b.addEventListener('click', () => { state.booksYear = Number(b.dataset.byear); drawBooks(body); }));
+      $('#bk-print', body).addEventListener('click', () => showPrintSheet({ label: title, cls: 'books-sheet', landscape: multi,
+        html: `${sheetBand('Profit & Loss', `${state.settings?.school_name || 'Creativa Academy'} · ${title.replace('Profit & loss ', '')}`)}${table}
+          ${bsTable ? `<h3 class="books-print-h">Balance sheet</h3>${bsTable}` : ''}
+          <p class="r-note">From the accountant’s reports (accrual basis). Printed ${esc(fmtDateTime(new Date().toISOString()))}.</p>`,
+        excel: () => xlsxDownload(`profit-and-loss-${year}.xlsx`, [{ name: `P&L ${year}`, rows: [['', ...P.map(colLabel), ...(multi ? ['Total'] : [])],
+          ...T.rows.map((x) => (x.v ? [x.kind === 'sub' ? `   ${x.label}` : x.label, ...x.v.map((n) => n || ''), ...(multi ? [sum(x.v)] : [])] : [x.label]))] },
+          ...(BS.dates.length ? [{ name: `Balance sheet ${year}`, rows: [['', ...BS.dates],
+            ...BS.rows.map((x) => (x.v ? [x.kind === 'sub' ? `   ${x.label}` : x.label, ...x.v.map((n) => n || '')] : [x.label]))] }] : [])]) }));
+    })();
+  }
+
   function renderMoney(el) {
-    const tab = ['bills', 'food', 'projection'].includes(state.moneyTab) ? state.moneyTab : 'overview';
-    el.innerHTML = `<div class="seg money-tabs" role="tablist" aria-label="Money">${[['overview', 'In & out'], ['bills', 'Bills'], ['food', 'Food program'], ['projection', 'Projection']]
+    const tab = ['bills', 'food', 'projection', 'books'].includes(state.moneyTab) ? state.moneyTab : 'overview';
+    el.innerHTML = `<div class="seg money-tabs" role="tablist" aria-label="Money">${[['overview', 'In & out'], ['bills', 'Bills'], ['food', 'Food program'], ['projection', 'Projection'], ['books', 'Accountant']]
         .map(([k, v]) => `<button type="button" role="tab" data-mtab="${k}" aria-selected="${tab === k}">${v}</button>`).join('')}</div>
       <div id="money-body"><p class="muted">Loading…</p></div>`;
     $$('[data-mtab]', el).forEach((b) => b.addEventListener('click', () => { state.moneyTab = b.dataset.mtab; store.set('moneyTab', state.moneyTab); renderMoney(el); }));
@@ -5687,7 +5801,7 @@
       const body = $('#money-body', el);
       if (!body || state.view !== 'money') return;
       if (!state.money) { body.innerHTML = '<p class="muted">To use this page, run <code>017_money_food_program_todos.sql</code> in Supabase.</p>'; return; }
-      ({ bills: drawBills, food: drawFood, projection: drawProjection, overview: drawMoney })[tab](body, el);
+      ({ bills: drawBills, food: drawFood, projection: drawProjection, books: drawBooks, overview: drawMoney })[tab](body, el);
     };
     if (state.money === undefined) loadMoney().then(go); else go();
   }
